@@ -1,7 +1,20 @@
 // =========================================================
 // SPCOA MESOANALYSIS VIEWER
 //
-// STEP 3A - STATES + COUNTIES
+// STEP 3
+//
+// LOCAL STATIC GEOGRAPHY
+//
+//   • White meteorological background
+//   • Counties
+//   • States
+//   • Sector navigation
+//
+// Geography is loaded from:
+//
+//   data/counties-10m.json
+//
+// There are NO live Census API requests.
 // =========================================================
 
 
@@ -12,119 +25,114 @@
 const sectors = {
 
     lbf: {
+
         name: "LBF CWA",
+
         bounds: [
             [-103.4, 39.8],
             [-98.6, 43.3]
         ]
+
     },
 
+
     regional: {
+
         name: "LBF Regional",
+
         bounds: [
             [-106.0, 38.0],
             [-96.0, 45.0]
         ]
+
     },
 
+
     central_plains: {
+
         name: "Central Plains",
+
         bounds: [
             [-106.5, 34.0],
             [-91.0, 45.5]
         ]
+
     },
 
+
     conus: {
+
         name: "CONUS",
+
         bounds: [
             [-125.0, 24.0],
             [-66.0, 50.0]
         ]
+
     }
 
 };
 
 
 // =========================================================
-// CENSUS TIGERWEB
-// =========================================================
-
-const CENSUS_BASE =
-    "https://tigerweb.geo.census.gov/arcgis/rest/services/" +
-    "Generalized_ACS2025/State_County/MapServer";
-
-
-// ---------------------------------------------------------
-// STATE GEOJSON
-//
-// Layer 7 = States 500K
-// ---------------------------------------------------------
-
-const statesURL =
-    `${CENSUS_BASE}/7/query` +
-    "?where=1%3D1" +
-    "&outFields=*" +
-    "&returnGeometry=true" +
-    "&outSR=4326" +
-    "&f=geojson";
-
-
-// ---------------------------------------------------------
-// COUNTY GEOJSON
-//
-// Layer 11 = Counties 500K
-// ---------------------------------------------------------
-
-const countiesURL =
-    `${CENSUS_BASE}/11/query` +
-    "?where=1%3D1" +
-    "&outFields=*" +
-    "&returnGeometry=true" +
-    "&outSR=4326" +
-    "&f=geojson";
-
-
-// =========================================================
-// MAP
+// CREATE MAP
 // =========================================================
 
 const map = new maplibregl.Map({
 
     container: "map",
 
+
+    // -----------------------------------------------------
+    // CUSTOM WHITE METEOROLOGICAL STYLE
+    // -----------------------------------------------------
+
     style: {
 
         version: 8,
 
+
         sources: {},
+
 
         layers: [
 
             {
+
                 id: "background",
 
                 type: "background",
 
                 paint: {
+
                     "background-color": "#ffffff"
+
                 }
+
             }
 
         ]
 
     },
 
+
     center: [
+
         -100.75,
+
         41.1
+
     ],
+
 
     zoom: 6,
 
+
     minZoom: 2,
 
+
     maxZoom: 12,
+
 
     attributionControl: false
 
@@ -132,25 +140,7 @@ const map = new maplibregl.Map({
 
 
 // =========================================================
-// ATTRIBUTION
-// =========================================================
-
-map.addControl(
-
-    new maplibregl.AttributionControl({
-
-        compact: true,
-
-        customAttribution:
-            "Geography: U.S. Census Bureau"
-
-    })
-
-);
-
-
-// =========================================================
-// NAVIGATION
+// NAVIGATION CONTROLS
 // =========================================================
 
 map.addControl(
@@ -169,297 +159,376 @@ map.addControl(
 
 
 // =========================================================
-// LOAD MAP
+// ATTRIBUTION
 // =========================================================
 
-map.on("load", async () => {
+map.addControl(
 
-    console.log(
-        "SPCOA map loaded."
-    );
+    new maplibregl.AttributionControl({
+
+        compact: true,
+
+        customAttribution:
+            "Geography: U.S. Census Bureau / us-atlas"
+
+    })
+
+);
 
 
-    // =====================================================
-    // LOAD COUNTIES FIRST
-    // =====================================================
+// =========================================================
+// MAP LOAD
+// =========================================================
 
-    try {
+map.on(
+
+    "load",
+
+    async () => {
+
 
         console.log(
-            "Requesting counties..."
+            "SPCOA meteorological map loaded."
         );
 
 
-        const countyResponse =
-            await fetch(countiesURL);
+        // =================================================
+        // LOAD LOCAL TOPOJSON FILE
+        // =================================================
+
+        try {
 
 
-        if (!countyResponse.ok) {
-
-            throw new Error(
-                `County HTTP error: ${countyResponse.status}`
+            console.log(
+                "Loading local county geography..."
             );
 
-        }
+
+            const response =
+                await fetch(
+                    "data/counties-10m.json"
+                );
 
 
-        const countyData =
-            await countyResponse.json();
+            if (!response.ok) {
 
+                throw new Error(
 
-        console.log(
-            "County GeoJSON:",
-            countyData
-        );
+                    `Unable to load counties-10m.json: ` +
+                    `${response.status} ${response.statusText}`
 
-
-        console.log(
-            `County features loaded: ${countyData.features.length}`
-        );
-
-
-        map.addSource(
-            "counties",
-            {
-
-                type: "geojson",
-
-                data: countyData
-
-            }
-        );
-
-
-        map.addLayer({
-
-            id: "county-lines",
-
-            type: "line",
-
-            source: "counties",
-
-            layout: {
-
-                visibility: "visible",
-
-                "line-join": "round",
-
-                "line-cap": "round"
-
-            },
-
-            paint: {
-
-                "line-color": "#9a9a9a",
-
-                "line-width": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    2,
-                    0.20,
-
-                    4,
-                    0.35,
-
-                    5,
-                    0.55,
-
-                    6,
-                    0.75,
-
-                    7,
-                    0.90,
-
-                    9,
-                    1.10
-
-                ],
-
-                "line-opacity": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    2,
-                    0.15,
-
-                    3,
-                    0.25,
-
-                    4,
-                    0.45,
-
-                    5,
-                    0.70,
-
-                    6,
-                    0.85,
-
-                    8,
-                    1.00
-
-                ]
+                );
 
             }
 
-        });
+
+            const topology =
+                await response.json();
 
 
-        console.log(
-            "County layer added successfully."
-        );
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "COUNTY LOAD ERROR:",
-            error
-        );
-
-    }
-
-
-    // =====================================================
-    // LOAD STATES SECOND
-    //
-    // This ensures state lines appear above counties.
-    // =====================================================
-
-    try {
-
-        console.log(
-            "Requesting states..."
-        );
-
-
-        const stateResponse =
-            await fetch(statesURL);
-
-
-        if (!stateResponse.ok) {
-
-            throw new Error(
-                `State HTTP error: ${stateResponse.status}`
+            console.log(
+                "Local TopoJSON loaded."
             );
 
+
+            console.log(
+                "Available TopoJSON objects:",
+                Object.keys(topology.objects)
+            );
+
+
+            // =================================================
+            // CONVERT COUNTIES TO GEOJSON
+            // =================================================
+
+            const countiesGeoJSON =
+                topojson.feature(
+
+                    topology,
+
+                    topology.objects.counties
+
+                );
+
+
+            console.log(
+
+                `County features: ` +
+                `${countiesGeoJSON.features.length}`
+
+            );
+
+
+            // =================================================
+            // CONVERT STATES TO GEOJSON
+            // =================================================
+
+            const statesGeoJSON =
+                topojson.feature(
+
+                    topology,
+
+                    topology.objects.states
+
+                );
+
+
+            console.log(
+
+                `State features: ` +
+                `${statesGeoJSON.features.length}`
+
+            );
+
+
+            // =================================================
+            // COUNTY SOURCE
+            // =================================================
+
+            map.addSource(
+
+                "counties",
+
+                {
+
+                    type: "geojson",
+
+                    data: countiesGeoJSON
+
+                }
+
+            );
+
+
+            // =================================================
+            // COUNTY LINES
+            // =================================================
+
+            map.addLayer({
+
+                id: "county-lines",
+
+                type: "line",
+
+                source: "counties",
+
+
+                layout: {
+
+                    visibility: "visible",
+
+                    "line-join": "round",
+
+                    "line-cap": "round"
+
+                },
+
+
+                paint: {
+
+                    "line-color":
+                        "#a0a0a0",
+
+
+                    "line-width": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+
+                        2,
+                        0.20,
+
+
+                        4,
+                        0.35,
+
+
+                        5,
+                        0.50,
+
+
+                        6,
+                        0.65,
+
+
+                        7,
+                        0.80,
+
+
+                        9,
+                        1.00
+
+                    ],
+
+
+                    "line-opacity": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+
+                        2,
+                        0.20,
+
+
+                        3,
+                        0.30,
+
+
+                        4,
+                        0.45,
+
+
+                        5,
+                        0.65,
+
+
+                        6,
+                        0.80,
+
+
+                        8,
+                        0.90
+
+                    ]
+
+                }
+
+            });
+
+
+            // =================================================
+            // STATE SOURCE
+            // =================================================
+
+            map.addSource(
+
+                "states",
+
+                {
+
+                    type: "geojson",
+
+                    data: statesGeoJSON
+
+                }
+
+            );
+
+
+            // =================================================
+            // STATE LINES
+            //
+            // States are deliberately added AFTER counties so
+            // the stronger state outline stays above them.
+            // =================================================
+
+            map.addLayer({
+
+                id: "state-lines",
+
+                type: "line",
+
+                source: "states",
+
+
+                layout: {
+
+                    visibility: "visible",
+
+                    "line-join": "round",
+
+                    "line-cap": "round"
+
+                },
+
+
+                paint: {
+
+                    "line-color":
+                        "#333333",
+
+
+                    "line-width": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+
+                        2,
+                        0.70,
+
+
+                        4,
+                        0.90,
+
+
+                        6,
+                        1.20,
+
+
+                        8,
+                        1.50
+
+                    ]
+
+                }
+
+            });
+
+
+            console.log(
+                "County and state layers successfully added."
+            );
+
+
         }
 
 
-        const stateData =
-            await stateResponse.json();
+        catch (error) {
 
 
-        console.log(
-            "State GeoJSON:",
-            stateData
-        );
+            console.error(
+                "GEOGRAPHY LOAD ERROR:",
+                error
+            );
 
 
-        console.log(
-            `State features loaded: ${stateData.features.length}`
-        );
+        }
 
 
-        map.addSource(
-            "states",
+        // =================================================
+        // INITIAL VIEW
+        // =================================================
+
+        map.fitBounds(
+
+            sectors.lbf.bounds,
+
             {
 
-                type: "geojson",
+                padding: 35,
 
-                data: stateData
-
-            }
-        );
-
-
-        map.addLayer({
-
-            id: "state-lines",
-
-            type: "line",
-
-            source: "states",
-
-            layout: {
-
-                visibility: "visible",
-
-                "line-join": "round",
-
-                "line-cap": "round"
-
-            },
-
-            paint: {
-
-                "line-color": "#333333",
-
-                "line-width": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    2,
-                    0.70,
-
-                    4,
-                    0.90,
-
-                    6,
-                    1.25,
-
-                    8,
-                    1.60
-
-                ]
+                duration: 0
 
             }
 
-        });
-
-
-        console.log(
-            "State layer added successfully."
         );
+
 
     }
 
-    catch (error) {
-
-        console.error(
-            "STATE LOAD ERROR:",
-            error
-        );
-
-    }
-
-
-    // =====================================================
-    // INITIAL VIEW
-    // =====================================================
-
-    map.fitBounds(
-
-        sectors.lbf.bounds,
-
-        {
-
-            padding: 35,
-
-            duration: 0
-
-        }
-
-    );
-
-});
+);
 
 
 // =========================================================
@@ -478,6 +547,7 @@ sectorSelect.addEventListener(
 
     (event) => {
 
+
         const sectorKey =
             event.target.value;
 
@@ -488,9 +558,20 @@ sectorSelect.addEventListener(
 
         if (!sector) {
 
+            console.warn(
+                `Unknown sector: ${sectorKey}`
+            );
+
             return;
 
         }
+
+
+        console.log(
+
+            `Changing sector to: ${sector.name}`
+
+        );
 
 
         map.fitBounds(
@@ -507,13 +588,14 @@ sectorSelect.addEventListener(
 
         );
 
+
     }
 
 );
 
 
 // =========================================================
-// LAYER VISIBILITY
+// GENERIC LAYER VISIBILITY FUNCTION
 // =========================================================
 
 function setLayerVisibility(
@@ -521,7 +603,14 @@ function setLayerVisibility(
     visible
 ) {
 
+
     if (!map.getLayer(layerId)) {
+
+        console.warn(
+
+            `Layer does not exist yet: ${layerId}`
+
+        );
 
         return;
 
@@ -540,54 +629,67 @@ function setLayerVisibility(
 
     );
 
+
 }
 
 
 // =========================================================
-// STATES TOGGLE
+// STATE TOGGLE
 // =========================================================
 
-document
-    .getElementById("states-toggle")
-    .addEventListener(
-
-        "change",
-
-        (event) => {
-
-            setLayerVisibility(
-
-                "state-lines",
-
-                event.target.checked
-
-            );
-
-        }
-
+const statesToggle =
+    document.getElementById(
+        "states-toggle"
     );
 
 
+statesToggle.addEventListener(
+
+    "change",
+
+    (event) => {
+
+
+        setLayerVisibility(
+
+            "state-lines",
+
+            event.target.checked
+
+        );
+
+
+    }
+
+);
+
+
 // =========================================================
-// COUNTIES TOGGLE
+// COUNTY TOGGLE
 // =========================================================
 
-document
-    .getElementById("counties-toggle")
-    .addEventListener(
-
-        "change",
-
-        (event) => {
-
-            setLayerVisibility(
-
-                "county-lines",
-
-                event.target.checked
-
-            );
-
-        }
-
+const countiesToggle =
+    document.getElementById(
+        "counties-toggle"
     );
+
+
+countiesToggle.addEventListener(
+
+    "change",
+
+    (event) => {
+
+
+        setLayerVisibility(
+
+            "county-lines",
+
+            event.target.checked
+
+        );
+
+
+    }
+
+);
