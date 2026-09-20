@@ -68,20 +68,16 @@ const map = new maplibregl.Map({
 
         version: 8,
 
-
         // ====================================================
         // GLYPHS
         //
-        // Required for text labels because we're using our
-        // own blank MapLibre style.
+        // Required for MapLibre text labels.
         // ====================================================
 
         glyphs:
-            "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
-
+            "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
 
         sources: {},
-
 
         layers: [
 
@@ -91,33 +87,24 @@ const map = new maplibregl.Map({
                 type: "background",
 
                 paint: {
-
-                    "background-color":
-                        "#ffffff"
-
+                    "background-color": "#ffffff"
                 }
-
             }
 
         ]
 
     },
 
-
     center: [
         -100.75,
         41.1
     ],
 
-
     zoom: 6,
-
 
     minZoom: 2,
 
-
     maxZoom: 12,
-
 
     attributionControl: false
 
@@ -169,7 +156,6 @@ map.on("load", async () => {
 
 
     try {
-
 
         // ====================================================
         // LOAD COUNTY / STATE TOPOJSON
@@ -264,68 +250,47 @@ map.on("load", async () => {
 
             source: "counties",
 
-
             layout: {
 
-                visibility:
-                    "visible",
+                visibility: "visible",
 
-                "line-join":
-                    "round",
+                "line-join": "round",
 
-                "line-cap":
-                    "round"
+                "line-cap": "round"
 
             },
-
 
             paint: {
 
                 "line-color":
                     "#a0a0a0",
 
-
                 "line-width": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     2, 0.20,
-
                     4, 0.35,
-
                     5, 0.50,
-
                     6, 0.65,
-
                     7, 0.80,
-
                     9, 1.00
 
                 ],
 
-
                 "line-opacity": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     2, 0.20,
-
                     3, 0.30,
-
                     4, 0.45,
-
                     5, 0.65,
-
                     6, 0.80,
-
                     8, 0.90
 
                 ]
@@ -380,48 +345,35 @@ map.on("load", async () => {
 
             source: "states",
 
-
             layout: {
 
-                visibility:
-                    "visible",
+                visibility: "visible",
 
-                "line-join":
-                    "round",
+                "line-join": "round",
 
-                "line-cap":
-                    "round"
+                "line-cap": "round"
 
             },
-
 
             paint: {
 
                 "line-color":
                     "#333333",
 
-
                 "line-width": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     2, 0.70,
-
                     4, 0.90,
-
                     6, 1.20,
-
                     8, 1.50
 
                 ],
 
-
-                "line-opacity":
-                    1.0
+                "line-opacity": 1.0
 
             }
 
@@ -493,7 +445,7 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // PRIMARY ROAD LAYER
+        // PRIMARY / INTERSTATE ROAD LAYER
         // ============================================================
 
         map.addLayer({
@@ -504,70 +456,48 @@ map.on("load", async () => {
 
             source: "primary-roads",
 
-
             layout: {
 
-                visibility:
-                    "visible",
+                visibility: "visible",
 
-                "line-join":
-                    "round",
+                "line-join": "round",
 
-                "line-cap":
-                    "round"
+                "line-cap": "round"
 
             },
-
 
             paint: {
 
                 "line-color":
                     "#3B73B9",
 
-
                 "line-width": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     2, 0.35,
-
                     3, 0.50,
-
                     4, 0.70,
-
                     5, 0.95,
-
                     6, 1.30,
-
                     7, 1.65,
-
                     8, 1.90,
-
                     10, 2.30
 
                 ],
 
-
                 "line-opacity": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     2, 0.35,
-
                     3, 0.50,
-
                     4, 0.65,
-
                     5, 0.80,
-
                     6, 0.90
 
                 ]
@@ -659,11 +589,22 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // MAJOR CITY LABELS
+        // CITY FONT
+        // ============================================================
+
+        const cityFont = [
+
+            "Open Sans Regular",
+
+            "Arial Unicode MS Regular"
+
+        ];
+
+
+        // ====================================================
+        // MAJOR CITIES
         //
-        // Classes 1 and 2
-        //
-        // No dots -- text labels only.
+        // Classes 1 + 2
         // ====================================================
 
         map.addLayer({
@@ -676,7 +617,6 @@ map.on("load", async () => {
 
             minzoom: 2,
 
-
             filter: [
 
                 "<=",
@@ -687,12 +627,10 @@ map.on("load", async () => {
 
             ],
 
-
             layout: {
 
                 visibility:
                     "visible",
-
 
                 "text-field": [
 
@@ -702,13 +640,8 @@ map.on("load", async () => {
 
                 ],
 
-
-                "text-font": [
-
-                    "Open Sans Regular"
-
-                ],
-
+                "text-font":
+                    cityFont,
 
                 "text-size": [
 
@@ -730,38 +663,30 @@ map.on("load", async () => {
 
                 ],
 
-
                 "text-anchor":
                     "center",
-
 
                 "text-allow-overlap":
                     false,
 
-
                 "text-ignore-placement":
                     false,
-
 
                 "text-padding":
                     4
 
             },
 
-
             paint: {
 
                 "text-color":
                     "#202020",
 
-
                 "text-halo-color":
                     "#ffffff",
 
-
                 "text-halo-width":
                     1.5,
-
 
                 "text-halo-blur":
                     0.3
@@ -772,7 +697,7 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // REGIONAL CITY LABELS
+        // REGIONAL CITIES
         //
         // Class 3
         // ====================================================
@@ -787,7 +712,6 @@ map.on("load", async () => {
 
             minzoom: 4,
 
-
             filter: [
 
                 "==",
@@ -798,12 +722,10 @@ map.on("load", async () => {
 
             ],
 
-
             layout: {
 
                 visibility:
                     "visible",
-
 
                 "text-field": [
 
@@ -813,13 +735,8 @@ map.on("load", async () => {
 
                 ],
 
-
-                "text-font": [
-
-                    "Open Sans Regular"
-
-                ],
-
+                "text-font":
+                    cityFont,
 
                 "text-size": [
 
@@ -839,38 +756,30 @@ map.on("load", async () => {
 
                 ],
 
-
                 "text-anchor":
                     "center",
-
 
                 "text-allow-overlap":
                     false,
 
-
                 "text-ignore-placement":
                     false,
-
 
                 "text-padding":
                     3
 
             },
 
-
             paint: {
 
                 "text-color":
                     "#252525",
 
-
                 "text-halo-color":
                     "#ffffff",
 
-
                 "text-halo-width":
                     1.5,
-
 
                 "text-halo-blur":
                     0.3
@@ -881,7 +790,7 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // IMPORTANT LOCAL CITY LABELS
+        // IMPORTANT LOCAL CITIES
         //
         // Class 4
         // ====================================================
@@ -896,7 +805,6 @@ map.on("load", async () => {
 
             minzoom: 5,
 
-
             filter: [
 
                 "==",
@@ -907,12 +815,10 @@ map.on("load", async () => {
 
             ],
 
-
             layout: {
 
                 visibility:
                     "visible",
-
 
                 "text-field": [
 
@@ -922,13 +828,8 @@ map.on("load", async () => {
 
                 ],
 
-
-                "text-font": [
-
-                    "Open Sans Regular"
-
-                ],
-
+                "text-font":
+                    cityFont,
 
                 "text-size": [
 
@@ -948,38 +849,30 @@ map.on("load", async () => {
 
                 ],
 
-
                 "text-anchor":
                     "center",
-
 
                 "text-allow-overlap":
                     false,
 
-
                 "text-ignore-placement":
                     false,
-
 
                 "text-padding":
                     2
 
             },
 
-
             paint: {
 
                 "text-color":
                     "#303030",
 
-
                 "text-halo-color":
                     "#ffffff",
 
-
                 "text-halo-width":
                     1.4,
-
 
                 "text-halo-blur":
                     0.3
@@ -1005,7 +898,6 @@ map.on("load", async () => {
 
             minzoom: 6,
 
-
             filter: [
 
                 "==",
@@ -1016,12 +908,10 @@ map.on("load", async () => {
 
             ],
 
-
             layout: {
 
                 visibility:
                     "visible",
-
 
                 "text-field": [
 
@@ -1031,13 +921,8 @@ map.on("load", async () => {
 
                 ],
 
-
-                "text-font": [
-
-                    "Open Sans Regular"
-
-                ],
-
+                "text-font":
+                    cityFont,
 
                 "text-size": [
 
@@ -1057,38 +942,30 @@ map.on("load", async () => {
 
                 ],
 
-
                 "text-anchor":
                     "center",
-
 
                 "text-allow-overlap":
                     false,
 
-
                 "text-ignore-placement":
                     false,
-
 
                 "text-padding":
                     2
 
             },
 
-
             paint: {
 
                 "text-color":
                     "#3a3a3a",
 
-
                 "text-halo-color":
                     "#ffffff",
 
-
                 "text-halo-width":
                     1.3,
-
 
                 "text-halo-blur":
                     0.3
@@ -1106,16 +983,11 @@ map.on("load", async () => {
         // ====================================================
         // FINAL LAYER ORDER
         //
-        // We want:
-        //
         // background
         // counties
         // roads
         // states
         // cities
-        //
-        // Later the weather layers will be inserted into this
-        // hierarchy.
         // ====================================================
 
         if (
@@ -1181,7 +1053,6 @@ map.on("load", async () => {
             );
 
         }
-
 
     }
 
@@ -1330,7 +1201,7 @@ function setLayerVisibility(
 
 
 // ============================================================
-// STATE TOGGLE
+// STATES TOGGLE
 // ============================================================
 
 const statesToggle =
@@ -1359,7 +1230,7 @@ statesToggle.addEventListener(
 
 
 // ============================================================
-// COUNTY TOGGLE
+// COUNTIES TOGGLE
 // ============================================================
 
 const countiesToggle =
@@ -1388,7 +1259,7 @@ countiesToggle.addEventListener(
 
 
 // ============================================================
-// HIGHWAY TOGGLE
+// HIGHWAYS TOGGLE
 // ============================================================
 
 const highwaysToggle =
@@ -1417,7 +1288,7 @@ highwaysToggle.addEventListener(
 
 
 // ============================================================
-// CITY TOGGLE
+// CITIES TOGGLE
 // ============================================================
 
 const citiesToggle =
