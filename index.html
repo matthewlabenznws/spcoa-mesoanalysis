@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>SPCOA Mesoanalysis</title>
+
+    <!-- MapLibre GL JS CSS -->
+    <link
+        href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css"
+        rel="stylesheet"
+    >
+
+    <!-- Our stylesheet -->
+    <link
+        rel="stylesheet"
+        href="style.css"
+    >
+</head>
+
+
+<body>
+
+    <!-- =====================================================
+         HEADER
+    ====================================================== -->
+
+    <header class="site-header">
+
+        <div class="header-text">
+
+            <h1>SPCOA Mesoanalysis</h1>
+
+            <p>
+                Interactive Surface and Mesoanalysis Viewer
+            </p>
+
+        </div>
+
+    </header>
+
+
+    <!-- =====================================================
+         MAIN APPLICATION
+    ====================================================== -->
+
+    <main class="app">
+
+
+        <!-- =================================================
+             SIDEBAR
+        ================================================== -->
+
+        <aside class="sidebar">
+
+
+            <!-- =============================================
+                 SECTOR
+            ============================================== -->
+
+            <section class="sidebar-section">
+
+                <h2>Sector</h2>
+
+                <select id="sector-select">
+
+                    <option value="lbf">
+                        LBF CWA
+                    </option>
+
+                    <option value="regional">
+                        LBF Regional
+                    </option>
+
+                    <option value="central_plains">
+                        Central Plains
+                    </option>
+
+                    <option value="conus">
+                        CONUS
+                    </option>
+
+                </select>
+
+            </section>
+
+
+            <!-- =============================================
+                 MAP FEATURES
+            ============================================== -->
+
+            <section class="sidebar-section">
+
+                <h2>Map Features</h2>
+
+
+                <label class="checkbox-row">
+
+                    <input
+                        id="states-toggle"
+                        type="checkbox"
+                        checked
+                    >
+
+                    <span>States</span>
+
+                </label>
+
+
+                <label class="checkbox-row">
+
+                    <input
+                        id="counties-toggle"
+                        type="checkbox"
+                        checked
+                    >
+
+                    <span>Counties</span>
+
+                </label>
+
+
+                <label class="checkbox-row">
+
+                    <input
+                        id="cwa-toggle"
+                        type="checkbox"
+                        checked
+                    >
+
+                    <span>CWA Boundaries</span>
+
+                </label>
+
+
+                <label class="checkbox-row">
+
+                    <input
+                        id="cities-toggle"
+                        type="checkbox"
+                        checked
+                    >
+
+                    <span>Cities</span>
+
+                </label>
+
+
+                <label class="checkbox-row">
+
+                    <input
+                        id="highways-toggle"
+                        type="checkbox"
+                    >
+
+                    <span>Highways</span>
+
+                </label>
+
+            </section>
+
+
+            <!-- =============================================
+                 CWA SELECTOR
+            ============================================== -->
+
+            <section class="sidebar-section">
+
+                <h2>CWA</h2>
+
+                <select id="cwa-select">
+
+                    <option value="LBF">
+                        LBF — North Platte
+                    </option>
+
+                </select>
+
+                <p class="help-text">
+                    Additional CWAs will be added in Step 4.
+                </p>
+
+            </section>
+
+
+            <!-- =============================================
+                 PLACEHOLDER FOR WEATHER CONTROLS
+            ============================================== -->
+
+            <section class="sidebar-section weather-placeholder">
+
+                <h2>SPCOA Fields</h2>
+
+                <p>
+                    Weather parameters will be added after
+                    the geographic map is complete.
+                </p>
+
+            </section>
+
+
+        </aside>
+
+
+        <!-- =================================================
+             MAP
+        ================================================== -->
+
+        <section class="map-wrapper">
+
+            <div id="map"></div>
+
+        </section>
+
+
+    </main>
+
+
+    <!-- =====================================================
+         JAVASCRIPT
+    ====================================================== -->
+
+    <script
+        src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js">
+    </script>
+
+    <script src="app.js"></script>
+
+
+</body>
+
+</html>
