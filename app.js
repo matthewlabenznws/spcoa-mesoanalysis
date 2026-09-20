@@ -2,7 +2,7 @@
 // SPCOA MESOANALYSIS
 // app.js
 //
-// Current map layers:
+// Current layers:
 //   - White background
 //   - County boundaries
 //   - State boundaries
@@ -68,33 +68,56 @@ const map = new maplibregl.Map({
 
         version: 8,
 
+
+        // ====================================================
+        // GLYPHS
+        //
+        // Required for text labels because we're using our
+        // own blank MapLibre style.
+        // ====================================================
+
+        glyphs:
+            "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+
+
         sources: {},
+
 
         layers: [
 
             {
                 id: "background",
+
                 type: "background",
 
                 paint: {
-                    "background-color": "#ffffff"
+
+                    "background-color":
+                        "#ffffff"
+
                 }
+
             }
 
         ]
 
     },
 
+
     center: [
         -100.75,
         41.1
     ],
 
+
     zoom: 6,
+
 
     minZoom: 2,
 
+
     maxZoom: 12,
+
 
     attributionControl: false
 
@@ -147,6 +170,7 @@ map.on("load", async () => {
 
     try {
 
+
         // ====================================================
         // LOAD COUNTY / STATE TOPOJSON
         // ====================================================
@@ -185,10 +209,13 @@ map.on("load", async () => {
 
 
         console.log(
+
             "Available TopoJSON objects:",
+
             Object.keys(
                 topology.objects
             )
+
         );
 
 
@@ -237,25 +264,33 @@ map.on("load", async () => {
 
             source: "counties",
 
+
             layout: {
 
-                visibility: "visible",
+                visibility:
+                    "visible",
 
-                "line-join": "round",
+                "line-join":
+                    "round",
 
-                "line-cap": "round"
+                "line-cap":
+                    "round"
 
             },
+
 
             paint: {
 
                 "line-color":
                     "#a0a0a0",
 
+
                 "line-width": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     2, 0.20,
@@ -272,10 +307,13 @@ map.on("load", async () => {
 
                 ],
 
+
                 "line-opacity": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     2, 0.20,
@@ -342,25 +380,33 @@ map.on("load", async () => {
 
             source: "states",
 
+
             layout: {
 
-                visibility: "visible",
+                visibility:
+                    "visible",
 
-                "line-join": "round",
+                "line-join":
+                    "round",
 
-                "line-cap": "round"
+                "line-cap":
+                    "round"
 
             },
+
 
             paint: {
 
                 "line-color":
                     "#333333",
 
+
                 "line-width": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     2, 0.70,
@@ -373,7 +419,9 @@ map.on("load", async () => {
 
                 ],
 
-                "line-opacity": 1.0
+
+                "line-opacity":
+                    1.0
 
             }
 
@@ -445,7 +493,7 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // PRIMARY / INTERSTATE ROAD LAYER
+        // PRIMARY ROAD LAYER
         // ============================================================
 
         map.addLayer({
@@ -456,25 +504,33 @@ map.on("load", async () => {
 
             source: "primary-roads",
 
+
             layout: {
 
-                visibility: "visible",
+                visibility:
+                    "visible",
 
-                "line-join": "round",
+                "line-join":
+                    "round",
 
-                "line-cap": "round"
+                "line-cap":
+                    "round"
 
             },
+
 
             paint: {
 
                 "line-color":
                     "#3B73B9",
 
+
                 "line-width": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     2, 0.35,
@@ -495,10 +551,13 @@ map.on("load", async () => {
 
                 ],
 
+
                 "line-opacity": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     2, 0.35,
@@ -520,7 +579,7 @@ map.on("load", async () => {
 
         // ====================================================
         // KEEP STATE BOUNDARIES ABOVE ROADS
-        // ============================================================
+        // ====================================================
 
         if (
             map.getLayer(
@@ -600,14 +659,11 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // MAJOR NATIONAL / LARGE REGIONAL CITIES
+        // MAJOR CITY LABELS
         //
-        // Classes:
+        // Classes 1 and 2
         //
-        // 1 = Major national
-        // 2 = Large regional
-        //
-        // These are visible at broad map scales.
+        // No dots -- text labels only.
         // ====================================================
 
         map.addLayer({
@@ -620,6 +676,7 @@ map.on("load", async () => {
 
             minzoom: 2,
 
+
             filter: [
 
                 "<=",
@@ -630,20 +687,35 @@ map.on("load", async () => {
 
             ],
 
+
             layout: {
 
                 visibility:
                     "visible",
 
+
                 "text-field": [
+
                     "get",
+
                     "name"
+
                 ],
+
+
+                "text-font": [
+
+                    "Open Sans Regular"
+
+                ],
+
 
                 "text-size": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     2, 9,
@@ -658,30 +730,38 @@ map.on("load", async () => {
 
                 ],
 
+
                 "text-anchor":
                     "center",
+
 
                 "text-allow-overlap":
                     false,
 
+
                 "text-ignore-placement":
                     false,
+
 
                 "text-padding":
                     4
 
             },
 
+
             paint: {
 
                 "text-color":
                     "#202020",
 
+
                 "text-halo-color":
                     "#ffffff",
 
+
                 "text-halo-width":
                     1.5,
+
 
                 "text-halo-blur":
                     0.3
@@ -692,7 +772,7 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // REGIONAL CITIES
+        // REGIONAL CITY LABELS
         //
         // Class 3
         // ====================================================
@@ -707,6 +787,7 @@ map.on("load", async () => {
 
             minzoom: 4,
 
+
             filter: [
 
                 "==",
@@ -717,20 +798,35 @@ map.on("load", async () => {
 
             ],
 
+
             layout: {
 
                 visibility:
                     "visible",
 
+
                 "text-field": [
+
                     "get",
+
                     "name"
+
                 ],
+
+
+                "text-font": [
+
+                    "Open Sans Regular"
+
+                ],
+
 
                 "text-size": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     4, 9,
@@ -743,30 +839,38 @@ map.on("load", async () => {
 
                 ],
 
+
                 "text-anchor":
                     "center",
+
 
                 "text-allow-overlap":
                     false,
 
+
                 "text-ignore-placement":
                     false,
+
 
                 "text-padding":
                     3
 
             },
 
+
             paint: {
 
                 "text-color":
                     "#252525",
 
+
                 "text-halo-color":
                     "#ffffff",
 
+
                 "text-halo-width":
                     1.5,
+
 
                 "text-halo-blur":
                     0.3
@@ -777,7 +881,7 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // IMPORTANT LOCAL CITIES
+        // IMPORTANT LOCAL CITY LABELS
         //
         // Class 4
         // ====================================================
@@ -792,6 +896,7 @@ map.on("load", async () => {
 
             minzoom: 5,
 
+
             filter: [
 
                 "==",
@@ -802,20 +907,35 @@ map.on("load", async () => {
 
             ],
 
+
             layout: {
 
                 visibility:
                     "visible",
 
+
                 "text-field": [
+
                     "get",
+
                     "name"
+
                 ],
+
+
+                "text-font": [
+
+                    "Open Sans Regular"
+
+                ],
+
 
                 "text-size": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     5, 9,
@@ -828,30 +948,38 @@ map.on("load", async () => {
 
                 ],
 
+
                 "text-anchor":
                     "center",
+
 
                 "text-allow-overlap":
                     false,
 
+
                 "text-ignore-placement":
                     false,
+
 
                 "text-padding":
                     2
 
             },
 
+
             paint: {
 
                 "text-color":
                     "#303030",
 
+
                 "text-halo-color":
                     "#ffffff",
 
+
                 "text-halo-width":
                     1.4,
+
 
                 "text-halo-blur":
                     0.3
@@ -865,8 +993,6 @@ map.on("load", async () => {
         // SMALL LOCAL COMMUNITIES
         //
         // Class 5
-        //
-        // Only appear when zoomed farther in.
         // ====================================================
 
         map.addLayer({
@@ -879,6 +1005,7 @@ map.on("load", async () => {
 
             minzoom: 6,
 
+
             filter: [
 
                 "==",
@@ -889,20 +1016,35 @@ map.on("load", async () => {
 
             ],
 
+
             layout: {
 
                 visibility:
                     "visible",
 
+
                 "text-field": [
+
                     "get",
+
                     "name"
+
                 ],
+
+
+                "text-font": [
+
+                    "Open Sans Regular"
+
+                ],
+
 
                 "text-size": [
 
                     "interpolate",
+
                     ["linear"],
+
                     ["zoom"],
 
                     6, 8,
@@ -915,30 +1057,38 @@ map.on("load", async () => {
 
                 ],
 
+
                 "text-anchor":
                     "center",
+
 
                 "text-allow-overlap":
                     false,
 
+
                 "text-ignore-placement":
                     false,
+
 
                 "text-padding":
                     2
 
             },
 
+
             paint: {
 
                 "text-color":
                     "#3a3a3a",
 
+
                 "text-halo-color":
                     "#ffffff",
 
+
                 "text-halo-width":
                     1.3,
+
 
                 "text-halo-blur":
                     0.3
@@ -956,12 +1106,33 @@ map.on("load", async () => {
         // ====================================================
         // FINAL LAYER ORDER
         //
-        // City labels should always remain above geographic
-        // reference layers.
+        // We want:
+        //
+        // background
+        // counties
+        // roads
+        // states
+        // cities
+        //
+        // Later the weather layers will be inserted into this
+        // hierarchy.
         // ====================================================
 
         if (
             map.getLayer(
+                "state-lines"
+            )
+        ) {
+
+            map.moveLayer(
+                "state-lines"
+            );
+
+        }
+
+
+        if (
+            map.getLayer(
                 "cities-major"
             )
         ) {
@@ -1010,6 +1181,7 @@ map.on("load", async () => {
             );
 
         }
+
 
     }
 
@@ -1028,7 +1200,7 @@ map.on("load", async () => {
 
 
     // ========================================================
-    // INITIAL MAP VIEW
+    // INITIAL VIEW
     // ========================================================
 
     map.fitBounds(
