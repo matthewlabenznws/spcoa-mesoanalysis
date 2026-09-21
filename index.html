@@ -15,11 +15,13 @@
 
     <!-- ===================================================
          MAPLIBRE GL JS
-         Known-working version: 5.7.1
+         
+         5.11.0 adds local/system font rendering when the
+         style does not contain a "glyphs" property.
     ==================================================== -->
 
     <link
-        href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css"
+        href="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.css"
         rel="stylesheet"
     >
 
@@ -187,10 +189,7 @@
                 </label>
 
 
-                <!-- HIGHWAYS
-                     
-                     Disabled for now.
-                -->
+                <!-- HIGHWAYS -->
 
                 <label class="checkbox-row">
 
@@ -283,14 +282,13 @@
 
 
     <!-- ===================================================
-         MAPLIBRE GL JS
+         MAPLIBRE GL JS 5.11.0
          
-         IMPORTANT:
-         MapLibre must load BEFORE app.js.
+         Must load BEFORE app.js.
     ==================================================== -->
 
     <script
-        src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js">
+        src="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.js">
     </script>
 
 
@@ -306,11 +304,11 @@
     <!-- ===================================================
          APPLICATION JAVASCRIPT
          
-         Cache-busting query added so GitHub Pages/browser
-         does not keep using an older app.js.
+         Cache-busting query so GitHub Pages/browser does
+         not accidentally use one of our older app.js files.
     ==================================================== -->
 
-    <script src="app.js?v=20260920-1"></script>
+    <script src="app.js?v=20260920-511"></script>
 
 
 </body>
