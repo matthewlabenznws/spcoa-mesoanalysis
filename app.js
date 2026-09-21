@@ -1,6 +1,9 @@
+"use strict";
+
 /* =========================================================================================
    SPCOA MESOANALYSIS VIEWER
    =========================================================================================
+
    FILLED FIELDS
      - SBCAPE
      - MLCAPE
@@ -11,6 +14,12 @@
      - Surface Wind Barbs
      - 4–6 km Storm-Relative Wind Barbs
 
+   RENDERING
+     - Full-resolution scalar canvas
+     - Bilinear numerical interpolation
+     - Numerical canvas follows camera during pan/zoom
+     - Fresh numerical redraw after movement ends
+
    CANVAS STACK
      geography-canvas
      vector-canvas
@@ -19,9 +28,6 @@
 
    Numerical tiles are read directly from AWS S3.
    ========================================================================================= */
-
-
-"use strict";
 
 
 /* =========================================================================================
@@ -289,6 +295,15 @@ let cursorGeneration = 0;
 
 
 /* =========================================================================================
+   CAMERA TRACKING
+   ========================================================================================= */
+
+let capturedCamera = null;
+
+let moveEndTimer = null;
+
+
+/* =========================================================================================
    DOM
    ========================================================================================= */
 
@@ -463,10 +478,15 @@ function resizeCanvas(canvas) {
         window.devicePixelRatio || 1;
 
     const targetWidth =
-        Math.round(rect.width * dpr);
+        Math.round(
+            rect.width * dpr
+        );
 
     const targetHeight =
-        Math.round(rect.height * dpr);
+        Math.round(
+            rect.height * dpr
+        );
+
 
     if (
         canvas.width !== targetWidth ||
@@ -490,12 +510,19 @@ function resizeCanvas(canvas) {
 }
 
 
-function prepareContext(canvas, ctx) {
+function prepareContext(
+    canvas,
+    ctx
+) {
 
-    resizeCanvas(canvas);
+    resizeCanvas(
+        canvas
+    );
+
 
     const dpr =
         window.devicePixelRatio || 1;
+
 
     ctx.setTransform(
         dpr,
@@ -505,6 +532,7 @@ function prepareContext(canvas, ctx) {
         0,
         0
     );
+
 
     ctx.clearRect(
         0,
@@ -518,11 +546,142 @@ function prepareContext(canvas, ctx) {
 
 function resizeAllCanvases() {
 
-    resizeCanvas(weatherCanvas);
+    resizeCanvas(
+        weatherCanvas
+    );
 
-    resizeCanvas(vectorCanvas);
+    resizeCanvas(
+        vectorCanvas
+    );
 
-    resizeCanvas(geographyCanvas);
+    resizeCanvas(
+        geographyCanvas
+    );
+
+}
+
+
+/* =========================================================================================
+   CAMERA / CANVAS TRACKING
+   ========================================================================================= */
+
+function captureCanvasCamera() {
+
+    const bounds =
+        map.getBounds();
+
+
+    capturedCamera = {
+
+        west:
+            bounds.getWest(),
+
+        east:
+            bounds.getEast(),
+
+        north:
+            bounds.getNorth(),
+
+        south:
+            bounds.getSouth()
+
+    };
+
+}
+
+
+function transformCanvasToCurrentCamera(
+    canvas
+) {
+
+    if (!capturedCamera) {
+        return;
+    }
+
+
+    const northwest =
+        map.project([
+            capturedCamera.west,
+            capturedCamera.north
+        ]);
+
+
+    const southeast =
+        map.project([
+            capturedCamera.east,
+            capturedCamera.south
+        ]);
+
+
+    const rect =
+        mapWrapper.getBoundingClientRect();
+
+
+    if (
+        rect.width <= 0 ||
+        rect.height <= 0
+    ) {
+
+        return;
+
+    }
+
+
+    const scaleX =
+        (
+            southeast.x -
+            northwest.x
+        ) /
+        rect.width;
+
+
+    const scaleY =
+        (
+            southeast.y -
+            northwest.y
+        ) /
+        rect.height;
+
+
+    canvas.style.transformOrigin =
+        "0 0";
+
+
+    canvas.style.transform =
+        `translate(${northwest.x}px, ${northwest.y}px) ` +
+        `scale(${scaleX}, ${scaleY})`;
+
+}
+
+
+function transformNumericalCanvases() {
+
+    transformCanvasToCurrentCamera(
+        weatherCanvas
+    );
+
+
+    transformCanvasToCurrentCamera(
+        vectorCanvas
+    );
+
+}
+
+
+function resetNumericalCanvasTransforms() {
+
+    weatherCanvas.style.transform =
+        "none";
+
+    vectorCanvas.style.transform =
+        "none";
+
+
+    weatherCanvas.style.transformOrigin =
+        "0 0";
+
+    vectorCanvas.style.transformOrigin =
+        "0 0";
 
 }
 
@@ -531,7 +690,9 @@ function resizeAllCanvases() {
    FETCH JSON
    ========================================================================================= */
 
-async function fetchJSON(url) {
+async function fetchJSON(
+    url
+) {
 
     const response =
         await fetch(
@@ -541,6 +702,7 @@ async function fetchJSON(url) {
             }
         );
 
+
     if (!response.ok) {
 
         throw new Error(
@@ -548,6 +710,7 @@ async function fetchJSON(url) {
         );
 
     }
+
 
     return await response.json();
 
@@ -563,21 +726,26 @@ async function loadLatestRun() {
     statusElement.textContent =
         "Loading latest run...";
 
+
     const latest =
         await fetchJSON(
             `${S3_BASE_URL}/latest.json?t=${Date.now()}`
         );
 
+
     currentRun =
         latest.run;
 
+
     runIdElement.textContent =
         currentRun;
+
 
     analysisTimeElement.textContent =
         formatAnalysisTime(
             latest.analysis_time
         );
+
 
     runMetadata =
         await fetchJSON(
@@ -586,6 +754,7 @@ async function loadLatestRun() {
 
 
     fieldMetadata = {};
+
 
     for (
         const fieldKey
@@ -602,6 +771,7 @@ async function loadLatestRun() {
 
 
     vectorMetadata = {};
+
 
     for (
         const vectorKey
@@ -627,14 +797,20 @@ async function loadLatestRun() {
    TIME FORMAT
    ========================================================================================= */
 
-function formatAnalysisTime(value) {
+function formatAnalysisTime(
+    value
+) {
 
     if (!value) {
         return "--";
     }
 
+
     const date =
-        new Date(value);
+        new Date(
+            value
+        );
+
 
     if (
         Number.isNaN(
@@ -646,6 +822,7 @@ function formatAnalysisTime(value) {
 
     }
 
+
     const month =
         String(
             date.getUTCMonth() + 1
@@ -653,6 +830,7 @@ function formatAnalysisTime(value) {
             2,
             "0"
         );
+
 
     const day =
         String(
@@ -662,6 +840,7 @@ function formatAnalysisTime(value) {
             "0"
         );
 
+
     const hour =
         String(
             date.getUTCHours()
@@ -669,6 +848,7 @@ function formatAnalysisTime(value) {
             2,
             "0"
         );
+
 
     return (
         `${month}/${day}/${date.getUTCFullYear()} ` +
@@ -679,7 +859,7 @@ function formatAnalysisTime(value) {
 
 
 /* =========================================================================================
-   TILE ZOOM
+   DATA TILE ZOOM
    ========================================================================================= */
 
 function getDataZoom() {
@@ -687,17 +867,21 @@ function getDataZoom() {
     const zoom =
         map.getZoom();
 
+
     if (zoom < 4.5) {
         return 4;
     }
+
 
     if (zoom < 5.5) {
         return 5;
     }
 
+
     if (zoom < 6.5) {
         return 6;
     }
+
 
     return 7;
 
@@ -715,6 +899,7 @@ function lonToTileX(
 
     const n =
         2 ** zoom;
+
 
     return (
         (lon + 180) /
@@ -739,13 +924,16 @@ function latToTileY(
             )
         );
 
+
     const latRad =
         clipped *
         Math.PI /
         180;
 
+
     const n =
         2 ** zoom;
+
 
     return (
         (
@@ -768,7 +956,9 @@ function latToTileY(
    COLOR UTILITIES
    ========================================================================================= */
 
-function hexToRgb(hex) {
+function hexToRgb(
+    hex
+) {
 
     const clean =
         hex.replace(
@@ -776,30 +966,36 @@ function hexToRgb(hex) {
             ""
         );
 
+
     return {
-        r: parseInt(
-            clean.substring(
-                0,
-                2
-            ),
-            16
-        ),
 
-        g: parseInt(
-            clean.substring(
-                2,
-                4
+        r:
+            parseInt(
+                clean.substring(
+                    0,
+                    2
+                ),
+                16
             ),
-            16
-        ),
 
-        b: parseInt(
-            clean.substring(
-                4,
-                6
+        g:
+            parseInt(
+                clean.substring(
+                    2,
+                    4
+                ),
+                16
             ),
-            16
-        )
+
+        b:
+            parseInt(
+                clean.substring(
+                    4,
+                    6
+                ),
+                16
+            )
+
     };
 
 }
@@ -817,10 +1013,12 @@ const dewpointRgb =
     );
 
 
-function capeColor(value) {
+function capeColor(
+    value
+) {
 
     /*
-     * Keep <100 J/kg transparent.
+     * CAPE below 100 J/kg remains transparent.
      */
 
     if (
@@ -832,8 +1030,10 @@ function capeColor(value) {
 
     }
 
+
     let index =
         CAPE_BOUNDS.length - 2;
+
 
     for (
         let i = 0;
@@ -846,12 +1046,15 @@ function capeColor(value) {
             value < CAPE_BOUNDS[i + 1]
         ) {
 
-            index = i;
+            index =
+                i;
+
             break;
 
         }
 
     }
+
 
     index =
         Math.max(
@@ -862,26 +1065,29 @@ function capeColor(value) {
             )
         );
 
+
     return capeRgb[index];
 
 }
 
 
-function dewpointColor(value) {
+function dewpointColor(
+    value
+) {
 
-    if (!Number.isFinite(value)) {
+    if (
+        !Number.isFinite(
+            value
+        )
+    ) {
+
         return null;
+
     }
 
+
     /*
-     * One color for each 1°F bin:
-     *
-     * [-41,-40)
-     * [-40,-39)
-     * ...
-     * [89,90)
-     *
-     * Values outside the display range are clipped.
+     * Exact 1°F bins from the supplied dewpoint palette.
      */
 
     const clipped =
@@ -893,10 +1099,12 @@ function dewpointColor(value) {
             )
         );
 
+
     let index =
         Math.floor(
-            clipped - (-41)
+            clipped + 41
         );
+
 
     index =
         Math.max(
@@ -906,6 +1114,7 @@ function dewpointColor(value) {
                 index
             )
         );
+
 
     return dewpointRgb[index];
 
@@ -920,9 +1129,11 @@ function getFieldColor(
     const definition =
         WEATHER_FIELDS[field];
 
+
     if (!definition) {
         return null;
     }
+
 
     if (
         definition.type === "cape"
@@ -934,6 +1145,7 @@ function getFieldColor(
 
     }
 
+
     if (
         definition.type === "dewpoint"
     ) {
@@ -943,6 +1155,7 @@ function getFieldColor(
         );
 
     }
+
 
     return null;
 
@@ -963,6 +1176,7 @@ async function loadScalarTile(
     const key =
         `${field}:${currentRun}:${z}/${x}/${y}`;
 
+
     if (
         scalarTileCache.has(
             key
@@ -975,28 +1189,34 @@ async function loadScalarTile(
 
     }
 
+
     const promise =
         (async () => {
 
             const url =
                 `${S3_BASE_URL}/runs/${currentRun}/${field}/z${z}/${x}/${y}.bin`;
 
+
             const response =
-                await fetch(url);
+                await fetch(
+                    url
+                );
+
 
             if (!response.ok) {
-
                 return null;
-
             }
+
 
             const buffer =
                 await response.arrayBuffer();
+
 
             const expectedBytes =
                 TILE_SIZE *
                 TILE_SIZE *
                 2;
+
 
             if (
                 buffer.byteLength !==
@@ -1013,19 +1233,19 @@ async function loadScalarTile(
 
             }
 
-            const data =
-                new Uint16Array(
-                    buffer
-                );
 
-            return data;
+            return new Uint16Array(
+                buffer
+            );
 
         })();
+
 
     scalarTileCache.set(
         key,
         promise
     );
+
 
     return promise;
 
@@ -1046,6 +1266,7 @@ async function loadVectorTile(
     const key =
         `${field}:${currentRun}:${z}/${x}/${y}`;
 
+
     if (
         vectorTileCache.has(
             key
@@ -1058,29 +1279,34 @@ async function loadVectorTile(
 
     }
 
+
     const promise =
         (async () => {
 
             const url =
                 `${S3_BASE_URL}/runs/${currentRun}/overlays/${field}/z${z}/${x}/${y}.bin`;
 
+
             const response =
-                await fetch(url);
+                await fetch(
+                    url
+                );
+
 
             if (!response.ok) {
-
                 return null;
-
             }
+
 
             const buffer =
                 await response.arrayBuffer();
 
+
             const expectedBytes =
                 TILE_SIZE *
                 TILE_SIZE *
-                2 *
-                2;
+                4;
+
 
             if (
                 buffer.byteLength !==
@@ -1097,16 +1323,19 @@ async function loadVectorTile(
 
             }
 
+
             return new Int16Array(
                 buffer
             );
 
         })();
 
+
     vectorTileCache.set(
         key,
         promise
     );
+
 
     return promise;
 
@@ -1123,35 +1352,32 @@ function decodeScalarValue(
 ) {
 
     if (
-        encoded === SCALAR_NODATA
+        encoded ===
+        SCALAR_NODATA
     ) {
 
         return null;
 
     }
 
+
     const metadata =
         fieldMetadata[field];
+
 
     if (!metadata) {
         return null;
     }
 
-    const scale =
-        metadata.encoding.scale;
-
-    const offset =
-        metadata.encoding.offset;
 
     const value =
         encoded *
-        scale +
-        offset;
+        metadata.encoding.scale +
+        metadata.encoding.offset;
+
 
     /*
-     * Filter obvious bad dewpoint fill values.
-     *
-     * The source run contained approximately -188°F in invalid cells.
+     * Reject obviously invalid dewpoint source/fill values.
      */
 
     if (
@@ -1165,6 +1391,7 @@ function decodeScalarValue(
         return null;
 
     }
+
 
     return value;
 
@@ -1181,19 +1408,23 @@ function decodeVectorComponent(
 ) {
 
     if (
-        encoded === VECTOR_NODATA
+        encoded ===
+        VECTOR_NODATA
     ) {
 
         return null;
 
     }
 
+
     const metadata =
         vectorMetadata[field];
+
 
     if (!metadata) {
         return null;
     }
+
 
     return (
         encoded *
@@ -1221,35 +1452,44 @@ async function sampleScalarAtLonLat(
             zoom
         );
 
+
     const ty =
         latToTileY(
             lat,
             zoom
         );
 
+
     const pixelX =
         tx *
         TILE_SIZE;
 
+
     const pixelY =
         ty *
         TILE_SIZE;
+
 
     const x0 =
         Math.floor(
             pixelX
         );
 
+
     const y0 =
         Math.floor(
             pixelY
         );
 
+
     const fx =
-        pixelX - x0;
+        pixelX -
+        x0;
+
 
     const fy =
-        pixelY - y0;
+        pixelY -
+        y0;
 
 
     async function sampleGlobalPixel(
@@ -1263,11 +1503,13 @@ async function sampleScalarAtLonLat(
                 TILE_SIZE
             );
 
+
         const tileY =
             Math.floor(
                 gy /
                 TILE_SIZE
             );
+
 
         const localX =
             (
@@ -1279,6 +1521,7 @@ async function sampleScalarAtLonLat(
             ) %
             TILE_SIZE;
 
+
         const localY =
             (
                 (
@@ -1289,6 +1532,7 @@ async function sampleScalarAtLonLat(
             ) %
             TILE_SIZE;
 
+
         const tile =
             await loadScalarTile(
                 field,
@@ -1297,9 +1541,11 @@ async function sampleScalarAtLonLat(
                 tileY
             );
 
+
         if (!tile) {
             return null;
         }
+
 
         const encoded =
             tile[
@@ -1307,6 +1553,7 @@ async function sampleScalarAtLonLat(
                 TILE_SIZE +
                 localX
             ];
+
 
         return decodeScalarValue(
             field,
@@ -1323,6 +1570,7 @@ async function sampleScalarAtLonLat(
         v11
     ] =
         await Promise.all([
+
             sampleGlobalPixel(
                 x0,
                 y0
@@ -1342,6 +1590,7 @@ async function sampleScalarAtLonLat(
                 x0 + 1,
                 y0 + 1
             )
+
         ]);
 
 
@@ -1372,11 +1621,13 @@ async function sampleScalarAtLonLat(
         v10 *
         fx;
 
+
     const bottom =
         v01 *
         (1 - fx) +
         v11 *
         fx;
+
 
     return (
         top *
@@ -1405,35 +1656,44 @@ async function sampleVectorAtLonLat(
             zoom
         );
 
+
     const ty =
         latToTileY(
             lat,
             zoom
         );
 
+
     const pixelX =
         tx *
         TILE_SIZE;
 
+
     const pixelY =
         ty *
         TILE_SIZE;
+
 
     const x0 =
         Math.floor(
             pixelX
         );
 
+
     const y0 =
         Math.floor(
             pixelY
         );
 
+
     const fx =
-        pixelX - x0;
+        pixelX -
+        x0;
+
 
     const fy =
-        pixelY - y0;
+        pixelY -
+        y0;
 
 
     async function sampleGlobalPixel(
@@ -1447,11 +1707,13 @@ async function sampleVectorAtLonLat(
                 TILE_SIZE
             );
 
+
         const tileY =
             Math.floor(
                 gy /
                 TILE_SIZE
             );
+
 
         const localX =
             (
@@ -1463,6 +1725,7 @@ async function sampleVectorAtLonLat(
             ) %
             TILE_SIZE;
 
+
         const localY =
             (
                 (
@@ -1473,6 +1736,7 @@ async function sampleVectorAtLonLat(
             ) %
             TILE_SIZE;
 
+
         const tile =
             await loadVectorTile(
                 field,
@@ -1481,9 +1745,11 @@ async function sampleVectorAtLonLat(
                 tileY
             );
 
+
         if (!tile) {
             return null;
         }
+
 
         const baseIndex =
             (
@@ -1493,15 +1759,18 @@ async function sampleVectorAtLonLat(
             ) *
             2;
 
+
         const encodedU =
             tile[
                 baseIndex
             ];
 
+
         const encodedV =
             tile[
                 baseIndex + 1
             ];
+
 
         const u =
             decodeVectorComponent(
@@ -1509,11 +1778,13 @@ async function sampleVectorAtLonLat(
                 encodedU
             );
 
+
         const v =
             decodeVectorComponent(
                 field,
                 encodedV
             );
+
 
         if (
             u === null ||
@@ -1523,6 +1794,7 @@ async function sampleVectorAtLonLat(
             return null;
 
         }
+
 
         return {
             u,
@@ -1539,6 +1811,7 @@ async function sampleVectorAtLonLat(
         p11
     ] =
         await Promise.all([
+
             sampleGlobalPixel(
                 x0,
                 y0
@@ -1558,6 +1831,7 @@ async function sampleVectorAtLonLat(
                 x0 + 1,
                 y0 + 1
             )
+
         ]);
 
 
@@ -1579,17 +1853,20 @@ async function sampleVectorAtLonLat(
         p10.u *
         fx;
 
+
     const bottomU =
         p01.u *
         (1 - fx) +
         p11.u *
         fx;
 
+
     const topV =
         p00.v *
         (1 - fx) +
         p10.v *
         fx;
+
 
     const bottomV =
         p01.v *
@@ -1626,6 +1903,19 @@ async function renderWeather() {
     const generation =
         ++scalarRenderGeneration;
 
+
+    /*
+     * A fresh render belongs directly to the current MapLibre camera.
+     */
+
+    weatherCanvas.style.transform =
+        "none";
+
+
+    weatherCanvas.style.transformOrigin =
+        "0 0";
+
+
     prepareContext(
         weatherCanvas,
         weatherCtx
@@ -1638,6 +1928,9 @@ async function renderWeather() {
     ) {
 
         updateLegend();
+
+        captureCanvasCamera();
+
         return;
 
     }
@@ -1646,6 +1939,7 @@ async function renderWeather() {
     const rect =
         mapWrapper.getBoundingClientRect();
 
+
     const width =
         Math.max(
             1,
@@ -1653,6 +1947,7 @@ async function renderWeather() {
                 rect.width
             )
         );
+
 
     const height =
         Math.max(
@@ -1664,13 +1959,19 @@ async function renderWeather() {
 
 
     /*
-     * Render at half resolution for performance, then scale smoothly.
+     * FULL-RESOLUTION RENDERING
      *
-     * Numerical sampling remains bilinear.
+     * Previously this was 0.5, which meant the numerical analysis was
+     * rendered at half resolution and then enlarged to the full map.
+     *
+     * 1.0 means one analysis-rendering pixel per CSS map pixel.
+     *
+     * Bilinear interpolation of the numerical field is still retained.
      */
 
     const renderScale =
-        0.5;
+        1.0;
+
 
     const renderWidth =
         Math.max(
@@ -1680,6 +1981,7 @@ async function renderWeather() {
                 renderScale
             )
         );
+
 
     const renderHeight =
         Math.max(
@@ -1696,16 +1998,20 @@ async function renderWeather() {
             "canvas"
         );
 
+
     offscreen.width =
         renderWidth;
 
+
     offscreen.height =
         renderHeight;
+
 
     const offCtx =
         offscreen.getContext(
             "2d"
         );
+
 
     const imageData =
         offCtx.createImageData(
@@ -1713,17 +2019,14 @@ async function renderWeather() {
             renderHeight
         );
 
+
     const pixels =
         imageData.data;
+
 
     const zoom =
         getDataZoom();
 
-
-    /*
-     * Cache samples by tile so the renderer does not issue four fetches
-     * for every pixel independently.
-     */
 
     const requiredTiles =
         new Map();
@@ -1732,14 +2035,18 @@ async function renderWeather() {
     const bounds =
         map.getBounds();
 
+
     const west =
         bounds.getWest();
+
 
     const east =
         bounds.getEast();
 
+
     const north =
         bounds.getNorth();
+
 
     const south =
         bounds.getSouth();
@@ -1753,6 +2060,7 @@ async function renderWeather() {
             )
         ) - 1;
 
+
     const tileXMax =
         Math.floor(
             lonToTileX(
@@ -1761,6 +2069,7 @@ async function renderWeather() {
             )
         ) + 1;
 
+
     const tileYMin =
         Math.floor(
             latToTileY(
@@ -1768,6 +2077,7 @@ async function renderWeather() {
                 zoom
             )
         ) - 1;
+
 
     const tileYMax =
         Math.floor(
@@ -1796,6 +2106,7 @@ async function renderWeather() {
             const key =
                 `${x}/${y}`;
 
+
             const promise =
                 loadScalarTile(
                     activeField,
@@ -1804,12 +2115,15 @@ async function renderWeather() {
                     y
                 ).then(
                     tile => {
+
                         requiredTiles.set(
                             key,
                             tile
                         );
+
                     }
                 );
+
 
             promises.push(
                 promise
@@ -1846,35 +2160,44 @@ async function renderWeather() {
                 zoom
             );
 
+
         const ty =
             latToTileY(
                 lat,
                 zoom
             );
 
+
         const px =
             tx *
             TILE_SIZE;
 
+
         const py =
             ty *
             TILE_SIZE;
+
 
         const x0 =
             Math.floor(
                 px
             );
 
+
         const y0 =
             Math.floor(
                 py
             );
 
+
         const fx =
-            px - x0;
+            px -
+            x0;
+
 
         const fy =
-            py - y0;
+            py -
+            y0;
 
 
         function getPixel(
@@ -1888,11 +2211,13 @@ async function renderWeather() {
                     TILE_SIZE
                 );
 
+
             const tileY =
                 Math.floor(
                     gy /
                     TILE_SIZE
                 );
+
 
             const localX =
                 (
@@ -1904,6 +2229,7 @@ async function renderWeather() {
                 ) %
                 TILE_SIZE;
 
+
             const localY =
                 (
                     (
@@ -1914,14 +2240,17 @@ async function renderWeather() {
                 ) %
                 TILE_SIZE;
 
+
             const tile =
                 requiredTiles.get(
                     `${tileX}/${tileY}`
                 );
 
+
             if (!tile) {
                 return null;
             }
+
 
             return decodeScalarValue(
                 activeField,
@@ -1941,17 +2270,20 @@ async function renderWeather() {
                 y0
             );
 
+
         const v10 =
             getPixel(
                 x0 + 1,
                 y0
             );
 
+
         const v01 =
             getPixel(
                 x0,
                 y0 + 1
             );
+
 
         const v11 =
             getPixel(
@@ -1977,6 +2309,7 @@ async function renderWeather() {
             (1 - fx) +
             v10 *
             fx;
+
 
         const bottom =
             v01 *
@@ -2026,12 +2359,10 @@ async function renderWeather() {
 
 
             const lngLat =
-                map.unproject(
-                    [
-                        screenX,
-                        screenY
-                    ]
-                );
+                map.unproject([
+                    screenX,
+                    screenY
+                ]);
 
 
             const value =
@@ -2055,15 +2386,18 @@ async function renderWeather() {
                 ] =
                     color.r;
 
+
                 pixels[
                     pixelIndex + 1
                 ] =
                     color.g;
 
+
                 pixels[
                     pixelIndex + 2
                 ] =
                     color.b;
+
 
                 pixels[
                     pixelIndex + 3
@@ -2081,7 +2415,8 @@ async function renderWeather() {
             }
 
 
-            pixelIndex += 4;
+            pixelIndex +=
+                4;
 
         }
 
@@ -2111,6 +2446,12 @@ async function renderWeather() {
     );
 
 
+    /*
+     * At renderScale 1.0 there is no half-resolution image being
+     * stretched to the map dimensions. Numerical bilinear interpolation
+     * above controls the actual field smoothing.
+     */
+
     weatherCtx.imageSmoothingEnabled =
         true;
 
@@ -2122,6 +2463,14 @@ async function renderWeather() {
         width,
         height
     );
+
+
+    weatherCanvas.style.transform =
+        "none";
+
+
+    weatherCanvas.style.transformOrigin =
+        "0 0";
 
 
     updateLegend();
@@ -2138,21 +2487,26 @@ function getBarbSpacing() {
     const zoom =
         map.getZoom();
 
+
     if (zoom < 4.5) {
         return 60;
     }
+
 
     if (zoom < 5.5) {
         return 54;
     }
 
+
     if (zoom < 6.5) {
         return 48;
     }
 
+
     if (zoom < 7.5) {
         return 42;
     }
+
 
     return 38;
 
@@ -2180,7 +2534,9 @@ function drawWindBarb(
 
 
     if (
-        !Number.isFinite(speed)
+        !Number.isFinite(
+            speed
+        )
     ) {
 
         return;
@@ -2192,9 +2548,11 @@ function drawWindBarb(
         options.color ||
         "#000000";
 
+
     const staffLength =
         options.staffLength ||
         23;
+
 
     const lineWidth =
         options.lineWidth ||
@@ -2203,24 +2561,29 @@ function drawWindBarb(
 
     ctx.save();
 
+
     ctx.strokeStyle =
         color;
+
 
     ctx.fillStyle =
         color;
 
+
     ctx.lineWidth =
         lineWidth;
 
+
     ctx.lineCap =
         "round";
+
 
     ctx.lineJoin =
         "round";
 
 
     /*
-     * Calm / near calm.
+     * Calm wind.
      */
 
     if (
@@ -2229,17 +2592,21 @@ function drawWindBarb(
 
         ctx.beginPath();
 
+
         ctx.arc(
             x,
             y,
-            3.0,
+            3,
             0,
             Math.PI * 2
         );
 
+
         ctx.stroke();
 
+
         ctx.restore();
+
 
         return;
 
@@ -2247,22 +2614,19 @@ function drawWindBarb(
 
 
     /*
-     * Meteorological barb:
-     *
      * u > 0 = wind toward east
      * v > 0 = wind toward north
      *
-     * The shaft extends toward the direction the wind is FROM.
+     * The barb shaft extends toward the direction from which
+     * the wind is coming.
      *
-     * Canvas Y increases downward, so:
-     *
-     * shaft screen vector =
-     *      (-u, +v)
+     * Canvas Y increases downward.
      */
 
     const shaftX =
         -u /
         speed;
+
 
     const shaftY =
         v /
@@ -2274,6 +2638,7 @@ function drawWindBarb(
         shaftX *
         staffLength;
 
+
     const endY =
         y +
         shaftY *
@@ -2282,15 +2647,18 @@ function drawWindBarb(
 
     ctx.beginPath();
 
+
     ctx.moveTo(
         x,
         y
     );
 
+
     ctx.lineTo(
         endX,
         endY
     );
+
 
     ctx.stroke();
 
@@ -2312,6 +2680,7 @@ function drawWindBarb(
     ) {
 
         ctx.restore();
+
         return;
 
     }
@@ -2322,6 +2691,7 @@ function drawWindBarb(
             rounded /
             50
         );
+
 
     rounded -=
         flags50 *
@@ -2334,6 +2704,7 @@ function drawWindBarb(
             10
         );
 
+
     rounded -=
         feathers10 *
         10;
@@ -2343,12 +2714,9 @@ function drawWindBarb(
         rounded >= 5;
 
 
-    /*
-     * Unit vector perpendicular to the shaft.
-     */
-
     const perpX =
         -shaftY;
+
 
     const perpY =
         shaftX;
@@ -2357,8 +2725,10 @@ function drawWindBarb(
     const featherLength =
         9;
 
+
     const halfFeatherLength =
         5;
+
 
     const spacing =
         4.1;
@@ -2369,7 +2739,7 @@ function drawWindBarb(
 
 
     /*
-     * 50 kt triangular flags
+     * 50 kt flags.
      */
 
     for (
@@ -2383,6 +2753,7 @@ function drawWindBarb(
             shaftX *
             distanceFromTip;
 
+
         const ay =
             endY -
             shaftY *
@@ -2395,6 +2766,7 @@ function drawWindBarb(
             featherLength +
             shaftX *
             spacing;
+
 
         const by =
             ay +
@@ -2411,6 +2783,7 @@ function drawWindBarb(
                 spacing * 2
             );
 
+
         const cy =
             ay -
             shaftY *
@@ -2421,34 +2794,40 @@ function drawWindBarb(
 
         ctx.beginPath();
 
+
         ctx.moveTo(
             ax,
             ay
         );
+
 
         ctx.lineTo(
             bx,
             by
         );
 
+
         ctx.lineTo(
             cx,
             cy
         );
 
+
         ctx.closePath();
+
 
         ctx.fill();
 
 
         distanceFromTip +=
-            spacing * 2.7;
+            spacing *
+            2.7;
 
     }
 
 
     /*
-     * 10 kt full feathers
+     * 10 kt feathers.
      */
 
     for (
@@ -2462,6 +2841,7 @@ function drawWindBarb(
             shaftX *
             distanceFromTip;
 
+
         const ay =
             endY -
             shaftY *
@@ -2475,6 +2855,7 @@ function drawWindBarb(
             shaftX *
             3;
 
+
         const by =
             ay +
             perpY *
@@ -2485,15 +2866,18 @@ function drawWindBarb(
 
         ctx.beginPath();
 
+
         ctx.moveTo(
             ax,
             ay
         );
 
+
         ctx.lineTo(
             bx,
             by
         );
+
 
         ctx.stroke();
 
@@ -2505,14 +2889,12 @@ function drawWindBarb(
 
 
     /*
-     * 5 kt half feather
+     * 5 kt half feather.
      */
 
-    if (half5) {
-
-        /*
-         * Add a little separation if this is the only feather.
-         */
+    if (
+        half5
+    ) {
 
         if (
             flags50 === 0 &&
@@ -2521,6 +2903,7 @@ function drawWindBarb(
 
             distanceFromTip +=
                 spacing;
+
         }
 
 
@@ -2528,6 +2911,7 @@ function drawWindBarb(
             endX -
             shaftX *
             distanceFromTip;
+
 
         const ay =
             endY -
@@ -2542,6 +2926,7 @@ function drawWindBarb(
             shaftX *
             1.5;
 
+
         const by =
             ay +
             perpY *
@@ -2552,15 +2937,18 @@ function drawWindBarb(
 
         ctx.beginPath();
 
+
         ctx.moveTo(
             ax,
             ay
         );
 
+
         ctx.lineTo(
             bx,
             by
         );
+
 
         ctx.stroke();
 
@@ -2586,34 +2974,35 @@ async function renderVectorField(
     const rect =
         mapWrapper.getBoundingClientRect();
 
+
     const width =
         rect.width;
+
 
     const height =
         rect.height;
 
+
     const spacing =
         getBarbSpacing();
+
 
     const zoom =
         getDataZoom();
 
 
-    /*
-     * When both vector layers are enabled, offset the second grid slightly
-     * so the two barb sets do not sit directly on top of one another.
-     */
-
     const startX =
         spacing / 2 +
         xOffset;
+
 
     const startY =
         spacing / 2 +
         yOffset;
 
 
-    const samples = [];
+    const samples =
+        [];
 
 
     for (
@@ -2629,19 +3018,23 @@ async function renderVectorField(
         ) {
 
             const lngLat =
-                map.unproject(
-                    [
-                        x,
-                        y
-                    ]
-                );
+                map.unproject([
+                    x,
+                    y
+                ]);
 
 
             samples.push({
+
                 x,
                 y,
-                lon: lngLat.lng,
-                lat: lngLat.lat
+
+                lon:
+                    lngLat.lng,
+
+                lat:
+                    lngLat.lat
+
             });
 
         }
@@ -2653,6 +3046,7 @@ async function renderVectorField(
         await Promise.all(
 
             samples.map(
+
                 async sample => {
 
                     const vector =
@@ -2663,12 +3057,14 @@ async function renderVectorField(
                             zoom
                         );
 
+
                     return {
                         ...sample,
                         vector
                     };
 
                 }
+
             )
 
         );
@@ -2690,22 +3086,36 @@ async function renderVectorField(
         results
     ) {
 
-        if (!result.vector) {
+        if (
+            !result.vector
+        ) {
+
             continue;
+
         }
 
 
         drawWindBarb(
+
             vectorCtx,
+
             result.x,
             result.y,
+
             result.vector.u,
             result.vector.v,
+
             {
-                color: "#000000",
-                staffLength: 23,
-                lineWidth: 1.2
+                color:
+                    "#000000",
+
+                staffLength:
+                    23,
+
+                lineWidth:
+                    1.2
             }
+
         );
 
     }
@@ -2723,6 +3133,14 @@ async function renderVectors() {
         ++vectorRenderGeneration;
 
 
+    vectorCanvas.style.transform =
+        "none";
+
+
+    vectorCanvas.style.transformOrigin =
+        "0 0";
+
+
     prepareContext(
         vectorCanvas,
         vectorCtx
@@ -2734,7 +3152,8 @@ async function renderVectors() {
     }
 
 
-    const promises = [];
+    const promises =
+        [];
 
 
     const bothEnabled =
@@ -2749,10 +3168,19 @@ async function renderVectors() {
         promises.push(
 
             renderVectorField(
+
                 "sfc_wind",
+
                 generation,
-                bothEnabled ? -7 : 0,
-                bothEnabled ? -7 : 0
+
+                bothEnabled ?
+                    -7 :
+                    0,
+
+                bothEnabled ?
+                    -7 :
+                    0
+
             )
 
         );
@@ -2767,10 +3195,19 @@ async function renderVectors() {
         promises.push(
 
             renderVectorField(
+
                 "srwind_4_6km",
+
                 generation,
-                bothEnabled ? 7 : 0,
-                bothEnabled ? 7 : 0
+
+                bothEnabled ?
+                    7 :
+                    0,
+
+                bothEnabled ?
+                    7 :
+                    0
+
             )
 
         );
@@ -2795,22 +3232,22 @@ async function loadGeography() {
         "Loading geography...";
 
 
-    /*
-     * Counties / states
-     */
-
     const topologyResponse =
         await fetch(
             "data/counties-10m.json"
         );
 
-    if (!topologyResponse.ok) {
+
+    if (
+        !topologyResponse.ok
+    ) {
 
         throw new Error(
             "Could not load data/counties-10m.json"
         );
 
     }
+
 
     const topology =
         await topologyResponse.json();
@@ -2825,6 +3262,7 @@ async function loadGeography() {
                 topology,
                 topology.objects.counties
             );
+
 
         countyFeatures =
             counties.features;
@@ -2842,15 +3280,12 @@ async function loadGeography() {
                 topology.objects.states
             );
 
+
         stateFeatures =
             states.features;
 
     }
 
-
-    /*
-     * Cities
-     */
 
     try {
 
@@ -2859,6 +3294,7 @@ async function loadGeography() {
                 "data/cities.geojson"
             );
 
+
         if (
             cityResponse.ok
         ) {
@@ -2866,13 +3302,17 @@ async function loadGeography() {
             const cities =
                 await cityResponse.json();
 
+
             cityFeatures =
-                cities.features || [];
+                cities.features ||
+                [];
 
         }
 
     }
-    catch (error) {
+    catch (
+        error
+    ) {
 
         console.warn(
             "Cities could not be loaded:",
@@ -2886,9 +3326,11 @@ async function loadGeography() {
         `Counties: ${countyFeatures.length}`
     );
 
+
     console.log(
         `States: ${stateFeatures.length}`
     );
+
 
     console.log(
         `Cities: ${cityFeatures.length}`
@@ -2927,22 +3369,29 @@ function drawLineCoordinates(
     ) {
 
         const point =
-            map.project(
-                {
-                    lng: coordinate[0],
-                    lat: coordinate[1]
-                }
-            );
+            map.project({
+
+                lng:
+                    coordinate[0],
+
+                lat:
+                    coordinate[1]
+
+            });
 
 
-        if (!started) {
+        if (
+            !started
+        ) {
 
             ctx.moveTo(
                 point.x,
                 point.y
             );
 
-            started = true;
+
+            started =
+                true;
 
         }
         else {
@@ -2968,8 +3417,12 @@ function drawGeometry(
     ctx
 ) {
 
-    if (!geometry) {
+    if (
+        !geometry
+    ) {
+
         return;
+
     }
 
 
@@ -3018,6 +3471,7 @@ function drawGeometry(
                     ctx
                 );
 
+
                 ctx.closePath();
 
             }
@@ -3044,6 +3498,7 @@ function drawGeometry(
                         ctx
                     );
 
+
                     ctx.closePath();
 
                 }
@@ -3066,7 +3521,8 @@ function getCityClass(
 ) {
 
     const properties =
-        feature.properties || {};
+        feature.properties ||
+        {};
 
 
     const value =
@@ -3108,7 +3564,8 @@ function getCityName(
 ) {
 
     const properties =
-        feature.properties || {};
+        feature.properties ||
+        {};
 
 
     return (
@@ -3133,10 +3590,12 @@ function shouldDrawCity(
     const zoom =
         map.getZoom();
 
+
     const cityClass =
         getCityClass(
             feature
         );
+
 
     const name =
         getCityName(
@@ -3144,16 +3603,14 @@ function shouldDrawCity(
         );
 
 
-    /*
-     * Promote North Platte to regional visibility.
-     */
-
     if (
         name.toLowerCase() ===
         "north platte"
     ) {
 
-        return zoom >= 4;
+        return (
+            zoom >= 4
+        );
 
     }
 
@@ -3162,7 +3619,9 @@ function shouldDrawCity(
         cityClass <= 2
     ) {
 
-        return zoom >= 2;
+        return (
+            zoom >= 2
+        );
 
     }
 
@@ -3171,7 +3630,9 @@ function shouldDrawCity(
         cityClass === 3
     ) {
 
-        return zoom >= 4;
+        return (
+            zoom >= 4
+        );
 
     }
 
@@ -3180,12 +3641,16 @@ function shouldDrawCity(
         cityClass === 4
     ) {
 
-        return zoom >= 5;
+        return (
+            zoom >= 5
+        );
 
     }
 
 
-    return zoom >= 6;
+    return (
+        zoom >= 6
+    );
 
 }
 
@@ -3196,8 +3661,12 @@ function shouldDrawCity(
 
 function drawCities() {
 
-    if (!citiesEnabled) {
+    if (
+        !citiesEnabled
+    ) {
+
         return;
+
     }
 
 
@@ -3205,22 +3674,31 @@ function drawCities() {
 
 
     geographyCtx.font =
-        '11px Arial, Helvetica, sans-serif';
+        "11px Arial, Helvetica, sans-serif";
+
 
     geographyCtx.textAlign =
         "center";
 
+
     geographyCtx.textBaseline =
         "middle";
+
 
     geographyCtx.lineWidth =
         3;
 
+
     geographyCtx.strokeStyle =
         "rgba(255,255,255,0.95)";
 
+
     geographyCtx.fillStyle =
         "#222222";
+
+
+    const rect =
+        mapWrapper.getBoundingClientRect();
 
 
     for (
@@ -3242,7 +3720,8 @@ function drawCities() {
 
         if (
             !feature.geometry ||
-            feature.geometry.type !== "Point"
+            feature.geometry.type !==
+            "Point"
         ) {
 
             continue;
@@ -3266,16 +3745,15 @@ function drawCities() {
 
 
         const point =
-            map.project(
-                {
-                    lng: coordinate[0],
-                    lat: coordinate[1]
-                }
-            );
+            map.project({
 
+                lng:
+                    coordinate[0],
 
-        const rect =
-            mapWrapper.getBoundingClientRect();
+                lat:
+                    coordinate[1]
+
+            });
 
 
         if (
@@ -3324,12 +3802,14 @@ function renderGeography() {
 
 
     /*
-     * Counties
+     * Counties.
      */
 
     geographyCtx.save();
 
+
     geographyCtx.beginPath();
+
 
     for (
         const feature
@@ -3344,24 +3824,30 @@ function renderGeography() {
 
     }
 
+
     geographyCtx.strokeStyle =
         "rgba(125,125,125,0.58)";
+
 
     geographyCtx.lineWidth =
         0.55;
 
+
     geographyCtx.stroke();
+
 
     geographyCtx.restore();
 
 
     /*
-     * States
+     * States.
      */
 
     geographyCtx.save();
 
+
     geographyCtx.beginPath();
+
 
     for (
         const feature
@@ -3376,19 +3862,23 @@ function renderGeography() {
 
     }
 
+
     geographyCtx.strokeStyle =
         "rgba(45,45,45,0.92)";
+
 
     geographyCtx.lineWidth =
         1.35;
 
+
     geographyCtx.stroke();
+
 
     geographyCtx.restore();
 
 
     /*
-     * Cities
+     * Cities.
      */
 
     drawCities();
@@ -3403,11 +3893,13 @@ function renderGeography() {
 function updateLegend() {
 
     if (
-        activeField === "none"
+        activeField ===
+        "none"
     ) {
 
         legend.style.display =
             "none";
+
 
         return;
 
@@ -3420,10 +3912,13 @@ function updateLegend() {
         ];
 
 
-    if (!definition) {
+    if (
+        !definition
+    ) {
 
         legend.style.display =
             "none";
+
 
         return;
 
@@ -3450,12 +3945,14 @@ function updateLegend() {
             )
         );
 
+
     const height =
         17;
 
 
     legendCanvas.width =
         width;
+
 
     legendCanvas.height =
         height;
@@ -3474,13 +3971,15 @@ function updateLegend() {
 
 
     if (
-        definition.type === "cape"
+        definition.type ===
+        "cape"
     ) {
 
-        const minValue =
+        const minimum =
             0;
 
-        const maxValue =
+
+        const maximum =
             6000;
 
 
@@ -3491,7 +3990,7 @@ function updateLegend() {
         ) {
 
             const value =
-                minValue +
+                minimum +
                 (
                     x /
                     Math.max(
@@ -3500,8 +3999,8 @@ function updateLegend() {
                     )
                 ) *
                 (
-                    maxValue -
-                    minValue
+                    maximum -
+                    minimum
                 );
 
 
@@ -3514,10 +4013,13 @@ function updateLegend() {
                 );
 
 
-            if (color) {
+            if (
+                color
+            ) {
 
                 legendCtx.fillStyle =
                     `rgb(${color.r},${color.g},${color.b})`;
+
 
                 legendCtx.fillRect(
                     x,
@@ -3531,30 +4033,28 @@ function updateLegend() {
         }
 
 
-        const ticks = [
-            0,
-            1000,
-            2000,
-            3000,
-            4000,
-            5000,
-            6000
-        ];
-
-
         addLegendLabels(
-            ticks,
-            minValue,
-            maxValue
+            [
+                0,
+                1000,
+                2000,
+                3000,
+                4000,
+                5000,
+                6000
+            ],
+            minimum,
+            maximum
         );
 
     }
     else {
 
-        const minValue =
+        const minimum =
             -40;
 
-        const maxValue =
+
+        const maximum =
             90;
 
 
@@ -3565,7 +4065,7 @@ function updateLegend() {
         ) {
 
             const value =
-                minValue +
+                minimum +
                 (
                     x /
                     Math.max(
@@ -3574,8 +4074,8 @@ function updateLegend() {
                     )
                 ) *
                 (
-                    maxValue -
-                    minValue
+                    maximum -
+                    minimum
                 );
 
 
@@ -3585,10 +4085,13 @@ function updateLegend() {
                 );
 
 
-            if (color) {
+            if (
+                color
+            ) {
 
                 legendCtx.fillStyle =
                     `rgb(${color.r},${color.g},${color.b})`;
+
 
                 legendCtx.fillRect(
                     x,
@@ -3602,22 +4105,19 @@ function updateLegend() {
         }
 
 
-        const ticks = [
-            -40,
-            -20,
-            0,
-            20,
-            40,
-            60,
-            80,
-            90
-        ];
-
-
         addLegendLabels(
-            ticks,
-            minValue,
-            maxValue
+            [
+                -40,
+                -20,
+                0,
+                20,
+                40,
+                60,
+                80,
+                90
+            ],
+            minimum,
+            maximum
         );
 
     }
@@ -3646,8 +4146,10 @@ function addLegendLabels(
                 "span"
             );
 
+
         label.className =
             "legend-label";
+
 
         label.textContent =
             value;
@@ -3714,14 +4216,22 @@ async function updateCursor(
 
 
     if (
-        activeField === "none"
+        activeField ===
+        "none"
     ) {
 
         cursorField.textContent =
             "No filled field";
 
+
         cursorValue.textContent =
             "--";
+
+
+        cursorLocation.textContent =
+            `${event.lngLat.lat.toFixed(3)}°, ` +
+            `${event.lngLat.lng.toFixed(3)}°`;
+
 
         return;
 
@@ -3809,6 +4319,7 @@ function fitSector(
             sectorKey
         ];
 
+
     if (!sector) {
         return;
     }
@@ -3831,22 +4342,44 @@ function fitSector(
 
 async function renderAll() {
 
+    resetNumericalCanvasTransforms();
+
+
     renderGeography();
+
 
     await Promise.all([
         renderWeather(),
         renderVectors()
     ]);
 
+
+    /*
+     * Both numerical canvases now correspond to this camera.
+     */
+
+    captureCanvasCamera();
+
 }
 
 
 /* =========================================================================================
-   MAP EVENTS
+   MAP MOVEMENT
    ========================================================================================= */
 
-let moveEndTimer =
-    null;
+map.on(
+    "movestart",
+    () => {
+
+        /*
+         * Save the geographic viewport represented by the currently
+         * displayed numerical canvases.
+         */
+
+        captureCanvasCamera();
+
+    }
+);
 
 
 map.on(
@@ -3854,9 +4387,15 @@ map.on(
     () => {
 
         /*
-         * Geography is cheap enough to redraw during movement.
-         *
-         * Numerical fields are redrawn once movement ends.
+         * Keep CAPE/dewpoint and wind barbs geographically attached
+         * to the moving MapLibre camera.
+         */
+
+        transformNumericalCanvases();
+
+
+        /*
+         * Geography is inexpensive enough to redraw continuously.
          */
 
         renderGeography();
@@ -3876,12 +4415,49 @@ map.on(
 
         moveEndTimer =
             setTimeout(
-                () => {
 
-                    renderAll();
+                async () => {
+
+                    /*
+                     * Cancel older asynchronous render operations.
+                     */
+
+                    scalarRenderGeneration++;
+
+                    vectorRenderGeneration++;
+
+
+                    /*
+                     * Remove temporary camera transforms.
+                     */
+
+                    resetNumericalCanvasTransforms();
+
+
+                    /*
+                     * Generate a fresh full-resolution numerical rendering
+                     * for the new viewport.
+                     */
+
+                    await Promise.all([
+                        renderWeather(),
+                        renderVectors()
+                    ]);
+
+
+                    renderGeography();
+
+
+                    /*
+                     * Newly rendered canvases now represent this viewport.
+                     */
+
+                    captureCanvasCamera();
 
                 },
+
                 100
+
             );
 
     }
@@ -3898,7 +4474,11 @@ map.on(
     "resize",
     () => {
 
+        resetNumericalCanvasTransforms();
+
+
         resizeAllCanvases();
+
 
         renderAll();
 
@@ -3912,6 +4492,7 @@ map.on(
 
 fieldSelect.addEventListener(
     "change",
+
     async event => {
 
         activeField =
@@ -3930,7 +4511,13 @@ fieldSelect.addEventListener(
         updateLegend();
 
 
+        resetNumericalCanvasTransforms();
+
+
         await renderWeather();
+
+
+        captureCanvasCamera();
 
     }
 );
@@ -3942,6 +4529,7 @@ fieldSelect.addEventListener(
 
 sectorSelect.addEventListener(
     "change",
+
     event => {
 
         fitSector(
@@ -3958,10 +4546,12 @@ sectorSelect.addEventListener(
 
 citiesToggle.addEventListener(
     "change",
+
     event => {
 
         citiesEnabled =
             event.target.checked;
+
 
         renderGeography();
 
@@ -3975,29 +4565,51 @@ citiesToggle.addEventListener(
 
 surfaceWindToggle.addEventListener(
     "change",
+
     async event => {
 
         activeOverlays.surfaceWind =
             event.target.checked;
 
+
+        vectorRenderGeneration++;
+
+
+        resetNumericalCanvasTransforms();
+
+
         await renderVectors();
+
+
+        captureCanvasCamera();
 
     }
 );
 
 
 /* =========================================================================================
-   4-6 KM SR WIND TOGGLE
+   4–6 KM SR WIND TOGGLE
    ========================================================================================= */
 
 srWind46Toggle.addEventListener(
     "change",
+
     async event => {
 
         activeOverlays.srWind46 =
             event.target.checked;
 
+
+        vectorRenderGeneration++;
+
+
+        resetNumericalCanvasTransforms();
+
+
         await renderVectors();
+
+
+        captureCanvasCamera();
 
     }
 );
@@ -4009,11 +4621,17 @@ srWind46Toggle.addEventListener(
 
 window.addEventListener(
     "resize",
+
     () => {
+
+        resetNumericalCanvasTransforms();
+
 
         map.resize();
 
+
         resizeAllCanvases();
+
 
         renderAll();
 
@@ -4042,15 +4660,25 @@ async function initialize() {
         resizeAllCanvases();
 
 
+        /*
+         * Cities hidden initially.
+         */
+
         citiesEnabled =
             false;
+
 
         citiesToggle.checked =
             false;
 
 
+        /*
+         * Wind overlays hidden initially.
+         */
+
         activeOverlays.surfaceWind =
             false;
+
 
         activeOverlays.srWind46 =
             false;
@@ -4059,9 +4687,14 @@ async function initialize() {
         surfaceWindToggle.checked =
             false;
 
+
         srWind46Toggle.checked =
             false;
 
+
+        /*
+         * Initial filled field from HTML dropdown.
+         */
 
         activeField =
             fieldSelect.value;
@@ -4071,7 +4704,7 @@ async function initialize() {
 
 
         /*
-         * Initial LBF view
+         * Initial LBF sector.
          */
 
         map.fitBounds(
@@ -4084,38 +4717,54 @@ async function initialize() {
 
 
         /*
-         * Give MapLibre one frame to settle after fitBounds.
+         * Give MapLibre two animation frames to settle before the
+         * first full-resolution numerical rendering.
          */
 
         requestAnimationFrame(
             () => {
 
                 requestAnimationFrame(
+
                     async () => {
+
+                        resetNumericalCanvasTransforms();
+
 
                         resizeAllCanvases();
 
+
                         renderGeography();
 
-                        await renderWeather();
 
-                        await renderVectors();
+                        await Promise.all([
+                            renderWeather(),
+                            renderVectors()
+                        ]);
+
+
+                        captureCanvasCamera();
+
 
                         statusElement.textContent =
                             `Ready — ${currentRun}`;
 
                     }
+
                 );
 
             }
         );
 
     }
-    catch (error) {
+    catch (
+        error
+    ) {
 
         console.error(
             error
         );
+
 
         statusElement.textContent =
             `Error: ${error.message}`;
@@ -4126,7 +4775,7 @@ async function initialize() {
 
 
 /* =========================================================================================
-   START AFTER MAP LOAD
+   START
    ========================================================================================= */
 
 map.on(
