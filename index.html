@@ -1,337 +1,235 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
+  <meta charset="UTF-8">
 
-    <meta charset="UTF-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
+  <title>SPCOA Mesoanalysis</title>
 
-    <title>SPCOA Mesoanalysis</title>
+  <!-- MapLibre -->
+  <link
+    href="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.css"
+    rel="stylesheet"
+  >
 
-
-    <!-- ===================================================
-         MAPLIBRE GL JS
-         Version 5.11.0
-    ==================================================== -->
-
-    <link
-        href="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.css"
-        rel="stylesheet"
-    >
-
-
-    <!-- ===================================================
-         SITE CSS
-    ==================================================== -->
-
-    <link
-        rel="stylesheet"
-        href="style.css"
-    >
-
+  <!-- Site CSS -->
+  <link rel="stylesheet" href="style.css?v=20260921-sbcape1">
 </head>
-
 
 <body>
 
+  <!-- =======================================================
+       HEADER
+       ======================================================= -->
+  <header class="site-header">
+    <div class="header-text">
+      <h1>SPCOA Mesoanalysis</h1>
+      <p>Interactive Surface and Mesoanalysis Viewer</p>
+    </div>
+  </header>
 
-    <!-- ===================================================
-         HEADER
-    ==================================================== -->
 
-    <header class="site-header">
+  <!-- =======================================================
+       MAIN APPLICATION
+       ======================================================= -->
+  <main class="app">
 
-        <div class="header-text">
+    <!-- =====================================================
+         SIDEBAR
+         ===================================================== -->
+    <aside class="sidebar">
 
-            <h1>
-                SPCOA Mesoanalysis
-            </h1>
+      <!-- =========================
+           SECTOR
+           ========================= -->
+      <section class="sidebar-section">
+        <h2>Sector</h2>
 
-            <p>
-                Interactive Surface and Mesoanalysis Viewer
-            </p>
+        <select id="sector-select">
+          <option value="lbf">LBF CWA</option>
+          <option value="regional">LBF Regional</option>
+          <option value="nebraska">Nebraska</option>
+          <option value="northern_plains">Northern Plains</option>
+          <option value="central_plains">Central Plains</option>
+          <option value="southern_plains">Southern Plains</option>
+          <option value="high_plains">High Plains</option>
+          <option value="midwest">Midwest</option>
+          <option value="rockies">Rockies</option>
+          <option value="conus">CONUS</option>
+        </select>
+      </section>
 
+
+      <!-- =========================
+           MAP FEATURES
+           ========================= -->
+      <section class="sidebar-section">
+        <h2>Map Features</h2>
+
+        <label class="checkbox-row">
+          <input
+            id="states-toggle"
+            type="checkbox"
+            checked
+          >
+          <span>States</span>
+        </label>
+
+        <label class="checkbox-row">
+          <input
+            id="counties-toggle"
+            type="checkbox"
+            checked
+          >
+          <span>Counties</span>
+        </label>
+
+        <label class="checkbox-row">
+          <input
+            id="cwa-toggle"
+            type="checkbox"
+            disabled
+          >
+          <span>CWA Boundaries</span>
+        </label>
+
+        <label class="checkbox-row">
+          <input
+            id="cities-toggle"
+            type="checkbox"
+          >
+          <span>Cities</span>
+        </label>
+
+        <label class="checkbox-row">
+          <input
+            id="highways-toggle"
+            type="checkbox"
+            disabled
+          >
+          <span>Highways</span>
+        </label>
+      </section>
+
+
+      <!-- =========================
+           CWA
+           ========================= -->
+      <section class="sidebar-section">
+        <h2>CWA</h2>
+
+        <select id="cwa-select" disabled>
+          <option>Coming Later</option>
+        </select>
+
+        <p class="help-text">
+          CWA boundary support will be added later.
+        </p>
+      </section>
+
+
+      <!-- =========================
+           SPCOA FIELDS
+           ========================= -->
+      <section class="sidebar-section">
+        <h2>SPCOA Fields</h2>
+
+        <label for="field-select">Field</label>
+
+        <select id="field-select">
+          <option value="none">None</option>
+          <option value="sbcape">Surface-Based CAPE</option>
+        </select>
+
+        <div
+          id="field-info"
+          class="field-info"
+          style="display:none;"
+        >
+          <div id="field-name">
+            Surface-Based CAPE
+          </div>
+
+          <div id="field-time"></div>
+        </div>
+      </section>
+
+    </aside>
+
+
+    <!-- =====================================================
+         MAP
+         ===================================================== -->
+    <section class="map-wrapper">
+
+      <div id="map"></div>
+
+      <!-- ===============================================
+           WEATHER LEGEND
+           =============================================== -->
+      <div
+        id="weather-legend"
+        class="weather-legend"
+        style="display:none;"
+      >
+
+        <div
+          id="legend-title"
+          class="legend-title"
+        >
+          Surface-Based CAPE
         </div>
 
-    </header>
-
-
-    <!-- ===================================================
-         APPLICATION
-    ==================================================== -->
-
-    <main class="app">
-
-
-        <!-- ===============================================
-             SIDEBAR
-        ================================================ -->
-
-        <aside class="sidebar">
-
-
-            <!-- ===========================================
-                 SECTOR
-            ============================================ -->
-
-            <section class="sidebar-section">
-
-                <h2>
-                    Sector
-                </h2>
-
-
-                <select id="sector-select">
-
-                    <option value="lbf">
-                        LBF CWA
-                    </option>
-
-                    <option value="regional">
-                        LBF Regional
-                    </option>
-
-                    <option value="nebraska">
-                        Nebraska
-                    </option>
-
-                    <option value="northern_plains">
-                        Northern Plains
-                    </option>
-
-                    <option value="central_plains">
-                        Central Plains
-                    </option>
-
-                    <option value="southern_plains">
-                        Southern Plains
-                    </option>
-
-                    <option value="high_plains">
-                        High Plains
-                    </option>
-
-                    <option value="midwest">
-                        Midwest
-                    </option>
-
-                    <option value="rockies">
-                        Rockies
-                    </option>
-
-                    <option value="conus">
-                        CONUS
-                    </option>
-
-                </select>
-
-            </section>
-
-
-            <!-- ===========================================
-                 MAP FEATURES
-            ============================================ -->
-
-            <section class="sidebar-section">
-
-                <h2>
-                    Map Features
-                </h2>
-
-
-                <!-- STATES -->
-
-                <label class="checkbox-row">
-
-                    <input
-                        id="states-toggle"
-                        type="checkbox"
-                        checked
-                    >
-
-                    <span>
-                        States
-                    </span>
-
-                </label>
-
-
-                <!-- COUNTIES -->
-
-                <label class="checkbox-row">
-
-                    <input
-                        id="counties-toggle"
-                        type="checkbox"
-                        checked
-                    >
-
-                    <span>
-                        Counties
-                    </span>
-
-                </label>
-
-
-                <!-- CWA BOUNDARIES -->
-
-                <label class="checkbox-row">
-
-                    <input
-                        id="cwa-toggle"
-                        type="checkbox"
-                        disabled
-                    >
-
-                    <span>
-                        CWA Boundaries
-                    </span>
-
-                </label>
-
-
-                <!-- CITIES
-                     
-                     Unchecked by default.
-                -->
-
-                <label class="checkbox-row">
-
-                    <input
-                        id="cities-toggle"
-                        type="checkbox"
-                    >
-
-                    <span>
-                        Cities
-                    </span>
-
-                </label>
-
-
-                <!-- HIGHWAYS -->
-
-                <label class="checkbox-row">
-
-                    <input
-                        id="highways-toggle"
-                        type="checkbox"
-                        disabled
-                    >
-
-                    <span>
-                        Highways
-                    </span>
-
-                </label>
-
-            </section>
-
-
-            <!-- ===========================================
-                 CWA
-            ============================================ -->
-
-            <section class="sidebar-section">
-
-                <h2>
-                    CWA
-                </h2>
-
-
-                <select
-                    id="cwa-select"
-                    disabled
-                >
-
-                    <option>
-                        Coming Later
-                    </option>
-
-                </select>
-
-
-                <p class="help-text">
-
-                    CWA boundaries and office selection
-                    will be added later.
-
-                </p>
-
-            </section>
-
-
-            <!-- ===========================================
-                 SPCOA FIELDS
-            ============================================ -->
-
-            <section
-                class="sidebar-section weather-placeholder"
-            >
-
-                <h2>
-                    SPCOA Fields
-                </h2>
-
-
-                <p>
-
-                    Weather parameters will be added after
-                    the geographic map is complete.
-
-                </p>
-
-            </section>
-
-
-        </aside>
-
-
-        <!-- ===============================================
-             MAP
-        ================================================ -->
-
-        <section class="map-wrapper">
-
-            <div id="map"></div>
-
-        </section>
-
-
-    </main>
-
-
-    <!-- ===================================================
-         MAPLIBRE GL JS
-
-         Must load before app.js.
-    ==================================================== -->
-
-    <script
-        src="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.js">
-    </script>
-
-
-    <!-- ===================================================
-         TOPOJSON CLIENT
-    ==================================================== -->
-
-    <script
-        src="https://unpkg.com/topojson-client@3/dist/topojson-client.min.js">
-    </script>
-
-
-    <!-- ===================================================
-         APPLICATION JAVASCRIPT
-    ==================================================== -->
-
-    <script src="app.js?v=20260920-citiesoff1"></script>
-
+        <canvas
+          id="legend-canvas"
+          width="420"
+          height="18"
+        ></canvas>
+
+        <div class="legend-labels">
+          <span>0</span>
+          <span>1000</span>
+          <span>2000</span>
+          <span>3000</span>
+          <span>4000</span>
+          <span>5000</span>
+          <span>6000+</span>
+        </div>
+
+        <div
+          id="legend-units"
+          class="legend-units"
+        >
+          J/kg
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+
+  <!-- =======================================================
+       JAVASCRIPT LIBRARIES
+       ======================================================= -->
+
+  <!-- MapLibre -->
+  <script
+    src="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.js"
+  ></script>
+
+  <!-- TopoJSON -->
+  <script
+    src="https://unpkg.com/topojson-client@3"
+  ></script>
+
+  <!-- Main application -->
+  <script src="app.js?v=20260921-sbcape1"></script>
 
 </body>
-
 </html>
