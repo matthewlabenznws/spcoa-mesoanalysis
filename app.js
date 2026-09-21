@@ -2,12 +2,14 @@
 // SPCOA MESOANALYSIS
 // app.js
 //
+// MapLibre GL JS 6.10.0
+//
 // Current layers:
 //   - White background
 //   - County boundaries
 //   - State boundaries
 //   - Primary / Interstate roads
-//   - City labels
+//   - City labels using LOCAL browser fonts
 //
 // Future:
 //   - CWA boundaries
@@ -57,6 +59,40 @@ const sectors = {
 
 
 // ============================================================
+// MAP STYLE
+//
+// IMPORTANT:
+//
+// There is intentionally NO "glyphs" property.
+//
+// MapLibre 5.11+ can use fonts installed locally on the user's
+// system when glyphs is omitted.
+// ============================================================
+
+const mapStyle = {
+
+    version: 8,
+
+    sources: {},
+
+    layers: [
+
+        {
+            id: "background",
+
+            type: "background",
+
+            paint: {
+                "background-color": "#ffffff"
+            }
+        }
+
+    ]
+
+};
+
+
+// ============================================================
 // CREATE MAP
 // ============================================================
 
@@ -64,36 +100,7 @@ const map = new maplibregl.Map({
 
     container: "map",
 
-    style: {
-
-        version: 8,
-
-        // ====================================================
-        // GLYPHS
-        //
-        // Required for MapLibre text labels.
-        // ====================================================
-
-        glyphs:
-            "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
-
-        sources: {},
-
-        layers: [
-
-            {
-                id: "background",
-
-                type: "background",
-
-                paint: {
-                    "background-color": "#ffffff"
-                }
-            }
-
-        ]
-
-    },
+    style: mapStyle,
 
     center: [
         -100.75,
@@ -156,6 +163,7 @@ map.on("load", async () => {
 
 
     try {
+
 
         // ====================================================
         // LOAD COUNTY / STATE TOPOJSON
@@ -252,11 +260,14 @@ map.on("load", async () => {
 
             layout: {
 
-                visibility: "visible",
+                visibility:
+                    "visible",
 
-                "line-join": "round",
+                "line-join":
+                    "round",
 
-                "line-cap": "round"
+                "line-cap":
+                    "round"
 
             },
 
@@ -347,11 +358,14 @@ map.on("load", async () => {
 
             layout: {
 
-                visibility: "visible",
+                visibility:
+                    "visible",
 
-                "line-join": "round",
+                "line-join":
+                    "round",
 
-                "line-cap": "round"
+                "line-cap":
+                    "round"
 
             },
 
@@ -373,7 +387,8 @@ map.on("load", async () => {
 
                 ],
 
-                "line-opacity": 1.0
+                "line-opacity":
+                    1.0
 
             }
 
@@ -458,11 +473,14 @@ map.on("load", async () => {
 
             layout: {
 
-                visibility: "visible",
+                visibility:
+                    "visible",
 
-                "line-join": "round",
+                "line-join":
+                    "round",
 
-                "line-cap": "round"
+                "line-cap":
+                    "round"
 
             },
 
@@ -589,14 +607,20 @@ map.on("load", async () => {
 
 
         // ====================================================
-        // CITY FONT
-        // ============================================================
+        // LOCAL FONT STACK
+        //
+        // Because "glyphs" is omitted from the style,
+        // MapLibre interprets these as local browser/system
+        // font fallbacks.
+        // ====================================================
 
         const cityFont = [
 
-            "Open Sans Regular",
+            "Arial",
 
-            "Arial Unicode MS Regular"
+            "Helvetica",
+
+            "sans-serif"
 
         ];
 
@@ -646,19 +670,13 @@ map.on("load", async () => {
                 "text-size": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     2, 9,
-
                     4, 10,
-
                     6, 11,
-
                     8, 12,
-
                     10, 13
 
                 ],
@@ -741,17 +759,12 @@ map.on("load", async () => {
                 "text-size": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     4, 9,
-
                     5, 10,
-
                     7, 11,
-
                     9, 12
 
                 ],
@@ -834,17 +847,12 @@ map.on("load", async () => {
                 "text-size": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     5, 9,
-
                     6, 10,
-
                     8, 11,
-
                     10, 12
 
                 ],
@@ -927,17 +935,12 @@ map.on("load", async () => {
                 "text-size": [
 
                     "interpolate",
-
                     ["linear"],
-
                     ["zoom"],
 
                     6, 8,
-
                     7, 9,
-
                     9, 10,
-
                     11, 11
 
                 ],
@@ -1053,6 +1056,7 @@ map.on("load", async () => {
             );
 
         }
+
 
     }
 
