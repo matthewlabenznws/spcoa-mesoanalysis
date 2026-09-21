@@ -3,18 +3,23 @@
 /* ==========================================================
    SPCOA MESOANALYSIS
    app.js
-   Version: sbcape6
+   Version: sbcape7
 
-   Weather rendering architecture:
-   AWS .bin numerical XYZ tiles
-        ↓
-   Browser uint16 decoding
-        ↓
-   SBCAPE RGBA conversion
-        ↓
-   Direct HTML canvas overlay
+   Rendering order:
 
-   MapLibre is NOT used to render the weather raster.
+       geography overlay
+       -----------------
+       states / counties
+
+       weather overlay
+       -----------------
+       SBCAPE
+
+       MapLibre
+       -----------------
+       white background
+
+   Numerical SPCOA data remain uint16 XYZ .bin tiles.
    ========================================================== */
 
 
@@ -26,9 +31,7 @@ const S3_BASE_URL =
     "https://spcoa-mesoanalysis.s3.us-east-2.amazonaws.com/spcoa";
 
 const WEATHER_TILE_SIZE = 256;
-
 const WEATHER_NODATA = 65535;
-
 const SBCAPE_TRANSPARENT_BELOW = 100;
 
 
@@ -122,111 +125,53 @@ const sectors = {
 
 
 /* ==========================================================
-   SBCAPE COLOR SCALE
+   SBCAPE COLOR TABLE
    ========================================================== */
 
 const SBCAPE_BOUNDS = [
-    0, 100, 200, 300, 400, 500, 600, 700, 800, 900,
-    1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900,
-    2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900,
-    3000, 3100, 3200, 3300, 3400, 3500, 3600, 3700, 3800, 3900,
-    4000, 4100, 4200, 4300, 4400, 4500, 4600, 4700, 4800, 4900,
-    5000, 5100, 5200, 5300, 5400, 5500, 5600, 5700, 5800, 5900,
-    6000, 6500, 7000, 7500, 8000, 8500, 9000, 9500, 10000, 10500
+    0,100,200,300,400,500,600,700,800,900,
+    1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,
+    2000,2100,2200,2300,2400,2500,2600,2700,2800,2900,
+    3000,3100,3200,3300,3400,3500,3600,3700,3800,3900,
+    4000,4100,4200,4300,4400,4500,4600,4700,4800,4900,
+    5000,5100,5200,5300,5400,5500,5600,5700,5800,5900,
+    6000,6500,7000,7500,8000,8500,9000,9500,10000,10500
 ];
 
 
 const SBCAPE_COLORS = [
 
-    "#ffffff",
-    "#f0f0f0",
-    "#e1e1e1",
-    "#d2d2d2",
-    "#c3c3c3",
-    "#a5a5a5",
-    "#969696",
-    "#878787",
-    "#787878",
-    "#696969",
+    "#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3",
+    "#a5a5a5","#969696","#878787","#787878","#696969",
 
-    "#3b5269",
-    "#475f74",
-    "#546c7f",
-    "#60798a",
-    "#6d8695",
-    "#7993a1",
-    "#86a0ac",
-    "#92adb7",
-    "#9fbac2",
-    "#abc7ce",
+    "#3b5269","#475f74","#546c7f","#60798a","#6d8695",
+    "#7993a1","#86a0ac","#92adb7","#9fbac2","#abc7ce",
 
-    "#e6de99",
-    "#e4d289",
-    "#e3c679",
-    "#e1b96a",
-    "#dfae5a",
-    "#dfa24b",
-    "#dd963c",
-    "#dc8a2f",
-    "#da7e24",
-    "#d9731c",
+    "#e6de99","#e4d289","#e3c679","#e1b96a","#dfae5a",
+    "#dfa24b","#dd963c","#dc8a2f","#da7e24","#d9731c",
 
-    "#d3491f",
-    "#cb4323",
-    "#c23d27",
-    "#b9362b",
-    "#b13131",
-    "#a82b37",
-    "#9f253d",
-    "#971f44",
-    "#8e1a4a",
-    "#861550",
+    "#d3491f","#cb4323","#c23d27","#b9362b","#b13131",
+    "#a82b37","#9f253d","#971f44","#8e1a4a","#861550",
 
-    "#700e89",
-    "#7b1c93",
-    "#872b9e",
-    "#923aa8",
-    "#9e4ab2",
-    "#a95bbd",
-    "#b56ac7",
-    "#c07ad1",
-    "#cc8adc",
-    "#d79ae6",
+    "#700e89","#7b1c93","#872b9e","#923aa8","#9e4ab2",
+    "#a95bbd","#b56ac7","#c07ad1","#cc8adc","#d79ae6",
 
-    "#e6bfc3",
-    "#dfb1b7",
-    "#d9a4ad",
-    "#d297a1",
-    "#cc8a95",
-    "#c57c8a",
-    "#be707e",
-    "#b86272",
-    "#b25667",
-    "#ac485b",
+    "#e6bfc3","#dfb1b7","#d9a4ad","#d297a1","#cc8a95",
+    "#c57c8a","#be707e","#b86272","#b25667","#ac485b",
 
-    "#844049",
-    "#8a4953",
-    "#91545c",
-    "#985e66",
-    "#9e6970",
-    "#a57279",
-    "#ab7d83",
-    "#b2878c",
-    "#b99295"
+    "#844049","#8a4953","#91545c","#985e66","#9e6970",
+    "#a57279","#ab7d83","#b2878c","#b99295"
+
 ];
 
 
-/* ==========================================================
-   COLOR PRECOMPUTATION
-   ========================================================== */
-
 function hexToRgb(hex) {
 
-    const clean =
-        hex.replace("#", "");
-
     const value =
-        parseInt(clean, 16);
+        parseInt(
+            hex.replace("#", ""),
+            16
+        );
 
     return [
         (value >> 16) & 255,
@@ -241,43 +186,31 @@ const SBCAPE_RGB =
 
 
 /* ==========================================================
-   APPLICATION STATE
+   STATE
    ========================================================== */
 
 let latestData = null;
-
 let sbcapeMetadata = null;
 
 let activeField = "none";
-
-let activeWeatherZoom = null;
-
 let weatherRenderGeneration = 0;
 
 let weatherCanvas = null;
-
 let weatherCtx = null;
 
-let weatherCanvasContainer = null;
+let geographyCanvas = null;
+let geographyCtx = null;
 
+let countiesGeoJSON = null;
+let statesGeoJSON = null;
+let citiesGeoJSON = null;
 
-/*
- * Numerical arrays are retained in memory.
- */
 const weatherTileCache =
     new Map();
 
-
-/*
- * Colorized 256x256 canvases are also cached.
- */
 const weatherColorCanvasCache =
     new Map();
 
-
-/*
- * Diagnostics.
- */
 const weatherTileDiagnostics =
     new Map();
 
@@ -296,7 +229,6 @@ const mapStyle = {
 
         {
             id: "background",
-
             type: "background",
 
             paint: {
@@ -320,10 +252,7 @@ const map =
 
         style: mapStyle,
 
-        center: [
-            -100.75,
-            41.1
-        ],
+        center: [-100.75, 41.1],
 
         zoom: 6,
 
@@ -336,18 +265,11 @@ const map =
     });
 
 
-/* ==========================================================
-   MAP CONTROLS
-   ========================================================== */
-
 map.addControl(
 
     new maplibregl.NavigationControl({
-
         showCompass: false,
-
         showZoom: true
-
     }),
 
     "top-right"
@@ -376,118 +298,54 @@ map.addControl(
    ========================================================== */
 
 const sectorSelect =
-    document.getElementById(
-        "sector-select"
-    );
-
+    document.getElementById("sector-select");
 
 const statesToggle =
-    document.getElementById(
-        "states-toggle"
-    );
-
+    document.getElementById("states-toggle");
 
 const countiesToggle =
-    document.getElementById(
-        "counties-toggle"
-    );
-
+    document.getElementById("counties-toggle");
 
 const citiesToggle =
-    document.getElementById(
-        "cities-toggle"
-    );
-
+    document.getElementById("cities-toggle");
 
 const fieldSelect =
-    document.getElementById(
-        "field-select"
-    );
-
+    document.getElementById("field-select");
 
 const fieldInfo =
-    document.getElementById(
-        "field-info"
-    );
-
+    document.getElementById("field-info");
 
 const fieldName =
-    document.getElementById(
-        "field-name"
-    );
-
+    document.getElementById("field-name");
 
 const fieldTime =
-    document.getElementById(
-        "field-time"
-    );
-
+    document.getElementById("field-time");
 
 const weatherLegend =
-    document.getElementById(
-        "weather-legend"
-    );
-
+    document.getElementById("weather-legend");
 
 const legendCanvas =
-    document.getElementById(
-        "legend-canvas"
-    );
+    document.getElementById("legend-canvas");
 
 
 /* ==========================================================
-   HELPERS
+   BASIC HELPERS
    ========================================================== */
 
-function clamp(
-    value,
-    min,
-    max
-) {
+function clamp(value, min, max) {
 
     return Math.max(
         min,
-        Math.min(
-            max,
-            value
-        )
-    );
-}
-
-
-function setLayerVisibility(
-    layerId,
-    visible
-) {
-
-    if (!map.getLayer(layerId)) {
-        return;
-    }
-
-
-    map.setLayoutProperty(
-
-        layerId,
-
-        "visibility",
-
-        visible
-            ? "visible"
-            : "none"
-
+        Math.min(max, value)
     );
 }
 
 
 /* ==========================================================
-   SBCAPE COLOR LOOKUP
+   COLOR LOOKUP
    ========================================================== */
 
 function getSbcapeRgba(value) {
-
-    /*
-     * Missing or <100 J/kg = completely transparent.
-     */
 
     if (
         !Number.isFinite(value) ||
@@ -495,24 +353,13 @@ function getSbcapeRgba(value) {
         value < SBCAPE_TRANSPARENT_BELOW
     ) {
 
-        return [
-            0,
-            0,
-            0,
-            0
-        ];
+        return [0, 0, 0, 0];
     }
 
 
     let colorIndex =
         SBCAPE_COLORS.length - 1;
 
-
-    /*
-     * Index 0 corresponds to 0-100.
-     *
-     * Since <100 is transparent, begin at index 1.
-     */
 
     for (
         let i = 1;
@@ -563,7 +410,6 @@ function drawSbcapeLegend() {
     const width =
         legendCanvas.width;
 
-
     const height =
         legendCanvas.height;
 
@@ -585,46 +431,27 @@ function drawSbcapeLegend() {
         x++
     ) {
 
-        const fraction =
-            x /
-            Math.max(
-                1,
-                width - 1
-            );
-
-
         const value =
-            fraction *
+            (x / Math.max(1, width - 1)) *
             legendMax;
 
 
         let rgba;
 
 
-        /*
-         * Draw <100 as white in the legend itself
-         * even though it is transparent on the map.
-         */
-
         if (
             value <
             SBCAPE_TRANSPARENT_BELOW
         ) {
 
-            rgba = [
-                255,
-                255,
-                255,
-                255
-            ];
+            rgba =
+                [255, 255, 255, 255];
         }
 
         else {
 
             rgba =
-                getSbcapeRgba(
-                    value
-                );
+                getSbcapeRgba(value);
         }
 
 
@@ -643,7 +470,7 @@ function drawSbcapeLegend() {
 
 
 /* ==========================================================
-   TIME
+   ANALYSIS TIME
    ========================================================== */
 
 function formatAnalysisTime(value) {
@@ -658,9 +485,7 @@ function formatAnalysisTime(value) {
 
 
     if (
-        Number.isNaN(
-            date.getTime()
-        )
+        Number.isNaN(date.getTime())
     ) {
 
         return String(value);
@@ -670,42 +495,28 @@ function formatAnalysisTime(value) {
     const yyyy =
         date.getUTCFullYear();
 
-
     const mm =
         String(
             date.getUTCMonth() + 1
-        ).padStart(
-            2,
-            "0"
-        );
-
+        ).padStart(2, "0");
 
     const dd =
         String(
             date.getUTCDate()
-        ).padStart(
-            2,
-            "0"
-        );
-
+        ).padStart(2, "0");
 
     const hh =
         String(
             date.getUTCHours()
-        ).padStart(
-            2,
-            "0"
-        );
+        ).padStart(2, "0");
 
 
-    return (
-        `${yyyy}-${mm}-${dd} ${hh}Z`
-    );
+    return `${yyyy}-${mm}-${dd} ${hh}Z`;
 }
 
 
 /* ==========================================================
-   LATEST.JSON
+   LATEST DATA
    ========================================================== */
 
 async function loadLatestData() {
@@ -722,24 +533,17 @@ async function loadLatestData() {
 
     const response =
         await fetch(
-
             url,
-
             {
                 cache: "no-store"
             }
-
         );
 
 
     if (!response.ok) {
 
         throw new Error(
-
-            `latest.json request failed: ` +
-            `${response.status} ` +
-            `${response.statusText}`
-
+            `latest.json failed: ${response.status}`
         );
     }
 
@@ -758,10 +562,6 @@ async function loadLatestData() {
 }
 
 
-/* ==========================================================
-   RUN ID
-   ========================================================== */
-
 function getLatestRunId() {
 
     if (!latestData) {
@@ -770,17 +570,11 @@ function getLatestRunId() {
 
 
     return (
-
         latestData.run ||
-
         latestData.run_id ||
-
         latestData.cycle ||
-
         latestData.analysis ||
-
         null
-
     );
 }
 
@@ -798,7 +592,7 @@ async function loadSbcapeMetadata() {
     if (!runId) {
 
         throw new Error(
-            "Could not determine latest SBCAPE run."
+            "No SBCAPE run ID."
         );
     }
 
@@ -812,7 +606,7 @@ async function loadSbcapeMetadata() {
         typeof latestData.metadata === "string"
     ) {
 
-        const metadataPath =
+        const path =
             latestData.metadata.replace(
                 /^\/+/,
                 ""
@@ -820,18 +614,17 @@ async function loadSbcapeMetadata() {
 
 
         if (
-            metadataPath.startsWith("http://") ||
-            metadataPath.startsWith("https://")
+            path.startsWith("http://") ||
+            path.startsWith("https://")
         ) {
 
-            url =
-                metadataPath;
+            url = path;
         }
 
         else {
 
             url =
-                `${S3_BASE_URL}/${metadataPath}`;
+                `${S3_BASE_URL}/${path}`;
         }
     }
 
@@ -863,11 +656,7 @@ async function loadSbcapeMetadata() {
     if (!response.ok) {
 
         throw new Error(
-
-            `SBCAPE metadata request failed: ` +
-            `${response.status} ` +
-            `${response.statusText}`
-
+            `Metadata failed: ${response.status}`
         );
     }
 
@@ -887,31 +676,21 @@ async function loadSbcapeMetadata() {
 
 
 /* ==========================================================
-   CREATE DIRECT WEATHER OVERLAY
+   CANVAS CREATION
    ========================================================== */
 
-function createWeatherOverlay() {
-
-    if (weatherCanvas) {
-        return;
-    }
-
+function createOverlayCanvases() {
 
     const mapElement =
         document.getElementById("map");
 
 
     /*
-     * MapLibre's own canvas container lives inside #map.
-     *
-     * We create an absolutely positioned overlay above
-     * the MapLibre canvas.
+     * Weather canvas.
      */
 
     weatherCanvas =
-        document.createElement(
-            "canvas"
-        );
+        document.createElement("canvas");
 
 
     weatherCanvas.id =
@@ -919,9 +698,7 @@ function createWeatherOverlay() {
 
 
     Object.assign(
-
         weatherCanvas.style,
-
         {
             position: "absolute",
             left: "0",
@@ -932,7 +709,6 @@ function createWeatherOverlay() {
             zIndex: "2",
             display: "none"
         }
-
     );
 
 
@@ -941,48 +717,78 @@ function createWeatherOverlay() {
     );
 
 
-    weatherCanvasContainer =
-        weatherCanvas;
-
-
     weatherCtx =
         weatherCanvas.getContext(
-
             "2d",
-
             {
                 alpha: true
             }
-
         );
 
 
-    if (!weatherCtx) {
+    /*
+     * Geography canvas.
+     *
+     * This is above SBCAPE.
+     */
 
-        throw new Error(
-            "Unable to create weather overlay canvas."
+    geographyCanvas =
+        document.createElement("canvas");
+
+
+    geographyCanvas.id =
+        "geography-canvas";
+
+
+    Object.assign(
+        geographyCanvas.style,
+        {
+            position: "absolute",
+            left: "0",
+            top: "0",
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
+            zIndex: "3"
+        }
+    );
+
+
+    mapElement.appendChild(
+        geographyCanvas
+    );
+
+
+    geographyCtx =
+        geographyCanvas.getContext(
+            "2d",
+            {
+                alpha: true
+            }
         );
-    }
 
 
-    resizeWeatherOverlay();
+    resizeOverlayCanvases();
 
 
     console.log(
-        "[SBCAPE6] Direct HTML weather canvas created."
+        "[SBCAPE7] Weather + geography canvases created."
     );
 }
 
 
 /* ==========================================================
-   RESIZE OVERLAY
+   RESIZE CANVASES
    ========================================================== */
 
-function resizeWeatherOverlay() {
+function resizeCanvas(
+    canvas,
+    ctx
+) {
 
     if (
-        !weatherCanvas ||
-        !weatherCtx
+        !canvas ||
+        !ctx
     ) {
         return;
     }
@@ -1000,7 +806,7 @@ function resizeWeatherOverlay() {
         window.devicePixelRatio || 1;
 
 
-    const pixelWidth =
+    const width =
         Math.max(
             1,
             Math.round(
@@ -1009,7 +815,7 @@ function resizeWeatherOverlay() {
         );
 
 
-    const pixelHeight =
+    const height =
         Math.max(
             1,
             Math.round(
@@ -1019,33 +825,26 @@ function resizeWeatherOverlay() {
 
 
     if (
-        weatherCanvas.width !== pixelWidth ||
-        weatherCanvas.height !== pixelHeight
+        canvas.width !== width ||
+        canvas.height !== height
     ) {
 
-        weatherCanvas.width =
-            pixelWidth;
+        canvas.width =
+            width;
 
-
-        weatherCanvas.height =
-            pixelHeight;
+        canvas.height =
+            height;
     }
 
 
-    weatherCanvas.style.width =
+    canvas.style.width =
         `${rect.width}px`;
 
-
-    weatherCanvas.style.height =
+    canvas.style.height =
         `${rect.height}px`;
 
 
-    /*
-     * Work in CSS pixels so map.project() coordinates
-     * can be used directly.
-     */
-
-    weatherCtx.setTransform(
+    ctx.setTransform(
         dpr,
         0,
         0,
@@ -1053,39 +852,55 @@ function resizeWeatherOverlay() {
         0,
         0
     );
+}
 
 
-    weatherCtx.imageSmoothingEnabled =
-        false;
+function resizeOverlayCanvases() {
+
+    resizeCanvas(
+        weatherCanvas,
+        weatherCtx
+    );
+
+
+    resizeCanvas(
+        geographyCanvas,
+        geographyCtx
+    );
+
+
+    if (weatherCtx) {
+
+        weatherCtx.imageSmoothingEnabled =
+            true;
+
+        weatherCtx.imageSmoothingQuality =
+            "high";
+    }
 }
 
 
 /* ==========================================================
-   CLEAR OVERLAY
+   CLEAR CANVAS
    ========================================================== */
 
-function clearWeatherOverlay() {
+function clearCanvas(
+    canvas,
+    ctx
+) {
 
     if (
-        !weatherCanvas ||
-        !weatherCtx
+        !canvas ||
+        !ctx
     ) {
         return;
     }
 
 
-    const rect =
-        weatherCanvas.getBoundingClientRect();
+    ctx.save();
 
 
-    /*
-     * Reset transform before clearing the physical canvas.
-     */
-
-    weatherCtx.save();
-
-
-    weatherCtx.setTransform(
+    ctx.setTransform(
         1,
         0,
         0,
@@ -1095,185 +910,267 @@ function clearWeatherOverlay() {
     );
 
 
-    weatherCtx.clearRect(
+    ctx.clearRect(
         0,
         0,
-        weatherCanvas.width,
-        weatherCanvas.height
+        canvas.width,
+        canvas.height
     );
 
 
-    weatherCtx.restore();
-
-
-    weatherCtx.imageSmoothingEnabled =
-        false;
+    ctx.restore();
 }
 
 
 /* ==========================================================
-   SHOW / HIDE OVERLAY
+   XYZ TILE MATH
    ========================================================== */
 
-function showWeatherOverlay() {
+function lonToTileX(lon, z) {
 
-    if (!weatherCanvas) {
-        return;
-    }
+    const n =
+        2 ** z;
 
 
-    weatherCanvas.style.display =
-        "block";
+    return Math.floor(
+        ((lon + 180) / 360) * n
+    );
 }
 
 
-function hideWeatherOverlay() {
+function latToTileY(lat, z) {
 
-    if (!weatherCanvas) {
-        return;
-    }
+    const n =
+        2 ** z;
 
 
-    weatherCanvas.style.display =
-        "none";
+    const safeLat =
+        clamp(
+            lat,
+            -85.05112878,
+            85.05112878
+        );
+
+
+    const rad =
+        safeLat *
+        Math.PI /
+        180;
+
+
+    return Math.floor(
+
+        (
+            1 -
+            Math.asinh(
+                Math.tan(rad)
+            ) /
+            Math.PI
+        ) /
+        2 *
+        n
+
+    );
+}
+
+
+function tileXToLon(x, z) {
+
+    return (
+        x /
+        (2 ** z) *
+        360 -
+        180
+    );
+}
+
+
+function tileYToLat(y, z) {
+
+    const n =
+        2 ** z;
+
+
+    const mercatorY =
+        Math.PI *
+        (
+            1 -
+            2 * y / n
+        );
+
+
+    return (
+        Math.atan(
+            Math.sinh(
+                mercatorY
+            )
+        ) *
+        180 /
+        Math.PI
+    );
 }
 
 
 /* ==========================================================
-   TILE DIAGNOSTICS
+   WEATHER ZOOM
    ========================================================== */
 
-function calculateTileDiagnostics(
-    values,
-    z,
-    x,
-    y
-) {
+function getWeatherZoom() {
 
-    let minValue =
-        Infinity;
+    const zoom =
+        map.getZoom();
 
 
-    let maxValue =
-        -Infinity;
+    if (zoom < 4.5) {
+        return 4;
+    }
 
 
-    let sum =
-        0;
+    if (zoom < 5.5) {
+        return 5;
+    }
 
 
-    let validCount =
-        0;
+    if (zoom < 6.5) {
+        return 6;
+    }
 
 
-    let missingCount =
-        0;
+    return 7;
+}
 
 
-    let below100Count =
-        0;
+/* ==========================================================
+   VISIBLE WEATHER TILES
+   ========================================================== */
+
+function getVisibleWeatherTiles(z) {
+
+    const bounds =
+        map.getBounds();
 
 
-    let coloredCount =
-        0;
+    const west =
+        clamp(
+            bounds.getWest(),
+            -179.999,
+            179.999
+        );
+
+
+    const east =
+        clamp(
+            bounds.getEast(),
+            -179.999,
+            179.999
+        );
+
+
+    const south =
+        clamp(
+            bounds.getSouth(),
+            -85.05112878,
+            85.05112878
+        );
+
+
+    const north =
+        clamp(
+            bounds.getNorth(),
+            -85.05112878,
+            85.05112878
+        );
+
+
+    let minX =
+        lonToTileX(
+            Math.min(west, east),
+            z
+        );
+
+
+    let maxX =
+        lonToTileX(
+            Math.max(west, east),
+            z
+        );
+
+
+    let minY =
+        latToTileY(
+            north,
+            z
+        );
+
+
+    let maxY =
+        latToTileY(
+            south,
+            z
+        );
+
+
+    const maxTile =
+        (2 ** z) - 1;
+
+
+    minX =
+        clamp(
+            minX - 1,
+            0,
+            maxTile
+        );
+
+
+    maxX =
+        clamp(
+            maxX + 1,
+            0,
+            maxTile
+        );
+
+
+    minY =
+        clamp(
+            minY - 1,
+            0,
+            maxTile
+        );
+
+
+    maxY =
+        clamp(
+            maxY + 1,
+            0,
+            maxTile
+        );
+
+
+    const tiles = [];
 
 
     for (
-        let i = 0;
-        i < values.length;
-        i++
+        let x = minX;
+        x <= maxX;
+        x++
     ) {
 
-        const value =
-            values[i];
-
-
-        if (
-            value === WEATHER_NODATA
+        for (
+            let y = minY;
+            y <= maxY;
+            y++
         ) {
 
-            missingCount++;
-
-            continue;
-        }
-
-
-        validCount++;
-
-
-        if (
-            value < minValue
-        ) {
-
-            minValue = value;
-        }
-
-
-        if (
-            value > maxValue
-        ) {
-
-            maxValue = value;
-        }
-
-
-        sum += value;
-
-
-        if (
-            value <
-            SBCAPE_TRANSPARENT_BELOW
-        ) {
-
-            below100Count++;
-        }
-
-        else {
-
-            coloredCount++;
+            tiles.push({
+                z,
+                x,
+                y
+            });
         }
     }
 
 
-    if (
-        validCount === 0
-    ) {
-
-        minValue = null;
-
-        maxValue = null;
-    }
-
-
-    return {
-
-        tile:
-            `z${z}/${x}/${y}`,
-
-        min:
-            minValue,
-
-        max:
-            maxValue,
-
-        mean:
-            validCount > 0
-                ? sum / validCount
-                : null,
-
-        valid:
-            validCount,
-
-        missing:
-            missingCount,
-
-        transparent:
-            below100Count,
-
-        colored:
-            coloredCount
-
-    };
+    return tiles;
 }
 
 
@@ -1288,19 +1185,15 @@ async function loadWeatherTile(
     y
 ) {
 
-    const cacheKey =
+    const key =
         `${runId}/${z}/${x}/${y}`;
 
 
     if (
-        weatherTileCache.has(
-            cacheKey
-        )
+        weatherTileCache.has(key)
     ) {
 
-        return weatherTileCache.get(
-            cacheKey
-        );
+        return weatherTileCache.get(key);
     }
 
 
@@ -1311,14 +1204,6 @@ async function loadWeatherTile(
     const response =
         await fetch(url);
 
-
-    /*
-     * Some tiles around the edge of the original
-     * Lambert source domain were intentionally skipped.
-     *
-     * S3 may return 403 rather than 404 for anonymous
-     * requests to nonexistent keys.
-     */
 
     if (
         response.status === 403 ||
@@ -1332,10 +1217,7 @@ async function loadWeatherTile(
     if (!response.ok) {
 
         throw new Error(
-
-            `Tile request failed ` +
-            `(${response.status}): ${url}`
-
+            `Tile failed ${response.status}: ${url}`
         );
     }
 
@@ -1351,16 +1233,11 @@ async function loadWeatherTile(
 
 
     if (
-        buffer.byteLength !==
-        expectedBytes
+        buffer.byteLength !== expectedBytes
     ) {
 
         throw new Error(
-
-            `Unexpected tile size for ${url}. ` +
-            `Expected ${expectedBytes} bytes, ` +
-            `received ${buffer.byteLength}.`
-
+            `Unexpected tile byte length: ${buffer.byteLength}`
         );
     }
 
@@ -1371,16 +1248,19 @@ async function loadWeatherTile(
 
     const values =
         new Uint16Array(
-
             WEATHER_TILE_SIZE *
             WEATHER_TILE_SIZE
-
         );
 
 
-    /*
-     * Explicit little-endian decoding.
-     */
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    let valid = 0;
+    let missing = 0;
+    let transparent = 0;
+    let colored = 0;
+
 
     for (
         let i = 0;
@@ -1388,72 +1268,116 @@ async function loadWeatherTile(
         i++
     ) {
 
-        values[i] =
+        const value =
             view.getUint16(
                 i * 2,
                 true
             );
+
+
+        values[i] =
+            value;
+
+
+        if (
+            value === WEATHER_NODATA
+        ) {
+
+            missing++;
+
+            continue;
+        }
+
+
+        valid++;
+
+        sum += value;
+
+
+        if (value < min) {
+            min = value;
+        }
+
+
+        if (value > max) {
+            max = value;
+        }
+
+
+        if (
+            value <
+            SBCAPE_TRANSPARENT_BELOW
+        ) {
+
+            transparent++;
+        }
+
+        else {
+
+            colored++;
+        }
     }
 
 
-    const diagnostics =
-        calculateTileDiagnostics(
+    const diagnostic = {
 
-            values,
+        min:
+            valid > 0
+                ? min
+                : null,
 
-            z,
+        max:
+            valid > 0
+                ? max
+                : null,
 
-            x,
+        mean:
+            valid > 0
+                ? sum / valid
+                : null,
 
-            y
+        valid,
 
-        );
+        missing,
+
+        transparent,
+
+        colored
+
+    };
 
 
     weatherTileDiagnostics.set(
-        cacheKey,
-        diagnostics
+        key,
+        diagnostic
     );
 
 
     console.log(
-
-        `[SBCAPE6 TILE] ${diagnostics.tile}`,
-
+        `[SBCAPE7 TILE] z${z}/${x}/${y}`,
         {
-
             min:
-                diagnostics.min,
+                diagnostic.min,
 
             max:
-                diagnostics.max,
+                diagnostic.max,
 
             mean:
-                diagnostics.mean !== null
+                diagnostic.mean !== null
                     ? Number(
-                        diagnostics.mean.toFixed(1)
+                        diagnostic.mean.toFixed(1)
                     )
                     : null,
 
-            valid:
-                diagnostics.valid,
+            transparent,
 
-            missing:
-                diagnostics.missing,
-
-            transparent:
-                diagnostics.transparent,
-
-            colored:
-                diagnostics.colored
-
+            colored
         }
-
     );
 
 
     weatherTileCache.set(
-        cacheKey,
+        key,
         values
     );
 
@@ -1470,47 +1394,32 @@ function createSbcapeTileCanvas(
     values
 ) {
 
-    const tileCanvas =
+    const canvas =
         document.createElement(
             "canvas"
         );
 
 
-    tileCanvas.width =
+    canvas.width =
         WEATHER_TILE_SIZE;
 
-
-    tileCanvas.height =
+    canvas.height =
         WEATHER_TILE_SIZE;
 
 
     const ctx =
-        tileCanvas.getContext(
-
+        canvas.getContext(
             "2d",
-
             {
                 alpha: true
             }
-
         );
-
-
-    if (!ctx) {
-
-        throw new Error(
-            "Unable to create SBCAPE tile canvas."
-        );
-    }
 
 
     const imageData =
         ctx.createImageData(
-
             WEATHER_TILE_SIZE,
-
             WEATHER_TILE_SIZE
-
         );
 
 
@@ -1537,14 +1446,11 @@ function createSbcapeTileCanvas(
         pixels[p] =
             rgba[0];
 
-
         pixels[p + 1] =
             rgba[1];
 
-
         pixels[p + 2] =
             rgba[2];
-
 
         pixels[p + 3] =
             rgba[3];
@@ -1558,13 +1464,9 @@ function createSbcapeTileCanvas(
     );
 
 
-    return tileCanvas;
+    return canvas;
 }
 
-
-/* ==========================================================
-   GET COLORIZED TILE
-   ========================================================== */
 
 function getColorizedTileCanvas(
     runId,
@@ -1574,18 +1476,16 @@ function getColorizedTileCanvas(
     values
 ) {
 
-    const cacheKey =
+    const key =
         `${runId}/${z}/${x}/${y}`;
 
 
     if (
-        weatherColorCanvasCache.has(
-            cacheKey
-        )
+        weatherColorCanvasCache.has(key)
     ) {
 
         return weatherColorCanvasCache.get(
-            cacheKey
+            key
         );
     }
 
@@ -1597,7 +1497,7 @@ function getColorizedTileCanvas(
 
 
     weatherColorCanvasCache.set(
-        cacheKey,
+        key,
         canvas
     );
 
@@ -1607,367 +1507,7 @@ function getColorizedTileCanvas(
 
 
 /* ==========================================================
-   XYZ TILE MATH
-   ========================================================== */
-
-function lonToTileX(
-    lon,
-    z
-) {
-
-    const n =
-        2 ** z;
-
-
-    return Math.floor(
-
-        (
-            (lon + 180) /
-            360
-        ) *
-        n
-
-    );
-}
-
-
-function latToTileY(
-    lat,
-    z
-) {
-
-    const n =
-        2 ** z;
-
-
-    const safeLat =
-        clamp(
-
-            lat,
-
-            -85.05112878,
-
-            85.05112878
-
-        );
-
-
-    const latRad =
-        safeLat *
-        Math.PI /
-        180;
-
-
-    return Math.floor(
-
-        (
-            1 -
-            Math.asinh(
-                Math.tan(
-                    latRad
-                )
-            ) /
-            Math.PI
-        ) /
-        2 *
-        n
-
-    );
-}
-
-
-function tileXToLon(
-    x,
-    z
-) {
-
-    const n =
-        2 ** z;
-
-
-    return (
-        x /
-        n *
-        360 -
-        180
-    );
-}
-
-
-function tileYToLat(
-    y,
-    z
-) {
-
-    const n =
-        2 ** z;
-
-
-    const mercatorY =
-        Math.PI *
-        (
-            1 -
-            2 *
-            y /
-            n
-        );
-
-
-    return (
-
-        Math.atan(
-            Math.sinh(
-                mercatorY
-            )
-        ) *
-        180 /
-        Math.PI
-
-    );
-}
-
-
-/* ==========================================================
-   WEATHER TILE ZOOM
-   ========================================================== */
-
-function getWeatherZoom() {
-
-    const zoom =
-        map.getZoom();
-
-
-    if (
-        zoom < 4.5
-    ) {
-        return 4;
-    }
-
-
-    if (
-        zoom < 5.5
-    ) {
-        return 5;
-    }
-
-
-    if (
-        zoom < 6.5
-    ) {
-        return 6;
-    }
-
-
-    return 7;
-}
-
-
-/* ==========================================================
-   VISIBLE TILES
-   ========================================================== */
-
-function getVisibleWeatherTiles(z) {
-
-    const bounds =
-        map.getBounds();
-
-
-    let west =
-        bounds.getWest();
-
-
-    let east =
-        bounds.getEast();
-
-
-    let south =
-        bounds.getSouth();
-
-
-    let north =
-        bounds.getNorth();
-
-
-    west =
-        clamp(
-            west,
-            -179.999,
-            179.999
-        );
-
-
-    east =
-        clamp(
-            east,
-            -179.999,
-            179.999
-        );
-
-
-    south =
-        clamp(
-
-            south,
-
-            -85.05112878,
-
-            85.05112878
-
-        );
-
-
-    north =
-        clamp(
-
-            north,
-
-            -85.05112878,
-
-            85.05112878
-
-        );
-
-
-    let minX =
-        lonToTileX(
-
-            Math.min(
-                west,
-                east
-            ),
-
-            z
-
-        );
-
-
-    let maxX =
-        lonToTileX(
-
-            Math.max(
-                west,
-                east
-            ),
-
-            z
-
-        );
-
-
-    let minY =
-        latToTileY(
-            north,
-            z
-        );
-
-
-    let maxY =
-        latToTileY(
-            south,
-            z
-        );
-
-
-    const maxTile =
-        (2 ** z) - 1;
-
-
-    minX =
-        clamp(
-            minX,
-            0,
-            maxTile
-        );
-
-
-    maxX =
-        clamp(
-            maxX,
-            0,
-            maxTile
-        );
-
-
-    minY =
-        clamp(
-            minY,
-            0,
-            maxTile
-        );
-
-
-    maxY =
-        clamp(
-            maxY,
-            0,
-            maxTile
-        );
-
-
-    /*
-     * One-tile buffer.
-     */
-
-    minX =
-        Math.max(
-            0,
-            minX - 1
-        );
-
-
-    maxX =
-        Math.min(
-            maxTile,
-            maxX + 1
-        );
-
-
-    minY =
-        Math.max(
-            0,
-            minY - 1
-        );
-
-
-    maxY =
-        Math.min(
-            maxTile,
-            maxY + 1
-        );
-
-
-    const tiles = [];
-
-
-    for (
-        let x = minX;
-        x <= maxX;
-        x++
-    ) {
-
-        for (
-            let y = minY;
-            y <= maxY;
-            y++
-        ) {
-
-            tiles.push({
-
-                z,
-                x,
-                y
-
-            });
-        }
-    }
-
-
-    return tiles;
-}
-
-
-/* ==========================================================
-   DRAW ONE WEATHER TILE
+   DRAW WEATHER TILE
    ========================================================== */
 
 function drawWeatherTile(
@@ -1977,46 +1517,18 @@ function drawWeatherTile(
     y
 ) {
 
-    if (
-        !weatherCtx
-    ) {
-        return;
-    }
-
-
     const west =
-        tileXToLon(
-            x,
-            z
-        );
-
+        tileXToLon(x, z);
 
     const east =
-        tileXToLon(
-            x + 1,
-            z
-        );
-
+        tileXToLon(x + 1, z);
 
     const north =
-        tileYToLat(
-            y,
-            z
-        );
-
+        tileYToLat(y, z);
 
     const south =
-        tileYToLat(
-            y + 1,
-            z
-        );
+        tileYToLat(y + 1, z);
 
-
-    /*
-     * Because the source tiles are Web Mercator XYZ,
-     * these projected corners line up directly with
-     * the MapLibre map.
-     */
 
     const nw =
         map.project([
@@ -2032,28 +1544,30 @@ function drawWeatherTile(
         ]);
 
 
-    const drawX =
-        nw.x;
+    const width =
+        se.x - nw.x;
 
-
-    const drawY =
-        nw.y;
+    const height =
+        se.y - nw.y;
 
 
     /*
-     * Tiny overlap helps prevent hairline seams caused
-     * by fractional CSS-pixel positioning.
+     * THIS IS THE IMPORTANT SBCAPE7 CHANGE.
+     *
+     * We now use high-quality interpolation when
+     * enlarging the numerical tile.
      */
 
-    const drawWidth =
-        (se.x - nw.x) +
-        0.5;
+    weatherCtx.imageSmoothingEnabled =
+        true;
+
+    weatherCtx.imageSmoothingQuality =
+        "high";
 
 
-    const drawHeight =
-        (se.y - nw.y) +
-        0.5;
-
+    /*
+     * Slight overlap prevents seams between tiles.
+     */
 
     weatherCtx.drawImage(
 
@@ -2064,171 +1578,24 @@ function drawWeatherTile(
         WEATHER_TILE_SIZE,
         WEATHER_TILE_SIZE,
 
-        drawX,
-        drawY,
-        drawWidth,
-        drawHeight
+        nw.x - 0.25,
+        nw.y - 0.25,
+
+        width + 0.5,
+        height + 0.5
 
     );
 }
 
 
 /* ==========================================================
-   RENDER DIAGNOSTICS
-   ========================================================== */
-
-function printRenderDiagnostics(
-    runId,
-    z,
-    tiles,
-    rendered
-) {
-
-    let overallMin =
-        Infinity;
-
-
-    let overallMax =
-        -Infinity;
-
-
-    let totalValid =
-        0;
-
-
-    let totalMissing =
-        0;
-
-
-    let totalTransparent =
-        0;
-
-
-    let totalColored =
-        0;
-
-
-    let diagnosticTiles =
-        0;
-
-
-    for (
-        const tile of tiles
-    ) {
-
-        const key =
-            `${runId}/${tile.z}/${tile.x}/${tile.y}`;
-
-
-        const diagnostic =
-            weatherTileDiagnostics.get(
-                key
-            );
-
-
-        if (!diagnostic) {
-            continue;
-        }
-
-
-        diagnosticTiles++;
-
-
-        if (
-            diagnostic.min !== null &&
-            diagnostic.min < overallMin
-        ) {
-
-            overallMin =
-                diagnostic.min;
-        }
-
-
-        if (
-            diagnostic.max !== null &&
-            diagnostic.max > overallMax
-        ) {
-
-            overallMax =
-                diagnostic.max;
-        }
-
-
-        totalValid +=
-            diagnostic.valid;
-
-
-        totalMissing +=
-            diagnostic.missing;
-
-
-        totalTransparent +=
-            diagnostic.transparent;
-
-
-        totalColored +=
-            diagnostic.colored;
-    }
-
-
-    console.log(
-
-        "[SBCAPE6 RENDER DIAGNOSTICS]",
-
-        {
-
-            run:
-                runId,
-
-            zoom:
-                z,
-
-            requestedTiles:
-                tiles.length,
-
-            renderedTiles:
-                rendered,
-
-            diagnosticTiles:
-                diagnosticTiles,
-
-            minimum:
-                overallMin === Infinity
-                    ? null
-                    : overallMin,
-
-            maximum:
-                overallMax === -Infinity
-                    ? null
-                    : overallMax,
-
-            validValues:
-                totalValid,
-
-            missingValues:
-                totalMissing,
-
-            transparentValues:
-                totalTransparent,
-
-            coloredValues:
-                totalColored
-
-        }
-
-    );
-}
-
-
-/* ==========================================================
-   RENDER SBCAPE OVERLAY
+   RENDER WEATHER
    ========================================================== */
 
 async function renderSbcapeOverlay() {
 
     if (
-        activeField !==
-        "sbcape"
+        activeField !== "sbcape"
     ) {
 
         return;
@@ -2239,103 +1606,88 @@ async function renderSbcapeOverlay() {
         ++weatherRenderGeneration;
 
 
-    resizeWeatherOverlay();
+    resizeOverlayCanvases();
 
 
-    clearWeatherOverlay();
+    clearCanvas(
+        weatherCanvas,
+        weatherCtx
+    );
 
 
-    try {
+    if (!latestData) {
 
-        if (!latestData) {
-
-            await loadLatestData();
-        }
+        await loadLatestData();
+    }
 
 
-        if (!sbcapeMetadata) {
+    if (!sbcapeMetadata) {
 
-            await loadSbcapeMetadata();
-        }
-
-
-        if (
-            generation !==
-            weatherRenderGeneration
-        ) {
-
-            return;
-        }
+        await loadSbcapeMetadata();
+    }
 
 
-        const runId =
-            getLatestRunId();
+    const runId =
+        getLatestRunId();
 
 
-        if (!runId) {
+    if (!runId) {
 
-            throw new Error(
-                "No SBCAPE run ID available."
-            );
-        }
-
-
-        const z =
-            getWeatherZoom();
-
-
-        activeWeatherZoom =
-            z;
-
-
-        const tiles =
-            getVisibleWeatherTiles(
-                z
-            );
-
-
-        console.log(
-
-            `[SBCAPE6] Rendering run ${runId} ` +
-            `at z${z}: ${tiles.length} candidate tiles`
-
+        throw new Error(
+            "No SBCAPE run ID."
         );
+    }
 
 
-        /*
-         * Fetch + colorize in parallel.
-         */
-
-        const results =
-            await Promise.all(
-
-                tiles.map(
-
-                    async tile => {
-
-                        try {
-
-                            const values =
-                                await loadWeatherTile(
-
-                                    runId,
-
-                                    tile.z,
-
-                                    tile.x,
-
-                                    tile.y
-
-                                );
+    const z =
+        getWeatherZoom();
 
 
-                            if (!values) {
-
-                                return null;
-                            }
+    const tiles =
+        getVisibleWeatherTiles(z);
 
 
-                            const tileCanvas =
+    console.log(
+
+        `[SBCAPE7] Rendering ${runId} ` +
+        `at z${z}: ${tiles.length} candidate tiles`
+
+    );
+
+
+    const results =
+        await Promise.all(
+
+            tiles.map(
+
+                async tile => {
+
+                    try {
+
+                        const values =
+                            await loadWeatherTile(
+
+                                runId,
+
+                                tile.z,
+
+                                tile.x,
+
+                                tile.y
+
+                            );
+
+
+                        if (!values) {
+                            return null;
+                        }
+
+
+                        return {
+
+                            tile,
+
+                            canvas:
                                 getColorizedTileCanvas(
 
                                     runId,
@@ -2348,219 +1700,825 @@ async function renderSbcapeOverlay() {
 
                                     values
 
-                                );
+                                )
 
+                        };
 
-                            return {
-
-                                tile,
-
-                                tileCanvas
-
-                            };
-
-                        }
-
-                        catch (error) {
-
-                            console.error(
-
-                                "[SBCAPE6] Tile failed:",
-
-                                tile,
-
-                                error
-
-                            );
-
-
-                            return null;
-                        }
                     }
 
-                )
+                    catch (error) {
 
-            );
+                        console.error(
+                            "[SBCAPE7] Tile error:",
+                            tile,
+                            error
+                        );
 
 
-        /*
-         * A newer render request occurred while tiles
-         * were downloading.
-         */
+                        return null;
+                    }
+                }
+
+            )
+
+        );
+
+
+    if (
+        generation !==
+        weatherRenderGeneration
+    ) {
+
+        return;
+    }
+
+
+    resizeOverlayCanvases();
+
+
+    clearCanvas(
+        weatherCanvas,
+        weatherCtx
+    );
+
+
+    let rendered = 0;
+
+
+    for (
+        const result of results
+    ) {
+
+        if (!result) {
+            continue;
+        }
+
+
+        drawWeatherTile(
+
+            result.canvas,
+
+            result.tile.z,
+
+            result.tile.x,
+
+            result.tile.y
+
+        );
+
+
+        rendered++;
+    }
+
+
+    /*
+     * Geography gets redrawn AFTER weather.
+     */
+
+    renderGeographyOverlay();
+
+
+    console.log(
+
+        `[SBCAPE7] Render complete: ` +
+        `${rendered} tiles drawn.`
+
+    );
+}
+
+
+/* ==========================================================
+   GEOJSON DRAWING HELPERS
+   ========================================================== */
+
+function drawLineString(
+    coordinates,
+    ctx
+) {
+
+    if (
+        !coordinates ||
+        coordinates.length < 2
+    ) {
+
+        return;
+    }
+
+
+    let started =
+        false;
+
+
+    for (
+        const coordinate of coordinates
+    ) {
+
+        const lon =
+            coordinate[0];
+
+        const lat =
+            coordinate[1];
+
 
         if (
-            generation !==
-            weatherRenderGeneration
+            !Number.isFinite(lon) ||
+            !Number.isFinite(lat)
         ) {
 
-            return;
+            continue;
         }
 
 
-        /*
-         * Resize and clear again in case map geometry
-         * changed during asynchronous requests.
-         */
-
-        resizeWeatherOverlay();
-
-
-        clearWeatherOverlay();
+        const point =
+            map.project([
+                lon,
+                lat
+            ]);
 
 
-        let rendered = 0;
+        if (!started) {
 
-
-        for (
-            const result of results
-        ) {
-
-            if (!result) {
-                continue;
-            }
-
-
-            drawWeatherTile(
-
-                result.tileCanvas,
-
-                result.tile.z,
-
-                result.tile.x,
-
-                result.tile.y
-
+            ctx.moveTo(
+                point.x,
+                point.y
             );
 
 
-            rendered++;
+            started = true;
         }
 
+        else {
 
-        printRenderDiagnostics(
+            ctx.lineTo(
+                point.x,
+                point.y
+            );
+        }
+    }
+}
 
-            runId,
 
-            z,
+function drawGeometry(
+    geometry,
+    ctx
+) {
 
-            tiles,
+    if (!geometry) {
+        return;
+    }
 
-            rendered
+
+    switch (
+        geometry.type
+    ) {
+
+        case "LineString":
+
+            drawLineString(
+                geometry.coordinates,
+                ctx
+            );
+
+            break;
+
+
+        case "MultiLineString":
+
+            for (
+                const line of geometry.coordinates
+            ) {
+
+                drawLineString(
+                    line,
+                    ctx
+                );
+            }
+
+            break;
+
+
+        case "Polygon":
+
+            for (
+                const ring of geometry.coordinates
+            ) {
+
+                drawLineString(
+                    ring,
+                    ctx
+                );
+            }
+
+            break;
+
+
+        case "MultiPolygon":
+
+            for (
+                const polygon of geometry.coordinates
+            ) {
+
+                for (
+                    const ring of polygon
+                ) {
+
+                    drawLineString(
+                        ring,
+                        ctx
+                    );
+                }
+            }
+
+            break;
+
+
+        case "GeometryCollection":
+
+            for (
+                const child of geometry.geometries
+            ) {
+
+                drawGeometry(
+                    child,
+                    ctx
+                );
+            }
+
+            break;
+    }
+}
+
+
+function drawGeoJSON(
+    geojson,
+    ctx
+) {
+
+    if (!geojson) {
+        return;
+    }
+
+
+    if (
+        geojson.type ===
+        "FeatureCollection"
+    ) {
+
+        for (
+            const feature of geojson.features
+        ) {
+
+            drawGeometry(
+                feature.geometry,
+                ctx
+            );
+        }
+
+        return;
+    }
+
+
+    if (
+        geojson.type === "Feature"
+    ) {
+
+        drawGeometry(
+            geojson.geometry,
+            ctx
+        );
+
+        return;
+    }
+
+
+    drawGeometry(
+        geojson,
+        ctx
+    );
+}
+
+
+/* ==========================================================
+   GEOGRAPHY OVERLAY
+   ========================================================== */
+
+function renderGeographyOverlay() {
+
+    if (
+        !geographyCanvas ||
+        !geographyCtx
+    ) {
+
+        return;
+    }
+
+
+    resizeCanvas(
+        geographyCanvas,
+        geographyCtx
+    );
+
+
+    clearCanvas(
+        geographyCanvas,
+        geographyCtx
+    );
+
+
+    geographyCtx.lineJoin =
+        "round";
+
+    geographyCtx.lineCap =
+        "round";
+
+
+    /*
+     * Counties
+     */
+
+    if (
+        countiesToggle.checked &&
+        countiesGeoJSON
+    ) {
+
+        geographyCtx.beginPath();
+
+
+        drawGeoJSON(
+            countiesGeoJSON,
+            geographyCtx
+        );
+
+
+        geographyCtx.strokeStyle =
+            "rgba(155,155,155,0.75)";
+
+
+        geographyCtx.lineWidth =
+            0.55;
+
+
+        geographyCtx.stroke();
+    }
+
+
+    /*
+     * States
+     */
+
+    if (
+        statesToggle.checked &&
+        statesGeoJSON
+    ) {
+
+        geographyCtx.beginPath();
+
+
+        drawGeoJSON(
+            statesGeoJSON,
+            geographyCtx
+        );
+
+
+        geographyCtx.strokeStyle =
+            "rgba(65,65,65,0.95)";
+
+
+        geographyCtx.lineWidth =
+            1.25;
+
+
+        geographyCtx.stroke();
+    }
+}
+
+
+/* ==========================================================
+   LOAD GEOGRAPHY
+   ========================================================== */
+
+async function loadBaseGeography() {
+
+    const response =
+        await fetch(
+            "data/counties-10m.json"
+        );
+
+
+    if (!response.ok) {
+
+        throw new Error(
+            "Unable to load counties-10m.json"
+        );
+    }
+
+
+    const topology =
+        await response.json();
+
+
+    countiesGeoJSON =
+        topojson.feature(
+
+            topology,
+
+            topology.objects.counties
 
         );
 
 
-        console.log(
+    statesGeoJSON =
+        topojson.feature(
 
-            `[SBCAPE6] Render complete: ` +
-            `${rendered} numerical tiles drawn ` +
-            `directly to HTML canvas.`
+            topology,
+
+            topology.objects.states
 
         );
+
+
+    /*
+     * We do NOT add counties/states as MapLibre layers
+     * anymore. They are drawn on the geography canvas,
+     * which guarantees they stay above SBCAPE.
+     */
+
+
+    /*
+     * Load city data.
+     */
+
+    try {
+
+        const cityResponse =
+            await fetch(
+                "data/cities.geojson"
+            );
+
+
+        if (cityResponse.ok) {
+
+            citiesGeoJSON =
+                await cityResponse.json();
+
+        }
 
     }
 
     catch (error) {
 
-        console.error(
-
-            "[SBCAPE6] Unable to render SBCAPE:",
-
+        console.warn(
+            "Unable to load cities:",
             error
+        );
+    }
 
+
+    renderGeographyOverlay();
+}
+
+
+/* ==========================================================
+   CITY DRAWING
+   ========================================================== */
+
+function getCityClass(
+    feature
+) {
+
+    const value =
+        Number(
+            feature.properties?.city_class
+        );
+
+
+    return Number.isFinite(value)
+        ? value
+        : 99;
+}
+
+
+function shouldDrawCity(
+    feature,
+    zoom
+) {
+
+    const name =
+        feature.properties?.name || "";
+
+
+    const cityClass =
+        getCityClass(feature);
+
+
+    if (
+        name === "North Platte"
+    ) {
+
+        return zoom >= 4;
+    }
+
+
+    if (
+        cityClass <= 2
+    ) {
+
+        return zoom >= 2;
+    }
+
+
+    if (
+        cityClass === 3
+    ) {
+
+        return zoom >= 4;
+    }
+
+
+    if (
+        cityClass === 4
+    ) {
+
+        return zoom >= 5;
+    }
+
+
+    if (
+        cityClass === 5
+    ) {
+
+        return zoom >= 6;
+    }
+
+
+    return false;
+}
+
+
+function getCityFontSize(
+    feature,
+    zoom
+) {
+
+    const name =
+        feature.properties?.name || "";
+
+
+    const cityClass =
+        getCityClass(feature);
+
+
+    if (
+        name === "North Platte"
+    ) {
+
+        return clamp(
+            10 + (zoom - 4) * 0.8,
+            10,
+            14
+        );
+    }
+
+
+    if (
+        cityClass <= 2
+    ) {
+
+        return clamp(
+            10 + (zoom - 2) * 0.5,
+            10,
+            14
+        );
+    }
+
+
+    if (
+        cityClass === 3
+    ) {
+
+        return clamp(
+            10 + (zoom - 4) * 0.6,
+            10,
+            14
+        );
+    }
+
+
+    if (
+        cityClass === 4
+    ) {
+
+        return clamp(
+            9.5 + (zoom - 5) * 0.5,
+            9.5,
+            12.5
+        );
+    }
+
+
+    return clamp(
+        9 + (zoom - 6) * 0.5,
+        9,
+        11.5
+    );
+}
+
+
+function drawCities() {
+
+    if (
+        !citiesToggle.checked ||
+        !citiesGeoJSON ||
+        !geographyCtx
+    ) {
+
+        return;
+    }
+
+
+    const zoom =
+        map.getZoom();
+
+
+    const bounds =
+        map.getBounds();
+
+
+    geographyCtx.textAlign =
+        "center";
+
+    geographyCtx.textBaseline =
+        "middle";
+
+
+    geographyCtx.lineJoin =
+        "round";
+
+
+    for (
+        const feature of citiesGeoJSON.features
+    ) {
+
+        if (
+            !shouldDrawCity(
+                feature,
+                zoom
+            )
+        ) {
+
+            continue;
+        }
+
+
+        if (
+            feature.geometry?.type !==
+            "Point"
+        ) {
+
+            continue;
+        }
+
+
+        const [
+            lon,
+            lat
+        ] =
+            feature.geometry.coordinates;
+
+
+        if (
+            !bounds.contains([
+                lon,
+                lat
+            ])
+        ) {
+
+            continue;
+        }
+
+
+        const name =
+            feature.properties?.name;
+
+
+        if (!name) {
+            continue;
+        }
+
+
+        const point =
+            map.project([
+                lon,
+                lat
+            ]);
+
+
+        const fontSize =
+            getCityFontSize(
+                feature,
+                zoom
+            );
+
+
+        geographyCtx.font =
+            `${fontSize}px Arial, Helvetica, sans-serif`;
+
+
+        /*
+         * White halo.
+         */
+
+        geographyCtx.strokeStyle =
+            "rgba(255,255,255,0.95)";
+
+
+        geographyCtx.lineWidth =
+            3;
+
+
+        geographyCtx.strokeText(
+            name,
+            point.x,
+            point.y
+        );
+
+
+        /*
+         * Text.
+         */
+
+        geographyCtx.fillStyle =
+            "#111111";
+
+
+        geographyCtx.fillText(
+            name,
+            point.x,
+            point.y
         );
     }
 }
 
 
 /* ==========================================================
-   FIELD INFORMATION
+   COMPLETE GEOGRAPHY RENDER
+   ========================================================== */
+
+const originalRenderGeographyOverlay =
+    renderGeographyOverlay;
+
+
+renderGeographyOverlay =
+    function () {
+
+        originalRenderGeographyOverlay();
+
+        drawCities();
+    };
+
+
+/* ==========================================================
+   FIELD INFO
    ========================================================== */
 
 function updateSbcapeFieldInfo() {
 
     if (!latestData) {
-
-        fieldTime.textContent =
-            "Loading latest analysis...";
-
         return;
     }
+
+
+    let analysisTime =
+        latestData.analysis_time ||
+        latestData.valid_time ||
+        latestData.time ||
+        null;
 
 
     const runId =
         getLatestRunId();
 
 
-    let analysisTime =
-
-        latestData.analysis_time ||
-
-        latestData.valid_time ||
-
-        latestData.time ||
-
-        null;
-
-
     if (
         !analysisTime &&
         runId &&
-        /^\d{8}_\d{2}$/.test(
-            runId
-        )
+        /^\d{8}_\d{2}$/.test(runId)
     ) {
 
-        const year =
-            runId.slice(
-                0,
-                4
-            );
-
-
-        const month =
-            runId.slice(
-                4,
-                6
-            );
-
-
-        const day =
-            runId.slice(
-                6,
-                8
-            );
-
-
-        const hour =
-            runId.slice(
-                9,
-                11
-            );
-
-
         analysisTime =
-            `${year}-${month}-${day}T${hour}:00:00Z`;
+
+            `${runId.slice(0,4)}-` +
+            `${runId.slice(4,6)}-` +
+            `${runId.slice(6,8)}T` +
+            `${runId.slice(9,11)}:00:00Z`;
+
     }
 
 
-    if (analysisTime) {
-
-        fieldTime.textContent =
-            `Analysis: ${formatAnalysisTime(analysisTime)}`;
-    }
-
-    else if (runId) {
-
-        fieldTime.textContent =
-            `Run: ${runId}`;
-    }
-
-    else {
-
-        fieldTime.textContent =
-            "Latest analysis";
-    }
+    fieldTime.textContent =
+        analysisTime
+            ? `Analysis: ${formatAnalysisTime(analysisTime)}`
+            : "Latest analysis";
 }
 
 
@@ -2590,46 +2548,28 @@ async function enableSbcape() {
         "Loading latest analysis...";
 
 
+    weatherCanvas.style.display =
+        "block";
+
+
     drawSbcapeLegend();
 
 
-    showWeatherOverlay();
+    if (!latestData) {
 
-
-    try {
-
-        if (!latestData) {
-
-            await loadLatestData();
-        }
-
-
-        updateSbcapeFieldInfo();
-
-
-        await renderSbcapeOverlay();
-
+        await loadLatestData();
     }
 
-    catch (error) {
 
-        console.error(
-
-            "[SBCAPE6] Unable to enable SBCAPE:",
-
-            error
-
-        );
+    updateSbcapeFieldInfo();
 
 
-        fieldTime.textContent =
-            "Unable to load SBCAPE data.";
-    }
+    await renderSbcapeOverlay();
 }
 
 
 /* ==========================================================
-   DISABLE FIELD
+   DISABLE WEATHER
    ========================================================== */
 
 function disableWeatherField() {
@@ -2641,14 +2581,14 @@ function disableWeatherField() {
     ++weatherRenderGeneration;
 
 
-    clearWeatherOverlay();
+    clearCanvas(
+        weatherCanvas,
+        weatherCtx
+    );
 
 
-    hideWeatherOverlay();
-
-
-    activeWeatherZoom =
-        null;
+    weatherCanvas.style.display =
+        "none";
 
 
     fieldInfo.style.display =
@@ -2657,923 +2597,40 @@ function disableWeatherField() {
 
     weatherLegend.style.display =
         "none";
+
+
+    renderGeographyOverlay();
 }
 
 
 /* ==========================================================
-   LOAD BASE GEOGRAPHY
+   FAST CACHED REDRAW
    ========================================================== */
 
-async function loadBaseGeography() {
-
-    /* ------------------------------------------------------
-       COUNTIES / STATES
-       ------------------------------------------------------ */
-
-    const usResponse =
-        await fetch(
-            "data/counties-10m.json"
-        );
-
-
-    if (!usResponse.ok) {
-
-        throw new Error(
-
-            `Unable to load counties-10m.json: ` +
-            `${usResponse.status}`
-
-        );
-    }
-
-
-    const us =
-        await usResponse.json();
-
-
-    const counties =
-        topojson.feature(
-
-            us,
-
-            us.objects.counties
-
-        );
-
-
-    const states =
-        topojson.feature(
-
-            us,
-
-            us.objects.states
-
-        );
-
-
-    map.addSource(
-
-        "counties-source",
-
-        {
-
-            type: "geojson",
-
-            data: counties
-
-        }
-
-    );
-
-
-    map.addSource(
-
-        "states-source",
-
-        {
-
-            type: "geojson",
-
-            data: states
-
-        }
-
-    );
-
-
-    map.addLayer(
-
-        {
-
-            id: "counties",
-
-            type: "line",
-
-            source:
-                "counties-source",
-
-            paint: {
-
-                "line-color":
-                    "#b8b8b8",
-
-                "line-width": [
-
-                    "interpolate",
-
-                    ["linear"],
-
-                    ["zoom"],
-
-                    3,
-                    0.25,
-
-                    6,
-                    0.45,
-
-                    9,
-                    0.7
-
-                ],
-
-                "line-opacity":
-                    0.8
-
-            }
-
-        }
-
-    );
-
-
-    map.addLayer(
-
-        {
-
-            id: "states",
-
-            type: "line",
-
-            source:
-                "states-source",
-
-            paint: {
-
-                "line-color":
-                    "#555555",
-
-                "line-width": [
-
-                    "interpolate",
-
-                    ["linear"],
-
-                    ["zoom"],
-
-                    3,
-                    0.8,
-
-                    6,
-                    1.1,
-
-                    9,
-                    1.4
-
-                ],
-
-                "line-opacity":
-                    0.95
-
-            }
-
-        }
-
-    );
-
-
-    /* ------------------------------------------------------
-       CITIES
-       ------------------------------------------------------ */
-
-    const citiesResponse =
-        await fetch(
-            "data/cities.geojson"
-        );
-
-
-    if (!citiesResponse.ok) {
-
-        throw new Error(
-
-            `Unable to load cities.geojson: ` +
-            `${citiesResponse.status}`
-
-        );
-    }
-
-
-    const cities =
-        await citiesResponse.json();
-
-
-    map.addSource(
-
-        "cities-source",
-
-        {
-
-            type: "geojson",
-
-            data: cities
-
-        }
-
-    );
-
-
-    /* ------------------------------------------------------
-       MAJOR CITIES
-       ------------------------------------------------------ */
-
-    map.addLayer(
-
-        {
-
-            id:
-                "cities-major",
-
-            type:
-                "symbol",
-
-            source:
-                "cities-source",
-
-            minzoom:
-                2,
-
-            filter: [
-
-                "<=",
-
-                ["get", "city_class"],
-
-                2
-
-            ],
-
-            layout: {
-
-                "visibility":
-                    "none",
-
-                "text-field":
-                    ["get", "name"],
-
-                "text-font": [
-                    "Arial",
-                    "Helvetica",
-                    "sans-serif"
-                ],
-
-                "text-size": [
-
-                    "interpolate",
-
-                    ["linear"],
-
-                    ["zoom"],
-
-                    2,
-                    10,
-
-                    4,
-                    11,
-
-                    6,
-                    12,
-
-                    8,
-                    13,
-
-                    10,
-                    14
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-padding":
-                    4,
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false
-
-            },
-
-            paint: {
-
-                "text-color":
-                    "#111111",
-
-                "text-halo-color":
-                    "#ffffff",
-
-                "text-halo-width":
-                    1.8
-
-            }
-
-        }
-
-    );
-
-
-    /* ------------------------------------------------------
-       REGIONAL CITIES
-       ------------------------------------------------------ */
-
-    map.addLayer(
-
-        {
-
-            id:
-                "cities-regional",
-
-            type:
-                "symbol",
-
-            source:
-                "cities-source",
-
-            minzoom:
-                4,
-
-            filter: [
-
-                "any",
-
-                [
-
-                    "==",
-
-                    ["get", "city_class"],
-
-                    3
-
-                ],
-
-                [
-
-                    "==",
-
-                    ["get", "name"],
-
-                    "North Platte"
-
-                ]
-
-            ],
-
-            layout: {
-
-                "visibility":
-                    "none",
-
-                "text-field":
-                    ["get", "name"],
-
-                "text-font": [
-                    "Arial",
-                    "Helvetica",
-                    "sans-serif"
-                ],
-
-                "text-size": [
-
-                    "interpolate",
-
-                    ["linear"],
-
-                    ["zoom"],
-
-                    4,
-                    10,
-
-                    5,
-                    11,
-
-                    7,
-                    12,
-
-                    9,
-                    13,
-
-                    11,
-                    14
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-padding":
-                    3,
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false
-
-            },
-
-            paint: {
-
-                "text-color":
-                    "#111111",
-
-                "text-halo-color":
-                    "#ffffff",
-
-                "text-halo-width":
-                    1.8
-
-            }
-
-        }
-
-    );
-
-
-    /* ------------------------------------------------------
-       LOCAL CITIES
-       ------------------------------------------------------ */
-
-    map.addLayer(
-
-        {
-
-            id:
-                "cities-local",
-
-            type:
-                "symbol",
-
-            source:
-                "cities-source",
-
-            minzoom:
-                5,
-
-            filter: [
-
-                "all",
-
-                [
-
-                    "==",
-
-                    ["get", "city_class"],
-
-                    4
-
-                ],
-
-                [
-
-                    "!=",
-
-                    ["get", "name"],
-
-                    "North Platte"
-
-                ]
-
-            ],
-
-            layout: {
-
-                "visibility":
-                    "none",
-
-                "text-field":
-                    ["get", "name"],
-
-                "text-font": [
-                    "Arial",
-                    "Helvetica",
-                    "sans-serif"
-                ],
-
-                "text-size": [
-
-                    "interpolate",
-
-                    ["linear"],
-
-                    ["zoom"],
-
-                    5,
-                    10,
-
-                    6,
-                    10.5,
-
-                    8,
-                    11.5,
-
-                    10,
-                    12.5
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-padding":
-                    2.5,
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false
-
-            },
-
-            paint: {
-
-                "text-color":
-                    "#202020",
-
-                "text-halo-color":
-                    "#ffffff",
-
-                "text-halo-width":
-                    1.6
-
-            }
-
-        }
-
-    );
-
-
-    /* ------------------------------------------------------
-       SMALL CITIES
-       ------------------------------------------------------ */
-
-    map.addLayer(
-
-        {
-
-            id:
-                "cities-small",
-
-            type:
-                "symbol",
-
-            source:
-                "cities-source",
-
-            minzoom:
-                6,
-
-            filter: [
-
-                "==",
-
-                ["get", "city_class"],
-
-                5
-
-            ],
-
-            layout: {
-
-                "visibility":
-                    "none",
-
-                "text-field":
-                    ["get", "name"],
-
-                "text-font": [
-                    "Arial",
-                    "Helvetica",
-                    "sans-serif"
-                ],
-
-                "text-size": [
-
-                    "interpolate",
-
-                    ["linear"],
-
-                    ["zoom"],
-
-                    6,
-                    9,
-
-                    7,
-                    9.5,
-
-                    9,
-                    10.5,
-
-                    11,
-                    11.5
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-padding":
-                    2,
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false
-
-            },
-
-            paint: {
-
-                "text-color":
-                    "#202020",
-
-                "text-halo-color":
-                    "#ffffff",
-
-                "text-halo-width":
-                    1.6
-
-            }
-
-        }
-
-    );
-}
-
-
-/* ==========================================================
-   MAP LOAD
-   ========================================================== */
-
-map.on(
-
-    "load",
-
-    async () => {
-
-        try {
-
-            await loadBaseGeography();
-
-
-            /*
-             * Create weather overlay only after MapLibre
-             * has initialized its own DOM structure.
-             */
-
-            createWeatherOverlay();
-
-
-            map.fitBounds(
-
-                sectors.lbf.bounds,
-
-                {
-
-                    padding: 30,
-
-                    duration: 0
-
-                }
-
-            );
-
-
-            drawSbcapeLegend();
-
-
-            try {
-
-                await loadLatestData();
-
-
-                console.log(
-                    "SPCOA latest analysis ready."
-                );
-
-            }
-
-            catch (error) {
-
-                console.warn(
-
-                    "Could not preload latest SPCOA information:",
-
-                    error
-
-                );
-            }
-
-        }
-
-        catch (error) {
-
-            console.error(
-
-                "Unable to initialize map:",
-
-                error
-
-            );
-        }
-
-    }
-
-);
-
-
-/* ==========================================================
-   SECTOR SELECTOR
-   ========================================================== */
-
-sectorSelect.addEventListener(
-
-    "change",
-
-    () => {
-
-        const sector =
-            sectors[
-                sectorSelect.value
-            ];
-
-
-        if (!sector) {
-            return;
-        }
-
-
-        map.fitBounds(
-
-            sector.bounds,
-
-            {
-
-                padding: 30,
-
-                duration: 700
-
-            }
-
-        );
-    }
-
-);
-
-
-/* ==========================================================
-   STATES TOGGLE
-   ========================================================== */
-
-statesToggle.addEventListener(
-
-    "change",
-
-    () => {
-
-        setLayerVisibility(
-
-            "states",
-
-            statesToggle.checked
-
-        );
-    }
-
-);
-
-
-/* ==========================================================
-   COUNTIES TOGGLE
-   ========================================================== */
-
-countiesToggle.addEventListener(
-
-    "change",
-
-    () => {
-
-        setLayerVisibility(
-
-            "counties",
-
-            countiesToggle.checked
-
-        );
-    }
-
-);
-
-
-/* ==========================================================
-   CITIES TOGGLE
-   ========================================================== */
-
-citiesToggle.addEventListener(
-
-    "change",
-
-    () => {
-
-        const visible =
-            citiesToggle.checked;
-
-
-        setLayerVisibility(
-            "cities-major",
-            visible
-        );
-
-
-        setLayerVisibility(
-            "cities-regional",
-            visible
-        );
-
-
-        setLayerVisibility(
-            "cities-local",
-            visible
-        );
-
-
-        setLayerVisibility(
-            "cities-small",
-            visible
-        );
-    }
-
-);
-
-
-/* ==========================================================
-   FIELD SELECTOR
-   ========================================================== */
-
-fieldSelect.addEventListener(
-
-    "change",
-
-    async () => {
-
-        const selected =
-            fieldSelect.value;
-
-
-        if (
-            selected ===
-            "sbcape"
-        ) {
-
-            await enableSbcape();
-
-            return;
-        }
-
-
-        disableWeatherField();
-    }
-
-);
-
-
-/* ==========================================================
-   REDRAW DURING MAP MOVEMENT
-   ========================================================== */
-
-/*
- * During movement, redraw cached tiles immediately.
- *
- * This keeps the overlay visually attached to the map.
- */
-
-function redrawCachedWeatherTiles() {
+function redrawCachedWeather() {
 
     if (
         activeField !== "sbcape" ||
-        !weatherCanvas ||
-        !weatherCtx ||
         !latestData
     ) {
+
+        renderGeographyOverlay();
 
         return;
     }
 
 
-    resizeWeatherOverlay();
+    resizeOverlayCanvases();
 
 
-    clearWeatherOverlay();
+    clearCanvas(
+        weatherCanvas,
+        weatherCtx
+    );
 
 
     const runId =
         getLatestRunId();
-
-
-    if (!runId) {
-        return;
-    }
 
 
     const z =
@@ -3592,20 +2649,20 @@ function redrawCachedWeatherTiles() {
             `${runId}/${tile.z}/${tile.x}/${tile.y}`;
 
 
-        const tileCanvas =
+        const canvas =
             weatherColorCanvasCache.get(
                 key
             );
 
 
-        if (!tileCanvas) {
+        if (!canvas) {
             continue;
         }
 
 
         drawWeatherTile(
 
-            tileCanvas,
+            canvas,
 
             tile.z,
 
@@ -3615,38 +2672,166 @@ function redrawCachedWeatherTiles() {
 
         );
     }
+
+
+    renderGeographyOverlay();
 }
 
 
 /* ==========================================================
-   MOVE
+   MAP LOAD
    ========================================================== */
 
 map.on(
+    "load",
+    async () => {
 
-    "move",
+        try {
 
-    () => {
+            createOverlayCanvases();
 
-        if (
-            activeField === "sbcape"
-        ) {
 
-            redrawCachedWeatherTiles();
+            await loadBaseGeography();
+
+
+            map.fitBounds(
+
+                sectors.lbf.bounds,
+
+                {
+                    padding: 30,
+                    duration: 0
+                }
+
+            );
+
+
+            drawSbcapeLegend();
+
+
+            await loadLatestData();
+
+
+            console.log(
+                "[SBCAPE7] SPCOA viewer ready."
+            );
+
+        }
+
+        catch (error) {
+
+            console.error(
+                "Viewer initialization failed:",
+                error
+            );
         }
     }
-
 );
 
 
 /* ==========================================================
-   MOVE END
+   SECTOR
+   ========================================================== */
+
+sectorSelect.addEventListener(
+    "change",
+    () => {
+
+        const sector =
+            sectors[
+                sectorSelect.value
+            ];
+
+
+        if (!sector) {
+            return;
+        }
+
+
+        map.fitBounds(
+
+            sector.bounds,
+
+            {
+                padding: 30,
+                duration: 700
+            }
+
+        );
+    }
+);
+
+
+/* ==========================================================
+   MAP FEATURE TOGGLES
+   ========================================================== */
+
+statesToggle.addEventListener(
+    "change",
+    () => {
+
+        renderGeographyOverlay();
+    }
+);
+
+
+countiesToggle.addEventListener(
+    "change",
+    () => {
+
+        renderGeographyOverlay();
+    }
+);
+
+
+citiesToggle.addEventListener(
+    "change",
+    () => {
+
+        renderGeographyOverlay();
+    }
+);
+
+
+/* ==========================================================
+   FIELD SELECTOR
+   ========================================================== */
+
+fieldSelect.addEventListener(
+    "change",
+    async () => {
+
+        if (
+            fieldSelect.value ===
+            "sbcape"
+        ) {
+
+            await enableSbcape();
+        }
+
+        else {
+
+            disableWeatherField();
+        }
+    }
+);
+
+
+/* ==========================================================
+   MAP MOVEMENT
    ========================================================== */
 
 map.on(
+    "move",
+    () => {
 
+        redrawCachedWeather();
+    }
+);
+
+
+map.on(
     "moveend",
-
     async () => {
 
         if (
@@ -3655,30 +2840,21 @@ map.on(
 
             await renderSbcapeOverlay();
         }
-    }
 
+        else {
+
+            renderGeographyOverlay();
+        }
+    }
 );
 
 
-/* ==========================================================
-   RESIZE
-   ========================================================== */
-
 map.on(
-
     "resize",
-
     () => {
 
-        resizeWeatherOverlay();
+        resizeOverlayCanvases();
 
-
-        if (
-            activeField === "sbcape"
-        ) {
-
-            redrawCachedWeatherTiles();
-        }
+        redrawCachedWeather();
     }
-
 );
