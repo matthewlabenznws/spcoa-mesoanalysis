@@ -17,14 +17,17 @@
   >
 
   <!-- Site CSS -->
-  <link rel="stylesheet" href="style.css?v=20260921-sbcape1">
+  <link
+    rel="stylesheet"
+    href="style.css?v=20260921-sbcape2"
+  >
 </head>
 
 <body>
 
-  <!-- =======================================================
+  <!-- =====================================================
        HEADER
-       ======================================================= -->
+       ===================================================== -->
   <header class="site-header">
     <div class="header-text">
       <h1>SPCOA Mesoanalysis</h1>
@@ -33,19 +36,17 @@
   </header>
 
 
-  <!-- =======================================================
+  <!-- =====================================================
        MAIN APPLICATION
-       ======================================================= -->
+       ===================================================== -->
   <main class="app">
 
-    <!-- =====================================================
+    <!-- ===================================================
          SIDEBAR
-         ===================================================== -->
+         =================================================== -->
     <aside class="sidebar">
 
-      <!-- =========================
-           SECTOR
-           ========================= -->
+      <!-- SECTOR -->
       <section class="sidebar-section">
         <h2>Sector</h2>
 
@@ -64,9 +65,7 @@
       </section>
 
 
-      <!-- =========================
-           MAP FEATURES
-           ========================= -->
+      <!-- MAP FEATURES -->
       <section class="sidebar-section">
         <h2>Map Features</h2>
 
@@ -116,9 +115,7 @@
       </section>
 
 
-      <!-- =========================
-           CWA
-           ========================= -->
+      <!-- CWA -->
       <section class="sidebar-section">
         <h2>CWA</h2>
 
@@ -132,17 +129,19 @@
       </section>
 
 
-      <!-- =========================
-           SPCOA FIELDS
-           ========================= -->
+      <!-- SPCOA FIELDS -->
       <section class="sidebar-section">
         <h2>SPCOA Fields</h2>
 
-        <label for="field-select">Field</label>
+        <label for="field-select">
+          Field
+        </label>
 
         <select id="field-select">
           <option value="none">None</option>
-          <option value="sbcape">Surface-Based CAPE</option>
+          <option value="sbcape">
+            Surface-Based CAPE
+          </option>
         </select>
 
         <div
@@ -161,16 +160,14 @@
     </aside>
 
 
-    <!-- =====================================================
+    <!-- ===================================================
          MAP
-         ===================================================== -->
+         =================================================== -->
     <section class="map-wrapper">
 
       <div id="map"></div>
 
-      <!-- ===============================================
-           WEATHER LEGEND
-           =============================================== -->
+      <!-- WEATHER LEGEND -->
       <div
         id="weather-legend"
         class="weather-legend"
@@ -214,9 +211,9 @@
   </main>
 
 
-  <!-- =======================================================
-       JAVASCRIPT LIBRARIES
-       ======================================================= -->
+  <!-- =====================================================
+       JAVASCRIPT
+       ===================================================== -->
 
   <!-- MapLibre -->
   <script
@@ -229,7 +226,7 @@
   ></script>
 
   <!-- Main application -->
-  <script src="app.js?v=20260921-sbcape1"></script>
+  <script src="app.js?v=20260921-sbcape2"></script>
 
 </body>
 </html>
