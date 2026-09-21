@@ -11,9 +11,12 @@
 //   - Hierarchical city labels
 //   - Expanded geographic sectors
 //
-// Disabled / deferred:
-//   - Highways
-//   - CWA boundaries
+// Default visibility:
+//   - States: ON
+//   - Counties: ON
+//   - Cities: OFF
+//   - Highways: DISABLED
+//   - CWA boundaries: DISABLED
 //
 // Future:
 //   - SPCOA meteorological fields
@@ -36,12 +39,10 @@
 //     [west longitude, south latitude],
 //     [east longitude, north latitude]
 // ]
-//
-// These are DISPLAY sectors only.
-// They do not control which meteorological data are downloaded.
 // ============================================================
 
 const sectors = {
+
 
     // --------------------------------------------------------
     // LBF CWA
@@ -85,9 +86,6 @@ const sectors = {
 
     // --------------------------------------------------------
     // NEBRASKA
-    //
-    // Includes a little surrounding territory so Nebraska
-    // is not pressed directly against the map edges.
     // --------------------------------------------------------
 
     nebraska: {
@@ -168,9 +166,6 @@ const sectors = {
 
     // --------------------------------------------------------
     // HIGH PLAINS
-    //
-    // Useful for severe weather, fire weather, and lee
-    // cyclogenesis setups from the Dakotas through Texas.
     // --------------------------------------------------------
 
     high_plains: {
@@ -256,10 +251,7 @@ const sectors = {
 //
 // No basemap.
 // No terrain.
-// No glyph server.
-//
-// Meteorological fields will eventually sit between the
-// geographic boundary layers and city labels.
+// No external glyph server.
 // ============================================================
 
 const mapStyle = {
@@ -662,10 +654,6 @@ map.on(
 
             // =================================================
             // HIGHWAYS
-            //
-            // Intentionally disabled.
-            //
-            // primary-roads.geojson is NOT downloaded.
             // =================================================
 
             console.log(
@@ -736,8 +724,6 @@ map.on(
 
             // =================================================
             // CITY FONT STACK
-            //
-            // Local/system fonts.
             // =================================================
 
             const cityFont = [
@@ -754,9 +740,9 @@ map.on(
             // =================================================
             // MAJOR CITIES
             //
-            // city_class 1 + 2
+            // Classes 1 + 2
             //
-            // These remain visible at the widest zoom levels.
+            // Hidden by default.
             // =================================================
 
             map.addLayer({
@@ -789,7 +775,7 @@ map.on(
                 layout: {
 
                     visibility:
-                        "visible",
+                        "none",
 
                     "text-field": [
 
@@ -858,16 +844,9 @@ map.on(
             // =================================================
             // REGIONAL CITIES
             //
-            // city_class 3
+            // Class 3 + North Platte
             //
-            // NORTH PLATTE:
-            //
-            // North Platte is stored as class 4 in the current
-            // cities.geojson, but this is an LBF-focused
-            // meteorological viewer.
-            //
-            // We therefore promote North Platte into this
-            // cartographic tier without modifying the GeoJSON.
+            // Hidden by default.
             // =================================================
 
             map.addLayer({
@@ -919,7 +898,7 @@ map.on(
                 layout: {
 
                     visibility:
-                        "visible",
+                        "none",
 
                     "text-field": [
 
@@ -988,10 +967,12 @@ map.on(
             // =================================================
             // IMPORTANT LOCAL CITIES
             //
-            // city_class 4
+            // Class 4
             //
-            // North Platte is excluded because it is displayed
-            // in the regional layer above.
+            // North Platte is excluded because it is promoted
+            // into the regional tier.
+            //
+            // Hidden by default.
             // =================================================
 
             map.addLayer({
@@ -1043,7 +1024,7 @@ map.on(
                 layout: {
 
                     visibility:
-                        "visible",
+                        "none",
 
                     "text-field": [
 
@@ -1110,7 +1091,9 @@ map.on(
             // =================================================
             // SMALL LOCAL COMMUNITIES
             //
-            // city_class 5
+            // Class 5
+            //
+            // Hidden by default.
             // =================================================
 
             map.addLayer({
@@ -1143,7 +1126,7 @@ map.on(
                 layout: {
 
                     visibility:
-                        "visible",
+                        "none",
 
                     "text-field": [
 
@@ -1212,6 +1195,11 @@ map.on(
             );
 
 
+            console.log(
+                "Cities hidden by default."
+            );
+
+
             // =================================================
             // FINAL LAYER ORDER
             //
@@ -1222,7 +1210,7 @@ map.on(
             // states
             // cities
             //
-            // Eventually:
+            // Future:
             //
             // background
             // meteorological shading
@@ -1521,6 +1509,11 @@ if (countiesToggle) {
 
 // ============================================================
 // CITIES TOGGLE
+//
+// All four city tiers start hidden.
+//
+// Checking "Cities" turns them on.
+// Unchecking "Cities" turns them off.
 // ============================================================
 
 const citiesToggle =
