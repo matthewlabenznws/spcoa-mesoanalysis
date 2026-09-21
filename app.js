@@ -2,18 +2,28 @@
 // SPCOA MESOANALYSIS
 // app.js
 //
-// MapLibre GL JS 6.10.0
+// MapLibre GL JS 5.11.0
 //
-// Current layers:
+// Current:
 //   - White background
 //   - County boundaries
 //   - State boundaries
-//   - Primary / Interstate roads
-//   - City labels using LOCAL browser fonts
+//   - City labels using LOCAL / SYSTEM fonts
+//
+// Disabled / deferred:
+//   - Highways
+//   - CWA boundaries
 //
 // Future:
-//   - CWA boundaries
 //   - SPCOA meteorological fields
+//
+// IMPORTANT:
+//
+// There is intentionally NO "glyphs" property in the map style.
+//
+// Beginning with MapLibre GL JS 5.11.0, when "glyphs" is
+// omitted, text-font is interpreted as a cascading list of
+// local/system fonts.
 // ============================================================
 
 
@@ -24,35 +34,66 @@
 const sectors = {
 
     lbf: {
-        name: "LBF CWA",
+
+        name:
+            "LBF CWA",
+
         bounds: [
+
             [-103.4, 39.8],
+
             [-98.6, 43.3]
+
         ]
+
     },
+
 
     regional: {
-        name: "LBF Regional",
+
+        name:
+            "LBF Regional",
+
         bounds: [
+
             [-106.0, 38.0],
+
             [-96.0, 45.0]
+
         ]
+
     },
+
 
     central_plains: {
-        name: "Central Plains",
+
+        name:
+            "Central Plains",
+
         bounds: [
+
             [-106.5, 34.0],
+
             [-91.0, 45.5]
+
         ]
+
     },
 
+
     conus: {
-        name: "CONUS",
+
+        name:
+            "CONUS",
+
         bounds: [
+
             [-125.0, 24.0],
+
             [-66.0, 50.0]
+
         ]
+
     }
 
 };
@@ -61,30 +102,36 @@ const sectors = {
 // ============================================================
 // MAP STYLE
 //
-// IMPORTANT:
+// NO GLYPH SERVER.
 //
-// There is intentionally NO "glyphs" property.
-//
-// MapLibre 5.11+ can use fonts installed locally on the user's
-// system when glyphs is omitted.
+// MapLibre 5.11+ will use local/system fonts.
 // ============================================================
 
 const mapStyle = {
 
-    version: 8,
+    version:
+        8,
 
-    sources: {},
+    sources:
+        {},
 
     layers: [
 
         {
-            id: "background",
 
-            type: "background",
+            id:
+                "background",
+
+            type:
+                "background",
 
             paint: {
-                "background-color": "#ffffff"
+
+                "background-color":
+                    "#ffffff"
+
             }
+
         }
 
     ]
@@ -96,26 +143,36 @@ const mapStyle = {
 // CREATE MAP
 // ============================================================
 
-const map = new maplibregl.Map({
+const map =
+    new maplibregl.Map({
 
-    container: "map",
+        container:
+            "map",
 
-    style: mapStyle,
+        style:
+            mapStyle,
 
-    center: [
-        -100.75,
-        41.1
-    ],
+        center: [
 
-    zoom: 6,
+            -100.75,
 
-    minZoom: 2,
+            41.1
 
-    maxZoom: 12,
+        ],
 
-    attributionControl: false
+        zoom:
+            6,
 
-});
+        minZoom:
+            2,
+
+        maxZoom:
+            12,
+
+        attributionControl:
+            false
+
+    });
 
 
 // ============================================================
@@ -126,9 +183,11 @@ map.addControl(
 
     new maplibregl.NavigationControl({
 
-        showCompass: false,
+        showCompass:
+            false,
 
-        showZoom: true
+        showZoom:
+            true
 
     }),
 
@@ -141,7 +200,8 @@ map.addControl(
 
     new maplibregl.AttributionControl({
 
-        compact: true,
+        compact:
+            true,
 
         customAttribution:
             "Geography: U.S. Census Bureau / us-atlas"
@@ -155,944 +215,915 @@ map.addControl(
 // MAP LOAD
 // ============================================================
 
-map.on("load", async () => {
+map.on(
 
-    console.log(
-        "SPCOA meteorological map loaded."
-    );
+    "load",
 
+    async () => {
 
-    try {
-
-
-        // ====================================================
-        // LOAD COUNTY / STATE TOPOJSON
-        // ====================================================
 
         console.log(
-            "Loading local county geography..."
+            "SPCOA meteorological map loaded."
         );
 
 
-        const geographyResponse =
-            await fetch(
-                "data/counties-10m.json"
+        console.log(
+            "MapLibre version:",
+            maplibregl.version
+        );
+
+
+        console.log(
+            "Local/system font rendering enabled."
+        );
+
+
+        try {
+
+
+            // =================================================
+            // LOAD COUNTY / STATE TOPOJSON
+            // =================================================
+
+            console.log(
+                "Loading local county geography..."
             );
 
 
-        if (!geographyResponse.ok) {
-
-            throw new Error(
-
-                `Unable to load counties-10m.json: ` +
-                `${geographyResponse.status} ` +
-                `${geographyResponse.statusText}`
-
-            );
-
-        }
+            const geographyResponse =
+                await fetch(
+                    "data/counties-10m.json"
+                );
 
 
-        const topology =
-            await geographyResponse.json();
+            if (!geographyResponse.ok) {
 
+                throw new Error(
 
-        console.log(
-            "Local TopoJSON loaded."
-        );
+                    `Unable to load counties-10m.json: ` +
+                    `${geographyResponse.status} ` +
+                    `${geographyResponse.statusText}`
 
-
-        console.log(
-
-            "Available TopoJSON objects:",
-
-            Object.keys(
-                topology.objects
-            )
-
-        );
-
-
-        // ====================================================
-        // COUNTIES
-        // ====================================================
-
-        const countiesGeoJSON =
-            topojson.feature(
-
-                topology,
-
-                topology.objects.counties
-
-            );
-
-
-        console.log(
-
-            `County features: ` +
-            `${countiesGeoJSON.features.length}`
-
-        );
-
-
-        map.addSource(
-
-            "counties",
-
-            {
-
-                type: "geojson",
-
-                data: countiesGeoJSON
+                );
 
             }
 
-        );
+
+            const topology =
+                await geographyResponse.json();
 
 
-        map.addLayer({
+            console.log(
+                "Local TopoJSON loaded."
+            );
 
-            id: "county-lines",
 
-            type: "line",
+            console.log(
 
-            source: "counties",
+                "Available TopoJSON objects:",
 
-            layout: {
+                Object.keys(
+                    topology.objects
+                )
 
-                visibility:
-                    "visible",
+            );
 
-                "line-join":
-                    "round",
 
-                "line-cap":
-                    "round"
+            // =================================================
+            // COUNTIES
+            // =================================================
 
-            },
+            const countiesGeoJSON =
+                topojson.feature(
 
-            paint: {
+                    topology,
 
-                "line-color":
-                    "#a0a0a0",
+                    topology.objects.counties
 
-                "line-width": [
+                );
 
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
 
-                    2, 0.20,
-                    4, 0.35,
-                    5, 0.50,
-                    6, 0.65,
-                    7, 0.80,
-                    9, 1.00
+            console.log(
+
+                `County features: ` +
+                `${countiesGeoJSON.features.length}`
+
+            );
+
+
+            map.addSource(
+
+                "counties",
+
+                {
+
+                    type:
+                        "geojson",
+
+                    data:
+                        countiesGeoJSON
+
+                }
+
+            );
+
+
+            map.addLayer({
+
+                id:
+                    "county-lines",
+
+                type:
+                    "line",
+
+                source:
+                    "counties",
+
+                layout: {
+
+                    visibility:
+                        "visible",
+
+                    "line-join":
+                        "round",
+
+                    "line-cap":
+                        "round"
+
+                },
+
+                paint: {
+
+                    "line-color":
+                        "#a0a0a0",
+
+                    "line-width": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+                        2, 0.20,
+
+                        4, 0.35,
+
+                        5, 0.50,
+
+                        6, 0.65,
+
+                        7, 0.80,
+
+                        9, 1.00
+
+                    ],
+
+                    "line-opacity": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+                        2, 0.20,
+
+                        3, 0.30,
+
+                        4, 0.45,
+
+                        5, 0.65,
+
+                        6, 0.80,
+
+                        8, 0.90
+
+                    ]
+
+                }
+
+            });
+
+
+            // =================================================
+            // STATES
+            // =================================================
+
+            const statesGeoJSON =
+                topojson.feature(
+
+                    topology,
+
+                    topology.objects.states
+
+                );
+
+
+            console.log(
+
+                `State features: ` +
+                `${statesGeoJSON.features.length}`
+
+            );
+
+
+            map.addSource(
+
+                "states",
+
+                {
+
+                    type:
+                        "geojson",
+
+                    data:
+                        statesGeoJSON
+
+                }
+
+            );
+
+
+            map.addLayer({
+
+                id:
+                    "state-lines",
+
+                type:
+                    "line",
+
+                source:
+                    "states",
+
+                layout: {
+
+                    visibility:
+                        "visible",
+
+                    "line-join":
+                        "round",
+
+                    "line-cap":
+                        "round"
+
+                },
+
+                paint: {
+
+                    "line-color":
+                        "#333333",
+
+                    "line-width": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+                        2, 0.70,
+
+                        4, 0.90,
+
+                        6, 1.20,
+
+                        8, 1.50
+
+                    ],
+
+                    "line-opacity":
+                        1.0
+
+                }
+
+            });
+
+
+            console.log(
+                "County and state layers successfully added."
+            );
+
+
+            // =================================================
+            // HIGHWAYS
+            //
+            // Intentionally disabled.
+            //
+            // We are not downloading primary-roads.geojson
+            // while this feature is disabled.
+            // =================================================
+
+            console.log(
+                "Highways disabled."
+            );
+
+
+            // =================================================
+            // LOAD CITY LABELS
+            // =================================================
+
+            console.log(
+                "Loading city labels..."
+            );
+
+
+            const citiesResponse =
+                await fetch(
+                    "data/cities.geojson"
+                );
+
+
+            if (!citiesResponse.ok) {
+
+                throw new Error(
+
+                    `Unable to load cities.geojson: ` +
+                    `${citiesResponse.status} ` +
+                    `${citiesResponse.statusText}`
+
+                );
+
+            }
+
+
+            const citiesGeoJSON =
+                await citiesResponse.json();
+
+
+            console.log(
+
+                `City features: ` +
+                `${citiesGeoJSON.features.length}`
+
+            );
+
+
+            // =================================================
+            // CITY SOURCE
+            // =================================================
+
+            map.addSource(
+
+                "cities",
+
+                {
+
+                    type:
+                        "geojson",
+
+                    data:
+                        citiesGeoJSON
+
+                }
+
+            );
+
+
+            // =================================================
+            // CITY FONT STACK
+            //
+            // Because the style does NOT contain "glyphs",
+            // MapLibre 5.11+ treats this as a cascading list
+            // of local/system fonts.
+            //
+            // Arial is available on Windows, which is ideal
+            // for your primary development environment.
+            //
+            // Helvetica and sans-serif provide fallbacks.
+            // =================================================
+
+            const cityFont = [
+
+                "Arial",
+
+                "Helvetica",
+
+                "sans-serif"
+
+            ];
+
+
+            // =================================================
+            // MAJOR CITIES
+            //
+            // city_class 1 + 2
+            // =================================================
+
+            map.addLayer({
+
+                id:
+                    "cities-major",
+
+                type:
+                    "symbol",
+
+                source:
+                    "cities",
+
+                minzoom:
+                    2,
+
+                filter: [
+
+                    "<=",
+
+                    [
+                        "get",
+                        "city_class"
+                    ],
+
+                    2
 
                 ],
 
-                "line-opacity": [
+                layout: {
 
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
+                    visibility:
+                        "visible",
 
-                    2, 0.20,
-                    3, 0.30,
-                    4, 0.45,
-                    5, 0.65,
-                    6, 0.80,
-                    8, 0.90
+                    "text-field": [
 
-                ]
+                        "get",
 
-            }
+                        "name"
 
-        });
+                    ],
 
+                    "text-font":
+                        cityFont,
 
-        // ====================================================
-        // STATES
-        // ====================================================
+                    "text-size": [
 
-        const statesGeoJSON =
-            topojson.feature(
+                        "interpolate",
 
-                topology,
+                        ["linear"],
 
-                topology.objects.states
+                        ["zoom"],
 
-            );
+                        2, 9,
 
+                        4, 10,
 
-        console.log(
+                        6, 11,
 
-            `State features: ` +
-            `${statesGeoJSON.features.length}`
+                        8, 12,
 
-        );
+                        10, 13
 
+                    ],
 
-        map.addSource(
+                    "text-anchor":
+                        "center",
 
-            "states",
+                    "text-allow-overlap":
+                        false,
 
-            {
+                    "text-ignore-placement":
+                        false,
 
-                type: "geojson",
+                    "text-padding":
+                        4
 
-                data: statesGeoJSON
+                },
 
-            }
+                paint: {
 
-        );
+                    "text-color":
+                        "#202020",
 
+                    "text-halo-color":
+                        "#ffffff",
 
-        map.addLayer({
+                    "text-halo-width":
+                        1.5,
 
-            id: "state-lines",
+                    "text-halo-blur":
+                        0.3
 
-            type: "line",
+                }
 
-            source: "states",
+            });
 
-            layout: {
 
-                visibility:
-                    "visible",
+            // =================================================
+            // REGIONAL CITIES
+            //
+            // city_class 3
+            // =================================================
 
-                "line-join":
-                    "round",
+            map.addLayer({
 
-                "line-cap":
-                    "round"
+                id:
+                    "cities-regional",
 
-            },
+                type:
+                    "symbol",
 
-            paint: {
+                source:
+                    "cities",
 
-                "line-color":
-                    "#333333",
+                minzoom:
+                    4,
 
-                "line-width": [
+                filter: [
 
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
+                    "==",
 
-                    2, 0.70,
-                    4, 0.90,
-                    6, 1.20,
-                    8, 1.50
+                    [
+                        "get",
+                        "city_class"
+                    ],
 
-                ],
-
-                "line-opacity":
-                    1.0
-
-            }
-
-        });
-
-
-        console.log(
-            "County and state layers successfully added."
-        );
-
-
-        // ====================================================
-        // LOAD PRIMARY ROADS
-        // ====================================================
-
-        console.log(
-            "Loading primary roads..."
-        );
-
-
-        const roadsResponse =
-            await fetch(
-                "data/primary-roads.geojson"
-            );
-
-
-        if (!roadsResponse.ok) {
-
-            throw new Error(
-
-                `Unable to load primary-roads.geojson: ` +
-                `${roadsResponse.status} ` +
-                `${roadsResponse.statusText}`
-
-            );
-
-        }
-
-
-        const roadsGeoJSON =
-            await roadsResponse.json();
-
-
-        console.log(
-
-            `Primary road features: ` +
-            `${roadsGeoJSON.features.length}`
-
-        );
-
-
-        // ====================================================
-        // ROAD SOURCE
-        // ====================================================
-
-        map.addSource(
-
-            "primary-roads",
-
-            {
-
-                type: "geojson",
-
-                data: roadsGeoJSON
-
-            }
-
-        );
-
-
-        // ====================================================
-        // PRIMARY / INTERSTATE ROAD LAYER
-        // ============================================================
-
-        map.addLayer({
-
-            id: "primary-road-lines",
-
-            type: "line",
-
-            source: "primary-roads",
-
-            layout: {
-
-                visibility:
-                    "visible",
-
-                "line-join":
-                    "round",
-
-                "line-cap":
-                    "round"
-
-            },
-
-            paint: {
-
-                "line-color":
-                    "#3B73B9",
-
-                "line-width": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    2, 0.35,
-                    3, 0.50,
-                    4, 0.70,
-                    5, 0.95,
-                    6, 1.30,
-                    7, 1.65,
-                    8, 1.90,
-                    10, 2.30
-
-                ],
-
-                "line-opacity": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    2, 0.35,
-                    3, 0.50,
-                    4, 0.65,
-                    5, 0.80,
-                    6, 0.90
-
-                ]
-
-            }
-
-        });
-
-
-        // ====================================================
-        // KEEP STATE BOUNDARIES ABOVE ROADS
-        // ====================================================
-
-        if (
-            map.getLayer(
-                "state-lines"
-            )
-        ) {
-
-            map.moveLayer(
-                "state-lines"
-            );
-
-        }
-
-
-        console.log(
-            "Primary roads successfully added."
-        );
-
-
-        // ====================================================
-        // LOAD CITY LABELS
-        // ====================================================
-
-        console.log(
-            "Loading city labels..."
-        );
-
-
-        const citiesResponse =
-            await fetch(
-                "data/cities.geojson"
-            );
-
-
-        if (!citiesResponse.ok) {
-
-            throw new Error(
-
-                `Unable to load cities.geojson: ` +
-                `${citiesResponse.status} ` +
-                `${citiesResponse.statusText}`
-
-            );
-
-        }
-
-
-        const citiesGeoJSON =
-            await citiesResponse.json();
-
-
-        console.log(
-
-            `City features: ` +
-            `${citiesGeoJSON.features.length}`
-
-        );
-
-
-        // ====================================================
-        // CITY SOURCE
-        // ====================================================
-
-        map.addSource(
-
-            "cities",
-
-            {
-
-                type: "geojson",
-
-                data: citiesGeoJSON
-
-            }
-
-        );
-
-
-        // ====================================================
-        // LOCAL FONT STACK
-        //
-        // Because "glyphs" is omitted from the style,
-        // MapLibre interprets these as local browser/system
-        // font fallbacks.
-        // ====================================================
-
-        const cityFont = [
-
-            "Arial",
-
-            "Helvetica",
-
-            "sans-serif"
-
-        ];
-
-
-        // ====================================================
-        // MAJOR CITIES
-        //
-        // Classes 1 + 2
-        // ====================================================
-
-        map.addLayer({
-
-            id: "cities-major",
-
-            type: "symbol",
-
-            source: "cities",
-
-            minzoom: 2,
-
-            filter: [
-
-                "<=",
-
-                ["get", "city_class"],
-
-                2
-
-            ],
-
-            layout: {
-
-                visibility:
-                    "visible",
-
-                "text-field": [
-
-                    "get",
-
-                    "name"
-
-                ],
-
-                "text-font":
-                    cityFont,
-
-                "text-size": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    2, 9,
-                    4, 10,
-                    6, 11,
-                    8, 12,
-                    10, 13
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false,
-
-                "text-padding":
-                    4
-
-            },
-
-            paint: {
-
-                "text-color":
-                    "#202020",
-
-                "text-halo-color":
-                    "#ffffff",
-
-                "text-halo-width":
-                    1.5,
-
-                "text-halo-blur":
-                    0.3
-
-            }
-
-        });
-
-
-        // ====================================================
-        // REGIONAL CITIES
-        //
-        // Class 3
-        // ====================================================
-
-        map.addLayer({
-
-            id: "cities-regional",
-
-            type: "symbol",
-
-            source: "cities",
-
-            minzoom: 4,
-
-            filter: [
-
-                "==",
-
-                ["get", "city_class"],
-
-                3
-
-            ],
-
-            layout: {
-
-                visibility:
-                    "visible",
-
-                "text-field": [
-
-                    "get",
-
-                    "name"
-
-                ],
-
-                "text-font":
-                    cityFont,
-
-                "text-size": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    4, 9,
-                    5, 10,
-                    7, 11,
-                    9, 12
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false,
-
-                "text-padding":
                     3
 
-            },
+                ],
 
-            paint: {
+                layout: {
 
-                "text-color":
-                    "#252525",
+                    visibility:
+                        "visible",
 
-                "text-halo-color":
-                    "#ffffff",
+                    "text-field": [
 
-                "text-halo-width":
-                    1.5,
+                        "get",
 
-                "text-halo-blur":
-                    0.3
+                        "name"
+
+                    ],
+
+                    "text-font":
+                        cityFont,
+
+                    "text-size": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+                        4, 9,
+
+                        5, 10,
+
+                        7, 11,
+
+                        9, 12
+
+                    ],
+
+                    "text-anchor":
+                        "center",
+
+                    "text-allow-overlap":
+                        false,
+
+                    "text-ignore-placement":
+                        false,
+
+                    "text-padding":
+                        3
+
+                },
+
+                paint: {
+
+                    "text-color":
+                        "#252525",
+
+                    "text-halo-color":
+                        "#ffffff",
+
+                    "text-halo-width":
+                        1.5,
+
+                    "text-halo-blur":
+                        0.3
+
+                }
+
+            });
+
+
+            // =================================================
+            // IMPORTANT LOCAL CITIES
+            //
+            // city_class 4
+            // =================================================
+
+            map.addLayer({
+
+                id:
+                    "cities-local",
+
+                type:
+                    "symbol",
+
+                source:
+                    "cities",
+
+                minzoom:
+                    5,
+
+                filter: [
+
+                    "==",
+
+                    [
+                        "get",
+                        "city_class"
+                    ],
+
+                    4
+
+                ],
+
+                layout: {
+
+                    visibility:
+                        "visible",
+
+                    "text-field": [
+
+                        "get",
+
+                        "name"
+
+                    ],
+
+                    "text-font":
+                        cityFont,
+
+                    "text-size": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+                        5, 9,
+
+                        6, 10,
+
+                        8, 11,
+
+                        10, 12
+
+                    ],
+
+                    "text-anchor":
+                        "center",
+
+                    "text-allow-overlap":
+                        false,
+
+                    "text-ignore-placement":
+                        false,
+
+                    "text-padding":
+                        2
+
+                },
+
+                paint: {
+
+                    "text-color":
+                        "#303030",
+
+                    "text-halo-color":
+                        "#ffffff",
+
+                    "text-halo-width":
+                        1.4,
+
+                    "text-halo-blur":
+                        0.3
+
+                }
+
+            });
+
+
+            // =================================================
+            // SMALL LOCAL COMMUNITIES
+            //
+            // city_class 5
+            // =================================================
+
+            map.addLayer({
+
+                id:
+                    "cities-small",
+
+                type:
+                    "symbol",
+
+                source:
+                    "cities",
+
+                minzoom:
+                    6,
+
+                filter: [
+
+                    "==",
+
+                    [
+                        "get",
+                        "city_class"
+                    ],
+
+                    5
+
+                ],
+
+                layout: {
+
+                    visibility:
+                        "visible",
+
+                    "text-field": [
+
+                        "get",
+
+                        "name"
+
+                    ],
+
+                    "text-font":
+                        cityFont,
+
+                    "text-size": [
+
+                        "interpolate",
+
+                        ["linear"],
+
+                        ["zoom"],
+
+                        6, 8,
+
+                        7, 9,
+
+                        9, 10,
+
+                        11, 11
+
+                    ],
+
+                    "text-anchor":
+                        "center",
+
+                    "text-allow-overlap":
+                        false,
+
+                    "text-ignore-placement":
+                        false,
+
+                    "text-padding":
+                        2
+
+                },
+
+                paint: {
+
+                    "text-color":
+                        "#3a3a3a",
+
+                    "text-halo-color":
+                        "#ffffff",
+
+                    "text-halo-width":
+                        1.3,
+
+                    "text-halo-blur":
+                        0.3
+
+                }
+
+            });
+
+
+            console.log(
+                "City labels successfully added."
+            );
+
+
+            // =================================================
+            // FINAL LAYER ORDER
+            //
+            // background
+            // counties
+            // states
+            // cities
+            // =================================================
+
+            if (
+                map.getLayer(
+                    "state-lines"
+                )
+            ) {
+
+                map.moveLayer(
+                    "state-lines"
+                );
 
             }
 
-        });
 
+            if (
+                map.getLayer(
+                    "cities-major"
+                )
+            ) {
 
-        // ====================================================
-        // IMPORTANT LOCAL CITIES
-        //
-        // Class 4
-        // ====================================================
-
-        map.addLayer({
-
-            id: "cities-local",
-
-            type: "symbol",
-
-            source: "cities",
-
-            minzoom: 5,
-
-            filter: [
-
-                "==",
-
-                ["get", "city_class"],
-
-                4
-
-            ],
-
-            layout: {
-
-                visibility:
-                    "visible",
-
-                "text-field": [
-
-                    "get",
-
-                    "name"
-
-                ],
-
-                "text-font":
-                    cityFont,
-
-                "text-size": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    5, 9,
-                    6, 10,
-                    8, 11,
-                    10, 12
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false,
-
-                "text-padding":
-                    2
-
-            },
-
-            paint: {
-
-                "text-color":
-                    "#303030",
-
-                "text-halo-color":
-                    "#ffffff",
-
-                "text-halo-width":
-                    1.4,
-
-                "text-halo-blur":
-                    0.3
+                map.moveLayer(
+                    "cities-major"
+                );
 
             }
 
-        });
 
+            if (
+                map.getLayer(
+                    "cities-regional"
+                )
+            ) {
 
-        // ====================================================
-        // SMALL LOCAL COMMUNITIES
-        //
-        // Class 5
-        // ====================================================
-
-        map.addLayer({
-
-            id: "cities-small",
-
-            type: "symbol",
-
-            source: "cities",
-
-            minzoom: 6,
-
-            filter: [
-
-                "==",
-
-                ["get", "city_class"],
-
-                5
-
-            ],
-
-            layout: {
-
-                visibility:
-                    "visible",
-
-                "text-field": [
-
-                    "get",
-
-                    "name"
-
-                ],
-
-                "text-font":
-                    cityFont,
-
-                "text-size": [
-
-                    "interpolate",
-                    ["linear"],
-                    ["zoom"],
-
-                    6, 8,
-                    7, 9,
-                    9, 10,
-                    11, 11
-
-                ],
-
-                "text-anchor":
-                    "center",
-
-                "text-allow-overlap":
-                    false,
-
-                "text-ignore-placement":
-                    false,
-
-                "text-padding":
-                    2
-
-            },
-
-            paint: {
-
-                "text-color":
-                    "#3a3a3a",
-
-                "text-halo-color":
-                    "#ffffff",
-
-                "text-halo-width":
-                    1.3,
-
-                "text-halo-blur":
-                    0.3
+                map.moveLayer(
+                    "cities-regional"
+                );
 
             }
 
-        });
+
+            if (
+                map.getLayer(
+                    "cities-local"
+                )
+            ) {
+
+                map.moveLayer(
+                    "cities-local"
+                );
+
+            }
 
 
-        console.log(
-            "City labels successfully added."
+            if (
+                map.getLayer(
+                    "cities-small"
+                )
+            ) {
+
+                map.moveLayer(
+                    "cities-small"
+                );
+
+            }
+
+
+        }
+
+
+        catch (error) {
+
+            console.error(
+
+                "GEOGRAPHY LOAD ERROR:",
+
+                error
+
+            );
+
+        }
+
+
+        // ====================================================
+        // INITIAL VIEW
+        // ====================================================
+
+        map.fitBounds(
+
+            sectors.lbf.bounds,
+
+            {
+
+                padding:
+                    35,
+
+                duration:
+                    0
+
+            }
+
         );
-
-
-        // ====================================================
-        // FINAL LAYER ORDER
-        //
-        // background
-        // counties
-        // roads
-        // states
-        // cities
-        // ====================================================
-
-        if (
-            map.getLayer(
-                "state-lines"
-            )
-        ) {
-
-            map.moveLayer(
-                "state-lines"
-            );
-
-        }
-
-
-        if (
-            map.getLayer(
-                "cities-major"
-            )
-        ) {
-
-            map.moveLayer(
-                "cities-major"
-            );
-
-        }
-
-
-        if (
-            map.getLayer(
-                "cities-regional"
-            )
-        ) {
-
-            map.moveLayer(
-                "cities-regional"
-            );
-
-        }
-
-
-        if (
-            map.getLayer(
-                "cities-local"
-            )
-        ) {
-
-            map.moveLayer(
-                "cities-local"
-            );
-
-        }
-
-
-        if (
-            map.getLayer(
-                "cities-small"
-            )
-        ) {
-
-            map.moveLayer(
-                "cities-small"
-            );
-
-        }
-
 
     }
 
-
-    catch (error) {
-
-        console.error(
-
-            "GEOGRAPHY LOAD ERROR:",
-
-            error
-
-        );
-
-    }
-
-
-    // ========================================================
-    // INITIAL VIEW
-    // ========================================================
-
-    map.fitBounds(
-
-        sectors.lbf.bounds,
-
-        {
-
-            padding: 35,
-
-            duration: 0
-
-        }
-
-    );
-
-});
+);
 
 
 // ============================================================
@@ -1105,61 +1136,67 @@ const sectorSelect =
     );
 
 
-sectorSelect.addEventListener(
+if (sectorSelect) {
 
-    "change",
+    sectorSelect.addEventListener(
 
-    (event) => {
+        "change",
 
-        const sectorKey =
-            event.target.value;
+        (event) => {
 
-
-        const sector =
-            sectors[
-                sectorKey
-            ];
+            const sectorKey =
+                event.target.value;
 
 
-        if (!sector) {
-
-            console.warn(
-
-                `Unknown sector: ` +
-                `${sectorKey}`
-
-            );
-
-            return;
-
-        }
+            const sector =
+                sectors[
+                    sectorKey
+                ];
 
 
-        console.log(
+            if (!sector) {
 
-            `Changing sector to: ` +
-            `${sector.name}`
+                console.warn(
 
-        );
+                    `Unknown sector: ` +
+                    `${sectorKey}`
 
+                );
 
-        map.fitBounds(
-
-            sector.bounds,
-
-            {
-
-                padding: 35,
-
-                duration: 800
+                return;
 
             }
 
-        );
 
-    }
+            console.log(
 
-);
+                `Changing sector to: ` +
+                `${sector.name}`
+
+            );
+
+
+            map.fitBounds(
+
+                sector.bounds,
+
+                {
+
+                    padding:
+                        35,
+
+                    duration:
+                        800
+
+                }
+
+            );
+
+        }
+
+    );
+
+}
 
 
 // ============================================================
@@ -1214,23 +1251,27 @@ const statesToggle =
     );
 
 
-statesToggle.addEventListener(
+if (statesToggle) {
 
-    "change",
+    statesToggle.addEventListener(
 
-    (event) => {
+        "change",
 
-        setLayerVisibility(
+        (event) => {
 
-            "state-lines",
+            setLayerVisibility(
 
-            event.target.checked
+                "state-lines",
 
-        );
+                event.target.checked
 
-    }
+            );
 
-);
+        }
+
+    );
+
+}
 
 
 // ============================================================
@@ -1243,52 +1284,27 @@ const countiesToggle =
     );
 
 
-countiesToggle.addEventListener(
+if (countiesToggle) {
 
-    "change",
+    countiesToggle.addEventListener(
 
-    (event) => {
+        "change",
 
-        setLayerVisibility(
+        (event) => {
 
-            "county-lines",
+            setLayerVisibility(
 
-            event.target.checked
+                "county-lines",
 
-        );
+                event.target.checked
 
-    }
+            );
 
-);
+        }
 
-
-// ============================================================
-// HIGHWAYS TOGGLE
-// ============================================================
-
-const highwaysToggle =
-    document.getElementById(
-        "highways-toggle"
     );
 
-
-highwaysToggle.addEventListener(
-
-    "change",
-
-    (event) => {
-
-        setLayerVisibility(
-
-            "primary-road-lines",
-
-            event.target.checked
-
-        );
-
-    }
-
-);
+}
 
 
 // ============================================================
@@ -1301,51 +1317,55 @@ const citiesToggle =
     );
 
 
-citiesToggle.addEventListener(
+if (citiesToggle) {
 
-    "change",
+    citiesToggle.addEventListener(
 
-    (event) => {
+        "change",
 
-        const visible =
-            event.target.checked;
+        (event) => {
 
-
-        setLayerVisibility(
-
-            "cities-major",
-
-            visible
-
-        );
+            const visible =
+                event.target.checked;
 
 
-        setLayerVisibility(
+            setLayerVisibility(
 
-            "cities-regional",
+                "cities-major",
 
-            visible
+                visible
 
-        );
-
-
-        setLayerVisibility(
-
-            "cities-local",
-
-            visible
-
-        );
+            );
 
 
-        setLayerVisibility(
+            setLayerVisibility(
 
-            "cities-small",
+                "cities-regional",
 
-            visible
+                visible
 
-        );
+            );
 
-    }
 
-);
+            setLayerVisibility(
+
+                "cities-local",
+
+                visible
+
+            );
+
+
+            setLayerVisibility(
+
+                "cities-small",
+
+                visible
+
+            );
+
+        }
+
+    );
+
+}
