@@ -3,26 +3,27 @@
 /* ==========================================================
    SPCOA MESOANALYSIS
    app.js
-   Version: sbcape8
+   Version: sbcape9
 
-   Rendering architecture:
+   Major changes from sbcape8:
 
-   S3 numerical uint16 XYZ tiles
-              ↓
-   decode numerical SBCAPE
-              ↓
-   assemble visible numerical mosaic
-              ↓
-   bilinear interpolation of CAPE values
-              ↓
-   discrete SBCAPE color table
-              ↓
-   weather canvas
-              ↓
-   geography canvas
+   1. SBCAPE values are still bilinearly interpolated BEFORE
+      the discrete color table is applied.
 
-   This version interpolates meteorological VALUES before
-   applying the color table.
+   2. The legend is built from the same value -> color
+      function used by the map.
+
+   3. Legend labels are positioned according to their actual
+      CAPE values rather than evenly distributed text.
+
+   4. During map navigation, the existing weather image is
+      transformed with the map instead of remaining frozen.
+
+   5. After movement stops, one new high-quality numerical
+      render replaces the temporary transformed image.
+
+   6. Final rendering is debounced to avoid repeated expensive
+      redraws during rapid wheel zooming.
    ========================================================== */
 
 
@@ -34,36 +35,24 @@ const S3_BASE_URL =
     "https://spcoa-mesoanalysis.s3.us-east-2.amazonaws.com/spcoa";
 
 const WEATHER_TILE_SIZE = 256;
-
 const WEATHER_NODATA = 65535;
 
 const SBCAPE_TRANSPARENT_BELOW = 100;
 
-
-/*
- * Numerical interpolation settings.
- *
- * true:
- *     bilinear interpolation of CAPE values
- *
- * false:
- *     nearest-neighbor numerical sampling
- */
-
 const SBCAPE_BILINEAR_INTERPOLATION = true;
 
+/*
+ * Numerical render resolution relative to CSS pixels.
+ *
+ * 1 = one numerical sample per CSS pixel.
+ */
+const WEATHER_RENDER_SCALE = 1;
 
 /*
- * Render at the browser's CSS-pixel resolution.
- *
- * This is intentional. Rendering at full devicePixelRatio
- * would greatly increase the number of interpolation
- * calculations without adding much meteorological detail.
- *
- * The finished image is then placed on the high-DPI canvas.
+ * Wait this long after navigation ends before rebuilding
+ * the high-quality numerical field.
  */
-
-const WEATHER_RENDER_SCALE = 1;
+const WEATHER_REDRAW_DEBOUNCE_MS = 100;
 
 
 /* ==========================================================
@@ -169,7 +158,6 @@ const SBCAPE_BOUNDS = [
     6000,6500,7000,7500,8000,8500,9000,9500,10000,10500
 ];
 
-
 const SBCAPE_COLORS = [
 
     "#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3",
@@ -192,9 +180,12 @@ const SBCAPE_COLORS = [
 
     "#844049","#8a4953","#91545c","#985e66","#9e6970",
     "#a57279","#ab7d83","#b2878c","#b99295"
-
 ];
 
+
+/* ==========================================================
+   COLOR HELPERS
+   ========================================================== */
 
 function hexToRgb(hex) {
 
@@ -204,14 +195,12 @@ function hexToRgb(hex) {
             16
         );
 
-
     return [
         (value >> 16) & 255,
         (value >> 8) & 255,
         value & 255
     ];
 }
-
 
 const SBCAPE_RGB =
     SBCAPE_COLORS.map(hexToRgb);
@@ -222,46 +211,49 @@ const SBCAPE_RGB =
    ========================================================== */
 
 let latestData = null;
-
 let sbcapeMetadata = null;
 
 let activeField = "none";
 
 let weatherRenderGeneration = 0;
+let weatherRedrawTimer = null;
 
 let weatherCanvas = null;
-
 let weatherCtx = null;
 
 let geographyCanvas = null;
-
 let geographyCtx = null;
 
 let countiesGeoJSON = null;
-
 let statesGeoJSON = null;
-
 let citiesGeoJSON = null;
 
 
 /*
  * Numerical tile cache.
  */
-
-const weatherTileCache =
-    new Map();
+const weatherTileCache = new Map();
 
 
 /*
- * Tile diagnostics.
+ * The geographic footprint represented by the CURRENT
+ * finished weather image.
+ *
+ * This is what allows us to keep the image attached to the
+ * map while zooming/panning before the next numerical redraw.
  */
+let weatherImageGeoBounds = null;
 
-const weatherTileDiagnostics =
-    new Map();
+
+/*
+ * Pixel dimensions of the finished weather image.
+ */
+let weatherImageCssWidth = 0;
+let weatherImageCssHeight = 0;
 
 
 /* ==========================================================
-   MAP STYLE
+   MAP
    ========================================================== */
 
 const mapStyle = {
@@ -271,25 +263,17 @@ const mapStyle = {
     sources: {},
 
     layers: [
-
         {
             id: "background",
-
             type: "background",
 
             paint: {
                 "background-color": "#ffffff"
             }
         }
-
     ]
-
 };
 
-
-/* ==========================================================
-   MAP
-   ========================================================== */
 
 const map =
     new maplibregl.Map({
@@ -306,7 +290,6 @@ const map =
         zoom: 6,
 
         minZoom: 2,
-
         maxZoom: 12,
 
         attributionControl: false
@@ -317,11 +300,8 @@ const map =
 map.addControl(
 
     new maplibregl.NavigationControl({
-
         showCompass: false,
-
         showZoom: true
-
     }),
 
     "top-right"
@@ -350,74 +330,41 @@ map.addControl(
    ========================================================== */
 
 const sectorSelect =
-    document.getElementById(
-        "sector-select"
-    );
-
+    document.getElementById("sector-select");
 
 const statesToggle =
-    document.getElementById(
-        "states-toggle"
-    );
-
+    document.getElementById("states-toggle");
 
 const countiesToggle =
-    document.getElementById(
-        "counties-toggle"
-    );
-
+    document.getElementById("counties-toggle");
 
 const citiesToggle =
-    document.getElementById(
-        "cities-toggle"
-    );
-
+    document.getElementById("cities-toggle");
 
 const fieldSelect =
-    document.getElementById(
-        "field-select"
-    );
-
+    document.getElementById("field-select");
 
 const fieldInfo =
-    document.getElementById(
-        "field-info"
-    );
-
+    document.getElementById("field-info");
 
 const fieldName =
-    document.getElementById(
-        "field-name"
-    );
-
+    document.getElementById("field-name");
 
 const fieldTime =
-    document.getElementById(
-        "field-time"
-    );
-
+    document.getElementById("field-time");
 
 const weatherLegend =
-    document.getElementById(
-        "weather-legend"
-    );
-
+    document.getElementById("weather-legend");
 
 const legendCanvas =
-    document.getElementById(
-        "legend-canvas"
-    );
+    document.getElementById("legend-canvas");
 
 
 /* ==========================================================
-   HELPERS
+   GENERAL HELPERS
    ========================================================== */
 
-function clamp(
-    value,
-    minimum,
-    maximum
-) {
+function clamp(value, minimum, maximum) {
 
     return Math.max(
         minimum,
@@ -433,30 +380,20 @@ function clamp(
    SBCAPE COLOR LOOKUP
    ========================================================== */
 
-function getSbcapeRgba(value) {
+function getSbcapeColorIndex(value) {
 
-    if (
-        !Number.isFinite(value) ||
-        value === WEATHER_NODATA ||
-        value < SBCAPE_TRANSPARENT_BELOW
-    ) {
-
-        return [
-            0,
-            0,
-            0,
-            0
-        ];
+    if (!Number.isFinite(value)) {
+        return -1;
     }
 
-
-    let colorIndex =
-        SBCAPE_COLORS.length - 1;
-
-
+    /*
+     * Find the bin:
+     *
+     * bounds[i] <= value < bounds[i + 1]
+     */
     for (
-        let i = 1;
-        i < SBCAPE_BOUNDS.length - 1;
+        let i = 0;
+        i < SBCAPE_COLORS.length;
         i++
     ) {
 
@@ -465,10 +402,44 @@ function getSbcapeRgba(value) {
             value < SBCAPE_BOUNDS[i + 1]
         ) {
 
-            colorIndex = i;
-
-            break;
+            return i;
         }
+    }
+
+    /*
+     * Values above the final boundary use the final color.
+     */
+    if (
+        value >=
+        SBCAPE_BOUNDS[SBCAPE_BOUNDS.length - 1]
+    ) {
+
+        return SBCAPE_COLORS.length - 1;
+    }
+
+    return -1;
+}
+
+
+function getSbcapeRgba(value) {
+
+    if (
+        !Number.isFinite(value) ||
+        value === WEATHER_NODATA ||
+        value < SBCAPE_TRANSPARENT_BELOW
+    ) {
+
+        return [0, 0, 0, 0];
+    }
+
+
+    const colorIndex =
+        getSbcapeColorIndex(value);
+
+
+    if (colorIndex < 0) {
+
+        return [0, 0, 0, 0];
     }
 
 
@@ -489,6 +460,15 @@ function getSbcapeRgba(value) {
    LEGEND
    ========================================================== */
 
+/*
+ * The visible legend represents 0-6000 J/kg.
+ *
+ * Each pixel is assigned the exact same discrete color
+ * function used by the weather field.
+ */
+const SBCAPE_LEGEND_MAX = 6000;
+
+
 function drawSbcapeLegend() {
 
     if (!legendCanvas) {
@@ -503,7 +483,6 @@ function drawSbcapeLegend() {
     const width =
         legendCanvas.width;
 
-
     const height =
         legendCanvas.height;
 
@@ -516,54 +495,49 @@ function drawSbcapeLegend() {
     );
 
 
-    const legendMaximum =
-        6000;
-
-
+    /*
+     * Draw the color bar.
+     */
     for (
         let x = 0;
         x < width;
         x++
     ) {
 
+        const fraction =
+            x /
+            Math.max(
+                1,
+                width - 1
+            );
+
+
         const value =
-            (
-                x /
-                Math.max(
-                    1,
-                    width - 1
-                )
-            ) *
-            legendMaximum;
+            fraction *
+            SBCAPE_LEGEND_MAX;
 
 
-        let rgba;
+        /*
+         * The map makes <100 transparent.
+         *
+         * For the legend, show the actual low-end white/gray
+         * color instead of transparency.
+         */
+        let colorIndex =
+            getSbcapeColorIndex(value);
 
 
-        if (
-            value <
-            SBCAPE_TRANSPARENT_BELOW
-        ) {
-
-            rgba = [
-                255,
-                255,
-                255,
-                255
-            ];
+        if (colorIndex < 0) {
+            colorIndex = 0;
         }
 
-        else {
 
-            rgba =
-                getSbcapeRgba(
-                    value
-                );
-        }
+        const rgb =
+            SBCAPE_RGB[colorIndex];
 
 
         ctx.fillStyle =
-            `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3] / 255})`;
+            `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
 
 
         ctx.fillRect(
@@ -573,6 +547,135 @@ function drawSbcapeLegend() {
             height
         );
     }
+}
+
+
+/* ==========================================================
+   CORRECT LEGEND LABEL POSITIONING
+   ========================================================== */
+
+function updateLegendLabels() {
+
+    if (!weatherLegend) {
+        return;
+    }
+
+
+    /*
+     * Remove the old flex-based labels if present.
+     */
+    const oldLabels =
+        weatherLegend.querySelector(
+            ".legend-labels"
+        );
+
+
+    if (oldLabels) {
+        oldLabels.remove();
+    }
+
+
+    const labels =
+        document.createElement("div");
+
+
+    labels.className =
+        "legend-labels";
+
+
+    /*
+     * Override the old flex layout.
+     *
+     * The labels now sit at their TRUE numerical positions.
+     */
+    Object.assign(
+        labels.style,
+        {
+            position: "relative",
+            height: "16px",
+            marginTop: "3px",
+            fontSize: "10px",
+            color: "#333"
+        }
+    );
+
+
+    const values = [
+        0,
+        1000,
+        2000,
+        3000,
+        4000,
+        5000,
+        6000
+    ];
+
+
+    for (
+        const value of values
+    ) {
+
+        const label =
+            document.createElement("span");
+
+
+        label.textContent =
+            value === 6000
+                ? "6000+"
+                : String(value);
+
+
+        const fraction =
+            value /
+            SBCAPE_LEGEND_MAX;
+
+
+        Object.assign(
+            label.style,
+            {
+                position: "absolute",
+                left: `${fraction * 100}%`,
+                whiteSpace: "nowrap"
+            }
+        );
+
+
+        /*
+         * Keep first and final labels inside the legend.
+         */
+        if (value === 0) {
+
+            label.style.transform =
+                "translateX(0)";
+        }
+
+        else if (
+            value ===
+            SBCAPE_LEGEND_MAX
+        ) {
+
+            label.style.transform =
+                "translateX(-100%)";
+        }
+
+        else {
+
+            label.style.transform =
+                "translateX(-50%)";
+        }
+
+
+        labels.appendChild(label);
+    }
+
+
+    /*
+     * Insert immediately after the canvas.
+     */
+    legendCanvas.insertAdjacentElement(
+        "afterend",
+        labels
+    );
 }
 
 
@@ -604,42 +707,28 @@ function formatAnalysisTime(value) {
     const yyyy =
         date.getUTCFullYear();
 
-
     const mm =
         String(
             date.getUTCMonth() + 1
-        ).padStart(
-            2,
-            "0"
-        );
-
+        ).padStart(2, "0");
 
     const dd =
         String(
             date.getUTCDate()
-        ).padStart(
-            2,
-            "0"
-        );
-
+        ).padStart(2, "0");
 
     const hh =
         String(
             date.getUTCHours()
-        ).padStart(
-            2,
-            "0"
-        );
+        ).padStart(2, "0");
 
 
-    return (
-        `${yyyy}-${mm}-${dd} ${hh}Z`
-    );
+    return `${yyyy}-${mm}-${dd} ${hh}Z`;
 }
 
 
 /* ==========================================================
-   LATEST.JSON
+   LATEST DATA
    ========================================================== */
 
 async function loadLatestData() {
@@ -656,23 +745,17 @@ async function loadLatestData() {
 
     const response =
         await fetch(
-
             url,
-
             {
                 cache: "no-store"
             }
-
         );
 
 
     if (!response.ok) {
 
         throw new Error(
-
-            `latest.json failed: ` +
-            `${response.status}`
-
+            `latest.json failed: ${response.status}`
         );
     }
 
@@ -703,17 +786,11 @@ function getLatestRunId() {
 
 
     return (
-
         latestData.run ||
-
         latestData.run_id ||
-
         latestData.cycle ||
-
         latestData.analysis ||
-
         null
-
     );
 }
 
@@ -757,8 +834,7 @@ async function loadSbcapeMetadata() {
             path.startsWith("https://")
         ) {
 
-            url =
-                path;
+            url = path;
         }
 
         else {
@@ -783,23 +859,17 @@ async function loadSbcapeMetadata() {
 
     const response =
         await fetch(
-
             `${url}${separator}cb=${Date.now()}`,
-
             {
                 cache: "no-store"
             }
-
         );
 
 
     if (!response.ok) {
 
         throw new Error(
-
-            `Metadata failed: ` +
-            `${response.status}`
-
+            `Metadata failed: ${response.status}`
         );
     }
 
@@ -828,14 +898,11 @@ function createOverlayCanvases() {
         document.getElementById("map");
 
 
-    /* ------------------------------------------------------
-       WEATHER CANVAS
-       ------------------------------------------------------ */
-
+    /*
+     * Weather canvas.
+     */
     weatherCanvas =
-        document.createElement(
-            "canvas"
-        );
+        document.createElement("canvas");
 
 
     weatherCanvas.id =
@@ -843,9 +910,7 @@ function createOverlayCanvases() {
 
 
     Object.assign(
-
         weatherCanvas.style,
-
         {
             position: "absolute",
             left: "0",
@@ -854,9 +919,14 @@ function createOverlayCanvases() {
             height: "100%",
             pointerEvents: "none",
             zIndex: "2",
-            display: "none"
-        }
+            display: "none",
 
+            /*
+             * Important for smooth temporary transforms.
+             */
+            transformOrigin: "0 0",
+            willChange: "transform"
+        }
     );
 
 
@@ -867,24 +937,18 @@ function createOverlayCanvases() {
 
     weatherCtx =
         weatherCanvas.getContext(
-
             "2d",
-
             {
                 alpha: true
             }
-
         );
 
 
-    /* ------------------------------------------------------
-       GEOGRAPHY CANVAS
-       ------------------------------------------------------ */
-
+    /*
+     * Geography canvas.
+     */
     geographyCanvas =
-        document.createElement(
-            "canvas"
-        );
+        document.createElement("canvas");
 
 
     geographyCanvas.id =
@@ -892,9 +956,7 @@ function createOverlayCanvases() {
 
 
     Object.assign(
-
         geographyCanvas.style,
-
         {
             position: "absolute",
             left: "0",
@@ -904,7 +966,6 @@ function createOverlayCanvases() {
             pointerEvents: "none",
             zIndex: "3"
         }
-
     );
 
 
@@ -915,13 +976,10 @@ function createOverlayCanvases() {
 
     geographyCtx =
         geographyCanvas.getContext(
-
             "2d",
-
             {
                 alpha: true
             }
-
         );
 
 
@@ -929,7 +987,7 @@ function createOverlayCanvases() {
 
 
     console.log(
-        "[SBCAPE8] Overlay canvases created."
+        "[SBCAPE9] Overlay canvases created."
     );
 }
 
@@ -989,7 +1047,6 @@ function resizeCanvas(
         canvas.width =
             width;
 
-
         canvas.height =
             height;
     }
@@ -997,7 +1054,6 @@ function resizeCanvas(
 
     canvas.style.width =
         `${rect.width}px`;
-
 
     canvas.style.height =
         `${rect.height}px`;
@@ -1075,31 +1131,19 @@ function clearCanvas(
    XYZ TILE MATH
    ========================================================== */
 
-function lonToTileX(
-    lon,
-    z
-) {
+function lonToTileX(lon, z) {
 
     const n =
         2 ** z;
 
 
     return Math.floor(
-
-        (
-            (lon + 180) /
-            360
-        ) *
-        n
-
+        ((lon + 180) / 360) * n
     );
 }
 
 
-function latToTileY(
-    lat,
-    z
-) {
+function latToTileY(lat, z) {
 
     const n =
         2 ** z;
@@ -1107,13 +1151,9 @@ function latToTileY(
 
     const safeLatitude =
         clamp(
-
             lat,
-
             -85.05112878,
-
             85.05112878
-
         );
 
 
@@ -1124,68 +1164,61 @@ function latToTileY(
 
 
     return Math.floor(
-
         (
             1 -
             Math.asinh(
-                Math.tan(
-                    radians
-                )
+                Math.tan(radians)
             ) /
             Math.PI
         ) /
         2 *
         n
-
     );
 }
 
 
-function tileXToLon(
-    x,
+function longitudeToWorldTileX(
+    longitude,
     z
 ) {
 
     return (
-
-        x /
-        (2 ** z) *
-        360 -
-        180
-
+        (longitude + 180) /
+        360 *
+        (2 ** z)
     );
 }
 
 
-function tileYToLat(
-    y,
+function latitudeToWorldTileY(
+    latitude,
     z
 ) {
 
-    const n =
-        2 ** z;
-
-
-    const mercatorY =
-        Math.PI *
-        (
-            1 -
-            2 *
-            y /
-            n
+    const safeLatitude =
+        clamp(
+            latitude,
+            -85.05112878,
+            85.05112878
         );
 
 
+    const radians =
+        safeLatitude *
+        Math.PI /
+        180;
+
+
     return (
-
-        Math.atan(
-            Math.sinh(
-                mercatorY
-            )
-        ) *
-        180 /
-        Math.PI
-
+        (
+            1 -
+            Math.asinh(
+                Math.tan(radians)
+            ) /
+            Math.PI
+        ) /
+        2 *
+        (2 ** z)
     );
 }
 
@@ -1200,26 +1233,17 @@ function getWeatherZoom() {
         map.getZoom();
 
 
-    if (
-        zoom < 4.5
-    ) {
+    if (zoom < 4.5) {
         return 4;
     }
 
-
-    if (
-        zoom < 5.5
-    ) {
+    if (zoom < 5.5) {
         return 5;
     }
 
-
-    if (
-        zoom < 6.5
-    ) {
+    if (zoom < 6.5) {
         return 6;
     }
-
 
     return 7;
 }
@@ -1242,7 +1266,6 @@ function getVisibleTileRange(z) {
             179.999
         );
 
-
     const east =
         clamp(
             bounds.getEast(),
@@ -1250,14 +1273,12 @@ function getVisibleTileRange(z) {
             179.999
         );
 
-
     const south =
         clamp(
             bounds.getSouth(),
             -85.05112878,
             85.05112878
         );
-
 
     const north =
         clamp(
@@ -1269,30 +1290,21 @@ function getVisibleTileRange(z) {
 
     let minX =
         lonToTileX(
-            Math.min(
-                west,
-                east
-            ),
+            Math.min(west, east),
             z
         );
-
 
     let maxX =
         lonToTileX(
-            Math.max(
-                west,
-                east
-            ),
+            Math.max(west, east),
             z
         );
-
 
     let minY =
         latToTileY(
             north,
             z
         );
-
 
     let maxY =
         latToTileY(
@@ -1306,19 +1318,14 @@ function getVisibleTileRange(z) {
 
 
     /*
-     * Two-tile buffer.
-     *
-     * The extra buffer gives bilinear interpolation room
-     * around the visible edges.
+     * Two-tile buffer for numerical interpolation.
      */
-
     minX =
         clamp(
             minX - 2,
             0,
             maximumTile
         );
-
 
     maxX =
         clamp(
@@ -1327,14 +1334,12 @@ function getVisibleTileRange(z) {
             maximumTile
         );
 
-
     minY =
         clamp(
             minY - 2,
             0,
             maximumTile
         );
-
 
     maxY =
         clamp(
@@ -1369,14 +1374,10 @@ async function loadWeatherTile(
 
 
     if (
-        weatherTileCache.has(
-            key
-        )
+        weatherTileCache.has(key)
     ) {
 
-        return weatherTileCache.get(
-            key
-        );
+        return weatherTileCache.get(key);
     }
 
 
@@ -1389,10 +1390,9 @@ async function loadWeatherTile(
 
 
     /*
-     * Source Lambert domain does not fill every
-     * possible Web Mercator tile.
+     * Missing edge tiles are normal because the original
+     * Lambert grid does not fill every Web Mercator tile.
      */
-
     if (
         response.status === 403 ||
         response.status === 404
@@ -1403,7 +1403,6 @@ async function loadWeatherTile(
             null
         );
 
-
         return null;
     }
 
@@ -1411,10 +1410,7 @@ async function loadWeatherTile(
     if (!response.ok) {
 
         throw new Error(
-
-            `Tile failed ${response.status}: ` +
-            `${url}`
-
+            `Tile failed ${response.status}: ${url}`
         );
     }
 
@@ -1435,10 +1431,8 @@ async function loadWeatherTile(
     ) {
 
         throw new Error(
-
             `Unexpected byte length for z${z}/${x}/${y}: ` +
             `${buffer.byteLength}`
-
         );
     }
 
@@ -1449,27 +1443,9 @@ async function loadWeatherTile(
 
     const values =
         new Uint16Array(
-
             WEATHER_TILE_SIZE *
             WEATHER_TILE_SIZE
-
         );
-
-
-    let minimum =
-        Infinity;
-
-
-    let maximum =
-        -Infinity;
-
-
-    let valid =
-        0;
-
-
-    let missing =
-        0;
 
 
     for (
@@ -1478,73 +1454,12 @@ async function loadWeatherTile(
         i++
     ) {
 
-        const value =
+        values[i] =
             view.getUint16(
                 i * 2,
                 true
             );
-
-
-        values[i] =
-            value;
-
-
-        if (
-            value ===
-            WEATHER_NODATA
-        ) {
-
-            missing++;
-
-            continue;
-        }
-
-
-        valid++;
-
-
-        if (
-            value < minimum
-        ) {
-
-            minimum =
-                value;
-        }
-
-
-        if (
-            value > maximum
-        ) {
-
-            maximum =
-                value;
-        }
     }
-
-
-    const diagnostic = {
-
-        min:
-            valid > 0
-                ? minimum
-                : null,
-
-        max:
-            valid > 0
-                ? maximum
-                : null,
-
-        valid,
-
-        missing
-
-    };
-
-
-    weatherTileDiagnostics.set(
-        key,
-        diagnostic
-    );
 
 
     weatherTileCache.set(
@@ -1558,7 +1473,7 @@ async function loadWeatherTile(
 
 
 /* ==========================================================
-   LOAD NUMERICAL MOSAIC
+   NUMERICAL MOSAIC
    ========================================================== */
 
 async function loadNumericalMosaic(
@@ -1589,12 +1504,6 @@ async function loadNumericalMosaic(
         WEATHER_TILE_SIZE;
 
 
-    /*
-     * Uint16 mosaic.
-     *
-     * Initialize everything as NODATA.
-     */
-
     const mosaic =
         new Uint16Array(
             width *
@@ -1607,7 +1516,7 @@ async function loadNumericalMosaic(
     );
 
 
-    const tileRequests = [];
+    const requests = [];
 
 
     for (
@@ -1622,27 +1531,18 @@ async function loadNumericalMosaic(
             tileX++
         ) {
 
-            tileRequests.push(
+            requests.push({
+                tileX,
+                tileY,
 
-                {
-                    tileX,
-                    tileY,
-
-                    promise:
-                        loadWeatherTile(
-
-                            runId,
-
-                            z,
-
-                            tileX,
-
-                            tileY
-
-                        )
-                }
-
-            );
+                promise:
+                    loadWeatherTile(
+                        runId,
+                        z,
+                        tileX,
+                        tileY
+                    )
+            });
         }
     }
 
@@ -1650,47 +1550,12 @@ async function loadNumericalMosaic(
     const results =
         await Promise.all(
 
-            tileRequests.map(
-
+            requests.map(
                 async request => {
 
                     try {
 
-                        const values =
-                            await request.promise;
-
-
                         return {
-
-                            tileX:
-                                request.tileX,
-
-                            tileY:
-                                request.tileY,
-
-                            values
-
-                        };
-
-                    }
-
-                    catch (error) {
-
-                        console.error(
-
-                            "[SBCAPE8] Tile load error:",
-
-                            request.tileX,
-
-                            request.tileY,
-
-                            error
-
-                        );
-
-
-                        return {
-
                             tileX:
                                 request.tileX,
 
@@ -1698,12 +1563,32 @@ async function loadNumericalMosaic(
                                 request.tileY,
 
                             values:
-                                null
+                                await request.promise
+                        };
 
+                    }
+
+                    catch (error) {
+
+                        console.error(
+                            "[SBCAPE9] Tile load error:",
+                            request.tileX,
+                            request.tileY,
+                            error
+                        );
+
+
+                        return {
+                            tileX:
+                                request.tileX,
+
+                            tileY:
+                                request.tileY,
+
+                            values: null
                         };
                     }
                 }
-
             )
 
         );
@@ -1744,10 +1629,6 @@ async function loadNumericalMosaic(
             WEATHER_TILE_SIZE;
 
 
-        /*
-         * Copy each tile row into the large mosaic.
-         */
-
         for (
             let row = 0;
             row < WEATHER_TILE_SIZE;
@@ -1765,7 +1646,6 @@ async function loadNumericalMosaic(
 
 
             const destinationStart =
-
                 (
                     destinationY +
                     row
@@ -1789,38 +1669,21 @@ async function loadNumericalMosaic(
 
 
     console.log(
-
-        "[SBCAPE8 MOSAIC]",
-
+        "[SBCAPE9 MOSAIC]",
         {
-            zoom:
-                z,
-
-            tileRange:
-                range,
-
-            tileColumns,
-            tileRows,
-
+            zoom: z,
             width,
             height,
-
             requestedTiles:
                 results.length,
-
             loadedTiles
         }
-
     );
 
 
     return {
-
-        values:
-            mosaic,
-
+        values: mosaic,
         width,
-
         height,
 
         minTileX:
@@ -1836,84 +1699,12 @@ async function loadNumericalMosaic(
             range.maxY,
 
         z
-
     };
 }
 
 
 /* ==========================================================
-   WEB MERCATOR CONTINUOUS TILE COORDINATES
-   ========================================================== */
-
-function longitudeToWorldTileX(
-    longitude,
-    z
-) {
-
-    const n =
-        2 ** z;
-
-
-    return (
-
-        (
-            longitude +
-            180
-        ) /
-        360 *
-        n
-
-    );
-}
-
-
-function latitudeToWorldTileY(
-    latitude,
-    z
-) {
-
-    const safeLatitude =
-        clamp(
-
-            latitude,
-
-            -85.05112878,
-
-            85.05112878
-
-        );
-
-
-    const radians =
-        safeLatitude *
-        Math.PI /
-        180;
-
-
-    const n =
-        2 ** z;
-
-
-    return (
-
-        (
-            1 -
-            Math.asinh(
-                Math.tan(
-                    radians
-                )
-            ) /
-            Math.PI
-        ) /
-        2 *
-        n
-
-    );
-}
-
-
-/* ==========================================================
-   NUMERICAL SAMPLING
+   MOSAIC VALUE
    ========================================================== */
 
 function getMosaicValue(
@@ -1942,50 +1733,7 @@ function getMosaicValue(
 
 
 /* ==========================================================
-   NEAREST-NEIGHBOR SAMPLE
-   ========================================================== */
-
-function sampleNearest(
-    mosaic,
-    sourceX,
-    sourceY
-) {
-
-    const x =
-        Math.round(
-            sourceX
-        );
-
-
-    const y =
-        Math.round(
-            sourceY
-        );
-
-
-    const value =
-        getMosaicValue(
-            mosaic,
-            x,
-            y
-        );
-
-
-    if (
-        value ===
-        WEATHER_NODATA
-    ) {
-
-        return NaN;
-    }
-
-
-    return value;
-}
-
-
-/* ==========================================================
-   BILINEAR SAMPLE
+   BILINEAR INTERPOLATION
    ========================================================== */
 
 function sampleBilinear(
@@ -1995,33 +1743,23 @@ function sampleBilinear(
 ) {
 
     const x0 =
-        Math.floor(
-            sourceX
-        );
-
+        Math.floor(sourceX);
 
     const y0 =
-        Math.floor(
-            sourceY
-        );
-
+        Math.floor(sourceY);
 
     const x1 =
         x0 + 1;
-
 
     const y1 =
         y0 + 1;
 
 
     const tx =
-        sourceX -
-        x0;
-
+        sourceX - x0;
 
     const ty =
-        sourceY -
-        y0;
+        sourceY - y0;
 
 
     const q00 =
@@ -2031,7 +1769,6 @@ function sampleBilinear(
             y0
         );
 
-
     const q10 =
         getMosaicValue(
             mosaic,
@@ -2039,14 +1776,12 @@ function sampleBilinear(
             y0
         );
 
-
     const q01 =
         getMosaicValue(
             mosaic,
             x0,
             y1
         );
-
 
     const q11 =
         getMosaicValue(
@@ -2056,46 +1791,31 @@ function sampleBilinear(
         );
 
 
-    /*
-     * Weighted interpolation with NODATA-aware handling.
-     *
-     * This prevents missing source pixels from contaminating
-     * otherwise valid neighboring data.
-     */
-
     const samples = [
 
         {
-            value:
-                q00,
-
+            value: q00,
             weight:
                 (1 - tx) *
                 (1 - ty)
         },
 
         {
-            value:
-                q10,
-
+            value: q10,
             weight:
                 tx *
                 (1 - ty)
         },
 
         {
-            value:
-                q01,
-
+            value: q01,
             weight:
                 (1 - tx) *
                 ty
         },
 
         {
-            value:
-                q11,
-
+            value: q11,
             weight:
                 tx *
                 ty
@@ -2104,12 +1824,8 @@ function sampleBilinear(
     ];
 
 
-    let weightedSum =
-        0;
-
-
-    let totalWeight =
-        0;
+    let weightedSum = 0;
+    let totalWeight = 0;
 
 
     for (
@@ -2135,13 +1851,8 @@ function sampleBilinear(
     }
 
 
-    /*
-     * Require at least some meaningful valid contribution.
-     */
-
     if (
-        totalWeight <
-        0.001
+        totalWeight < 0.001
     ) {
 
         return NaN;
@@ -2156,45 +1867,7 @@ function sampleBilinear(
 
 
 /* ==========================================================
-   SAMPLE MOSAIC
-   ========================================================== */
-
-function sampleMosaic(
-    mosaic,
-    sourceX,
-    sourceY
-) {
-
-    if (
-        SBCAPE_BILINEAR_INTERPOLATION
-    ) {
-
-        return sampleBilinear(
-
-            mosaic,
-
-            sourceX,
-
-            sourceY
-
-        );
-    }
-
-
-    return sampleNearest(
-
-        mosaic,
-
-        sourceX,
-
-        sourceY
-
-    );
-}
-
-
-/* ==========================================================
-   SCREEN → MOSAIC COORDINATE
+   SCREEN → MOSAIC
    ========================================================== */
 
 function screenPointToMosaicCoordinate(
@@ -2202,11 +1875,6 @@ function screenPointToMosaicCoordinate(
     screenX,
     screenY
 ) {
-
-    /*
-     * MapLibre tells us the geographic coordinate at
-     * this display pixel.
-     */
 
     const lngLat =
         map.unproject([
@@ -2217,63 +1885,189 @@ function screenPointToMosaicCoordinate(
 
     const worldTileX =
         longitudeToWorldTileX(
-
             lngLat.lng,
-
             mosaic.z
-
         );
 
 
     const worldTileY =
         latitudeToWorldTileY(
-
             lngLat.lat,
-
             mosaic.z
-
         );
 
 
-    /*
-     * Convert continuous world-tile coordinates to
-     * numerical pixel coordinates inside our mosaic.
-     *
-     * Pixel centers are offset by 0.5.
-     */
-
-    const sourceX =
-
-        (
-            worldTileX -
-            mosaic.minTileX
-        ) *
-        WEATHER_TILE_SIZE -
-        0.5;
-
-
-    const sourceY =
-
-        (
-            worldTileY -
-            mosaic.minTileY
-        ) *
-        WEATHER_TILE_SIZE -
-        0.5;
-
-
     return {
+
         x:
-            sourceX,
+            (
+                worldTileX -
+                mosaic.minTileX
+            ) *
+            WEATHER_TILE_SIZE -
+            0.5,
 
         y:
-            sourceY
+            (
+                worldTileY -
+                mosaic.minTileY
+            ) *
+            WEATHER_TILE_SIZE -
+            0.5
+
     };
 }
 
 
 /* ==========================================================
-   RENDER INTERPOLATED NUMERICAL FIELD
+   CAPTURE CURRENT WEATHER IMAGE GEOGRAPHIC BOUNDS
+   ========================================================== */
+
+function captureWeatherImageBounds() {
+
+    const mapElement =
+        document.getElementById("map");
+
+
+    const rect =
+        mapElement.getBoundingClientRect();
+
+
+    /*
+     * Since the map has no rotation/pitch, the screen
+     * corners provide the image footprint.
+     */
+    const nw =
+        map.unproject([
+            0,
+            0
+        ]);
+
+
+    const se =
+        map.unproject([
+            rect.width,
+            rect.height
+        ]);
+
+
+    weatherImageGeoBounds = {
+        west: nw.lng,
+        north: nw.lat,
+        east: se.lng,
+        south: se.lat
+    };
+
+
+    weatherImageCssWidth =
+        rect.width;
+
+
+    weatherImageCssHeight =
+        rect.height;
+}
+
+
+/* ==========================================================
+   RESET WEATHER TRANSFORM
+   ========================================================== */
+
+function resetWeatherTransform() {
+
+    if (!weatherCanvas) {
+        return;
+    }
+
+
+    weatherCanvas.style.transform =
+        "none";
+}
+
+
+/* ==========================================================
+   FOLLOW MAP DURING NAVIGATION
+   ========================================================== */
+
+function transformWeatherCanvasToCurrentMap() {
+
+    if (
+        activeField !== "sbcape" ||
+        !weatherCanvas ||
+        !weatherImageGeoBounds
+    ) {
+
+        return;
+    }
+
+
+    /*
+     * Project the ORIGINAL image's NW and SE geographic
+     * corners into the CURRENT map view.
+     */
+    const nw =
+        map.project([
+            weatherImageGeoBounds.west,
+            weatherImageGeoBounds.north
+        ]);
+
+
+    const se =
+        map.project([
+            weatherImageGeoBounds.east,
+            weatherImageGeoBounds.south
+        ]);
+
+
+    const projectedWidth =
+        se.x -
+        nw.x;
+
+
+    const projectedHeight =
+        se.y -
+        nw.y;
+
+
+    if (
+        !Number.isFinite(projectedWidth) ||
+        !Number.isFinite(projectedHeight) ||
+        projectedWidth <= 0 ||
+        projectedHeight <= 0 ||
+        weatherImageCssWidth <= 0 ||
+        weatherImageCssHeight <= 0
+    ) {
+
+        return;
+    }
+
+
+    const scaleX =
+        projectedWidth /
+        weatherImageCssWidth;
+
+
+    const scaleY =
+        projectedHeight /
+        weatherImageCssHeight;
+
+
+    /*
+     * CSS transforms are applied right-to-left.
+     *
+     * translate(...) scale(...)
+     *
+     * therefore scales the canvas around its 0,0 origin and
+     * then places the NW corner at the current projected
+     * position.
+     */
+    weatherCanvas.style.transform =
+        `translate(${nw.x}px, ${nw.y}px) ` +
+        `scale(${scaleX}, ${scaleY})`;
+}
+
+
+/* ==========================================================
+   INTERPOLATED WEATHER RENDER
    ========================================================== */
 
 function renderInterpolatedMosaic(
@@ -2290,36 +2084,23 @@ function renderInterpolatedMosaic(
 
     const renderWidth =
         Math.max(
-
             1,
-
             Math.round(
                 rect.width *
                 WEATHER_RENDER_SCALE
             )
-
         );
 
 
     const renderHeight =
         Math.max(
-
             1,
-
             Math.round(
                 rect.height *
                 WEATHER_RENDER_SCALE
             )
-
         );
 
-
-    /*
-     * Temporary render canvas.
-     *
-     * We generate the meteorological image here and
-     * then copy it to the visible high-DPI weather canvas.
-     */
 
     const renderCanvas =
         document.createElement(
@@ -2330,30 +2111,23 @@ function renderInterpolatedMosaic(
     renderCanvas.width =
         renderWidth;
 
-
     renderCanvas.height =
         renderHeight;
 
 
     const renderCtx =
         renderCanvas.getContext(
-
             "2d",
-
             {
                 alpha: true
             }
-
         );
 
 
     const imageData =
         renderCtx.createImageData(
-
             renderWidth,
-
             renderHeight
-
         );
 
 
@@ -2361,36 +2135,22 @@ function renderInterpolatedMosaic(
         imageData.data;
 
 
-    let validPixels =
-        0;
-
-
-    let transparentPixels =
-        0;
-
+    let validPixels = 0;
+    let transparentPixels = 0;
 
     let minimumRendered =
         Infinity;
-
 
     let maximumRendered =
         -Infinity;
 
 
     /*
-     * Optimization:
+     * Render each horizontal row.
      *
-     * Instead of calling map.unproject() for every pixel,
-     * determine the geographic coordinates along each
-     * horizontal row using the left/right endpoints.
-     *
-     * For a north-up Web Mercator map this is equivalent
-     * to linear interpolation in world-pixel coordinates.
-     *
-     * We still use map.unproject() for the row endpoints
-     * to remain synchronized with MapLibre.
+     * For our north-up map, source Y is constant across a
+     * screen row and source X progresses linearly.
      */
-
     for (
         let py = 0;
         py < renderHeight;
@@ -2398,34 +2158,23 @@ function renderInterpolatedMosaic(
     ) {
 
         const screenY =
-            (
-                py +
-                0.5
-            ) /
+            (py + 0.5) /
             WEATHER_RENDER_SCALE;
 
 
         const leftCoordinate =
             screenPointToMosaicCoordinate(
-
                 mosaic,
-
                 0,
-
                 screenY
-
             );
 
 
         const rightCoordinate =
             screenPointToMosaicCoordinate(
-
                 mosaic,
-
                 rect.width,
-
                 screenY
-
             );
 
 
@@ -2462,14 +2211,10 @@ function renderInterpolatedMosaic(
         ) {
 
             const value =
-                sampleMosaic(
-
+                sampleBilinear(
                     mosaic,
-
                     sourceX,
-
                     sourceY
-
                 );
 
 
@@ -2488,50 +2233,32 @@ function renderInterpolatedMosaic(
                 SBCAPE_TRANSPARENT_BELOW
             ) {
 
-                pixels[pixelIndex] =
-                    0;
-
-
-                pixels[pixelIndex + 1] =
-                    0;
-
-
-                pixels[pixelIndex + 2] =
-                    0;
-
-
-                pixels[pixelIndex + 3] =
-                    0;
-
+                pixels[pixelIndex] = 0;
+                pixels[pixelIndex + 1] = 0;
+                pixels[pixelIndex + 2] = 0;
+                pixels[pixelIndex + 3] = 0;
 
                 transparentPixels++;
 
-
                 sourceX +=
                     sourceXStep;
-
 
                 continue;
             }
 
 
             const rgba =
-                getSbcapeRgba(
-                    value
-                );
+                getSbcapeRgba(value);
 
 
             pixels[pixelIndex] =
                 rgba[0];
 
-
             pixels[pixelIndex + 1] =
                 rgba[1];
 
-
             pixels[pixelIndex + 2] =
                 rgba[2];
-
 
             pixels[pixelIndex + 3] =
                 rgba[3];
@@ -2567,19 +2294,18 @@ function renderInterpolatedMosaic(
 
 
     renderCtx.putImageData(
-
         imageData,
-
         0,
-
         0
-
     );
 
 
     /*
-     * Copy completed image to visible weather canvas.
+     * Reset temporary pan/zoom transform BEFORE replacing
+     * the weather image.
      */
+    resetWeatherTransform();
+
 
     resizeCanvas(
         weatherCanvas,
@@ -2595,13 +2321,6 @@ function renderInterpolatedMosaic(
 
     weatherCtx.save();
 
-
-    /*
-     * At this stage the numerical interpolation has already
-     * occurred. Canvas interpolation is only being used to
-     * handle the CSS/device-pixel scaling of the completed
-     * render.
-     */
 
     weatherCtx.imageSmoothingEnabled =
         true;
@@ -2631,21 +2350,23 @@ function renderInterpolatedMosaic(
     weatherCtx.restore();
 
 
+    /*
+     * The freshly rendered image now represents the CURRENT
+     * map extent.
+     */
+    captureWeatherImageBounds();
+
+
     console.log(
-
-        "[SBCAPE8 INTERPOLATED RENDER]",
-
+        "[SBCAPE9 INTERPOLATED RENDER]",
         {
             renderWidth,
             renderHeight,
 
             interpolation:
-                SBCAPE_BILINEAR_INTERPOLATION
-                    ? "bilinear"
-                    : "nearest",
+                "bilinear numerical",
 
             validPixels,
-
             transparentPixels,
 
             min:
@@ -2662,20 +2383,18 @@ function renderInterpolatedMosaic(
                         maximumRendered.toFixed(1)
                     )
         }
-
     );
 }
 
 
 /* ==========================================================
-   RENDER SBCAPE
+   SBCAPE RENDER
    ========================================================== */
 
 async function renderSbcapeOverlay() {
 
     if (
-        activeField !==
-        "sbcape"
+        activeField !== "sbcape"
     ) {
 
         return;
@@ -2693,13 +2412,11 @@ async function renderSbcapeOverlay() {
     try {
 
         if (!latestData) {
-
             await loadLatestData();
         }
 
 
         if (!sbcapeMetadata) {
-
             await loadSbcapeMetadata();
         }
 
@@ -2721,36 +2438,26 @@ async function renderSbcapeOverlay() {
 
 
         const range =
-            getVisibleTileRange(
-                z
-            );
+            getVisibleTileRange(z);
 
 
         console.log(
-
-            `[SBCAPE8] Rendering ${runId} ` +
+            `[SBCAPE9] Rendering ${runId} ` +
             `at numerical z${z}`
-
         );
 
 
         const mosaic =
             await loadNumericalMosaic(
-
                 runId,
-
                 z,
-
                 range
-
             );
 
 
         /*
-         * User may have moved the map while the numerical
-         * data were downloading.
+         * Ignore stale renders.
          */
-
         if (
             generation !==
             weatherRenderGeneration
@@ -2774,10 +2481,8 @@ async function renderSbcapeOverlay() {
 
 
         console.log(
-
-            `[SBCAPE8] Render complete in ` +
+            `[SBCAPE9] Render complete in ` +
             `${elapsed.toFixed(0)} ms.`
-
         );
 
     }
@@ -2785,13 +2490,47 @@ async function renderSbcapeOverlay() {
     catch (error) {
 
         console.error(
-
-            "[SBCAPE8] Render failed:",
-
+            "[SBCAPE9] Render failed:",
             error
-
         );
     }
+}
+
+
+/* ==========================================================
+   DEBOUNCED WEATHER REDRAW
+   ========================================================== */
+
+function scheduleWeatherRedraw() {
+
+    if (
+        activeField !== "sbcape"
+    ) {
+        return;
+    }
+
+
+    if (weatherRedrawTimer) {
+
+        clearTimeout(
+            weatherRedrawTimer
+        );
+    }
+
+
+    weatherRedrawTimer =
+        setTimeout(
+            async () => {
+
+                weatherRedrawTimer =
+                    null;
+
+
+                await renderSbcapeOverlay();
+
+            },
+            WEATHER_REDRAW_DEBOUNCE_MS
+        );
 }
 
 
@@ -2808,13 +2547,11 @@ function drawLineString(
         !coordinates ||
         coordinates.length < 2
     ) {
-
         return;
     }
 
 
-    let started =
-        false;
+    let started = false;
 
 
     for (
@@ -2824,7 +2561,6 @@ function drawLineString(
         const longitude =
             coordinate[0];
 
-
         const latitude =
             coordinate[1];
 
@@ -2833,7 +2569,6 @@ function drawLineString(
             !Number.isFinite(longitude) ||
             !Number.isFinite(latitude)
         ) {
-
             continue;
         }
 
@@ -2852,9 +2587,7 @@ function drawLineString(
                 point.y
             );
 
-
-            started =
-                true;
+            started = true;
         }
 
         else {
@@ -2989,7 +2722,6 @@ function drawGeoJSON(
             );
         }
 
-
         return;
     }
 
@@ -3003,7 +2735,6 @@ function drawGeoJSON(
             geojson.geometry,
             ctx
         );
-
 
         return;
     }
@@ -3020,9 +2751,7 @@ function drawGeoJSON(
    CITY HELPERS
    ========================================================== */
 
-function getCityClass(
-    feature
-) {
+function getCityClass(feature) {
 
     const value =
         Number(
@@ -3046,16 +2775,12 @@ function shouldDrawCity(
 
 
     const cityClass =
-        getCityClass(
-            feature
-        );
+        getCityClass(feature);
 
 
     if (
-        name ===
-        "North Platte"
+        name === "North Platte"
     ) {
-
         return zoom >= 4;
     }
 
@@ -3063,7 +2788,6 @@ function shouldDrawCity(
     if (
         cityClass <= 2
     ) {
-
         return zoom >= 2;
     }
 
@@ -3071,7 +2795,6 @@ function shouldDrawCity(
     if (
         cityClass === 3
     ) {
-
         return zoom >= 4;
     }
 
@@ -3079,7 +2802,6 @@ function shouldDrawCity(
     if (
         cityClass === 4
     ) {
-
         return zoom >= 5;
     }
 
@@ -3087,7 +2809,6 @@ function shouldDrawCity(
     if (
         cityClass === 5
     ) {
-
         return zoom >= 6;
     }
 
@@ -3106,21 +2827,16 @@ function getCityFontSize(
 
 
     const cityClass =
-        getCityClass(
-            feature
-        );
+        getCityClass(feature);
 
 
     if (
-        name ===
-        "North Platte"
+        name === "North Platte"
     ) {
 
         return clamp(
             10 +
-            (
-                zoom - 4
-            ) *
+            (zoom - 4) *
             0.8,
             10,
             14
@@ -3134,9 +2850,7 @@ function getCityFontSize(
 
         return clamp(
             10 +
-            (
-                zoom - 2
-            ) *
+            (zoom - 2) *
             0.5,
             10,
             14
@@ -3150,9 +2864,7 @@ function getCityFontSize(
 
         return clamp(
             10 +
-            (
-                zoom - 4
-            ) *
+            (zoom - 4) *
             0.6,
             10,
             14
@@ -3166,9 +2878,7 @@ function getCityFontSize(
 
         return clamp(
             9.5 +
-            (
-                zoom - 5
-            ) *
+            (zoom - 5) *
             0.5,
             9.5,
             12.5
@@ -3178,9 +2888,7 @@ function getCityFontSize(
 
     return clamp(
         9 +
-        (
-            zoom - 6
-        ) *
+        (zoom - 6) *
         0.5,
         9,
         11.5
@@ -3199,7 +2907,6 @@ function drawCities() {
         !citiesGeoJSON ||
         !geographyCtx
     ) {
-
         return;
     }
 
@@ -3215,10 +2922,8 @@ function drawCities() {
     geographyCtx.textAlign =
         "center";
 
-
     geographyCtx.textBaseline =
         "middle";
-
 
     geographyCtx.lineJoin =
         "round";
@@ -3235,7 +2940,6 @@ function drawCities() {
                 zoom
             )
         ) {
-
             continue;
         }
 
@@ -3244,7 +2948,6 @@ function drawCities() {
             feature.geometry?.type !==
             "Point"
         ) {
-
             continue;
         }
 
@@ -3262,7 +2965,6 @@ function drawCities() {
                 latitude
             ])
         ) {
-
             continue;
         }
 
@@ -3332,7 +3034,6 @@ function renderGeographyOverlay() {
         !geographyCanvas ||
         !geographyCtx
     ) {
-
         return;
     }
 
@@ -3352,15 +3053,13 @@ function renderGeographyOverlay() {
     geographyCtx.lineJoin =
         "round";
 
-
     geographyCtx.lineCap =
         "round";
 
 
-    /* ------------------------------------------------------
-       COUNTIES
-       ------------------------------------------------------ */
-
+    /*
+     * Counties.
+     */
     if (
         countiesToggle.checked &&
         countiesGeoJSON
@@ -3387,10 +3086,9 @@ function renderGeographyOverlay() {
     }
 
 
-    /* ------------------------------------------------------
-       STATES
-       ------------------------------------------------------ */
-
+    /*
+     * States.
+     */
     if (
         statesToggle.checked &&
         statesGeoJSON
@@ -3416,10 +3114,6 @@ function renderGeographyOverlay() {
         geographyCtx.stroke();
     }
 
-
-    /* ------------------------------------------------------
-       CITIES
-       ------------------------------------------------------ */
 
     drawCities();
 }
@@ -3451,21 +3145,15 @@ async function loadBaseGeography() {
 
     countiesGeoJSON =
         topojson.feature(
-
             topology,
-
             topology.objects.counties
-
         );
 
 
     statesGeoJSON =
         topojson.feature(
-
             topology,
-
             topology.objects.states
-
         );
 
 
@@ -3477,9 +3165,7 @@ async function loadBaseGeography() {
             );
 
 
-        if (
-            cityResponse.ok
-        ) {
+        if (cityResponse.ok) {
 
             citiesGeoJSON =
                 await cityResponse.json();
@@ -3490,11 +3176,8 @@ async function loadBaseGeography() {
     catch (error) {
 
         console.warn(
-
             "Unable to load cities:",
-
             error
-
         );
     }
 
@@ -3504,7 +3187,7 @@ async function loadBaseGeography() {
 
 
 /* ==========================================================
-   FIELD INFORMATION
+   FIELD INFO
    ========================================================== */
 
 function updateSbcapeFieldInfo() {
@@ -3515,13 +3198,9 @@ function updateSbcapeFieldInfo() {
 
 
     let analysisTime =
-
         latestData.analysis_time ||
-
         latestData.valid_time ||
-
         latestData.time ||
-
         null;
 
 
@@ -3532,27 +3211,20 @@ function updateSbcapeFieldInfo() {
     if (
         !analysisTime &&
         runId &&
-        /^\d{8}_\d{2}$/.test(
-            runId
-        )
+        /^\d{8}_\d{2}$/.test(runId)
     ) {
 
         analysisTime =
-
             `${runId.slice(0,4)}-` +
             `${runId.slice(4,6)}-` +
             `${runId.slice(6,8)}T` +
             `${runId.slice(9,11)}:00:00Z`;
-
     }
 
 
     fieldTime.textContent =
-
         analysisTime
-
             ? `Analysis: ${formatAnalysisTime(analysisTime)}`
-
             : "Latest analysis";
 }
 
@@ -3588,10 +3260,10 @@ async function enableSbcape() {
 
 
     drawSbcapeLegend();
+    updateLegendLabels();
 
 
     if (!latestData) {
-
         await loadLatestData();
     }
 
@@ -3616,6 +3288,19 @@ function disableWeatherField() {
     ++weatherRenderGeneration;
 
 
+    if (weatherRedrawTimer) {
+
+        clearTimeout(
+            weatherRedrawTimer
+        );
+
+        weatherRedrawTimer = null;
+    }
+
+
+    resetWeatherTransform();
+
+
     clearCanvas(
         weatherCanvas,
         weatherCtx
@@ -3634,6 +3319,10 @@ function disableWeatherField() {
         "none";
 
 
+    weatherImageGeoBounds =
+        null;
+
+
     renderGeographyOverlay();
 }
 
@@ -3643,9 +3332,7 @@ function disableWeatherField() {
    ========================================================== */
 
 map.on(
-
     "load",
-
     async () => {
 
         try {
@@ -3657,25 +3344,23 @@ map.on(
 
 
             map.fitBounds(
-
                 sectors.lbf.bounds,
-
                 {
                     padding: 30,
                     duration: 0
                 }
-
             );
 
 
             drawSbcapeLegend();
+            updateLegendLabels();
 
 
             await loadLatestData();
 
 
             console.log(
-                "[SBCAPE8] SPCOA viewer ready."
+                "[SBCAPE9] SPCOA viewer ready."
             );
 
         }
@@ -3683,15 +3368,11 @@ map.on(
         catch (error) {
 
             console.error(
-
                 "Viewer initialization failed:",
-
                 error
-
             );
         }
     }
-
 );
 
 
@@ -3700,9 +3381,7 @@ map.on(
    ========================================================== */
 
 sectorSelect.addEventListener(
-
     "change",
-
     () => {
 
         const sector =
@@ -3717,17 +3396,13 @@ sectorSelect.addEventListener(
 
 
         map.fitBounds(
-
             sector.bounds,
-
             {
                 padding: 30,
                 duration: 700
             }
-
         );
     }
-
 );
 
 
@@ -3736,38 +3411,20 @@ sectorSelect.addEventListener(
    ========================================================== */
 
 statesToggle.addEventListener(
-
     "change",
-
-    () => {
-
-        renderGeographyOverlay();
-    }
-
+    renderGeographyOverlay
 );
 
 
 countiesToggle.addEventListener(
-
     "change",
-
-    () => {
-
-        renderGeographyOverlay();
-    }
-
+    renderGeographyOverlay
 );
 
 
 citiesToggle.addEventListener(
-
     "change",
-
-    () => {
-
-        renderGeographyOverlay();
-    }
-
+    renderGeographyOverlay
 );
 
 
@@ -3776,9 +3433,7 @@ citiesToggle.addEventListener(
    ========================================================== */
 
 fieldSelect.addEventListener(
-
     "change",
-
     async () => {
 
         if (
@@ -3794,52 +3449,77 @@ fieldSelect.addEventListener(
             disableWeatherField();
         }
     }
-
 );
 
 
 /* ==========================================================
-   MAP MOVEMENT
+   NAVIGATION START
    ========================================================== */
 
-/*
- * SBCAPE8 does NOT recompute the numerical interpolation
- * continuously during every movement event.
- *
- * Doing that would be unnecessarily expensive.
- *
- * During movement we redraw geography so the lines remain
- * responsive. The numerical field is regenerated at moveend.
- */
-
 map.on(
-
-    "move",
-
+    "movestart",
     () => {
 
-        renderGeographyOverlay();
-    }
+        /*
+         * Cancel any pending expensive redraw.
+         */
+        if (weatherRedrawTimer) {
 
+            clearTimeout(
+                weatherRedrawTimer
+            );
+
+            weatherRedrawTimer = null;
+        }
+    }
 );
 
 
 /* ==========================================================
-   MOVE END
+   NAVIGATION
    ========================================================== */
 
 map.on(
+    "move",
+    () => {
 
+        /*
+         * Cheap real-time transform of the previous weather
+         * image.
+         */
+        transformWeatherCanvasToCurrentMap();
+
+
+        /*
+         * Geography is inexpensive enough to redraw while
+         * navigating.
+         */
+        renderGeographyOverlay();
+    }
+);
+
+
+/* ==========================================================
+   NAVIGATION END
+   ========================================================== */
+
+map.on(
     "moveend",
-
-    async () => {
+    () => {
 
         if (
             activeField ===
             "sbcape"
         ) {
 
-            await renderSbcapeOverlay();
+            /*
+             * Keep the transformed image visible while the
+             * debounce timer waits.
+             */
+            transformWeatherCanvasToCurrentMap();
+
+
+            scheduleWeatherRedraw();
         }
 
         else {
@@ -3847,7 +3527,6 @@ map.on(
             renderGeographyOverlay();
         }
     }
-
 );
 
 
@@ -3856,10 +3535,8 @@ map.on(
    ========================================================== */
 
 map.on(
-
     "resize",
-
-    async () => {
+    () => {
 
         resizeOverlayCanvases();
 
@@ -3872,8 +3549,13 @@ map.on(
             "sbcape"
         ) {
 
-            await renderSbcapeOverlay();
+            /*
+             * Canvas dimensions changed, so regenerate rather
+             * than attempting to preserve the old transform.
+             */
+            resetWeatherTransform();
+
+            scheduleWeatherRedraw();
         }
     }
-
 );
