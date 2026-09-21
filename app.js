@@ -1,832 +1,425 @@
+/* =========================================================================================
+   SPCOA MESOANALYSIS VIEWER
+   =========================================================================================
+   FILLED FIELDS
+     - SBCAPE
+     - MLCAPE
+     - MUCAPE
+     - Surface Dewpoint
+
+   INDEPENDENT VECTOR OVERLAYS
+     - Surface Wind Barbs
+     - 4–6 km Storm-Relative Wind Barbs
+
+   CANVAS STACK
+     geography-canvas
+     vector-canvas
+     weather-canvas
+     MapLibre
+
+   Numerical tiles are read directly from AWS S3.
+   ========================================================================================= */
+
+
 "use strict";
 
-/* ==========================================================
-   SPCOA MESOANALYSIS
-   app.js
-   Version: multifield1
 
-   Fields:
-   - Surface-Based CAPE
-   - Mixed-Layer CAPE
-   - Most-Unstable CAPE
-
-   S3 structure:
-
-   spcoa/
-   ├── latest.json
-   └── runs/
-       └── YYYYMMDD_HH/
-           ├── metadata.json
-           ├── sbcape/
-           │   ├── metadata.json
-           │   └── z4-z7/
-           ├── mlcape/
-           │   ├── metadata.json
-           │   └── z4-z7/
-           └── mucape/
-               ├── metadata.json
-               └── z4-z7/
-
-   Rendering:
-   - Direct HTML canvas
-   - Numerical uint16 XYZ tiles
-   - Bilinear numerical interpolation
-   - CAPE < 100 J/kg transparent
-   - Geography above weather
-   - Numerical cursor readout
-   - Smooth temporary transform during navigation
-   - High-quality redraw after navigation
-   ========================================================== */
-
-
-/* ==========================================================
-   CONFIGURATION
-   ========================================================== */
+/* =========================================================================================
+   AWS
+   ========================================================================================= */
 
 const S3_BASE_URL =
     "https://spcoa-mesoanalysis.s3.us-east-2.amazonaws.com/spcoa";
 
-const WEATHER_TILE_SIZE = 256;
 
-const WEATHER_NODATA = 65535;
+/* =========================================================================================
+   TILE SETTINGS
+   ========================================================================================= */
 
-const WEATHER_RENDER_SCALE = 1;
+const TILE_SIZE = 256;
 
-const WEATHER_REDRAW_DEBOUNCE_MS = 100;
+const SCALAR_NODATA = 65535;
 
-const CURSOR_SAMPLE_INTERVAL_MS = 35;
-
-
-/* ==========================================================
-   CAPE COLOR TABLE
-   ========================================================== */
-
-const CAPE_BOUNDS = [
-    0,
-    100,
-    200,
-    300,
-    400,
-    500,
-    600,
-    700,
-    800,
-    900,
-    1000,
-    1100,
-    1200,
-    1300,
-    1400,
-    1500,
-    1600,
-    1700,
-    1800,
-    1900,
-    2000,
-    2100,
-    2200,
-    2300,
-    2400,
-    2500,
-    2600,
-    2700,
-    2800,
-    2900,
-    3000,
-    3100,
-    3200,
-    3300,
-    3400,
-    3500,
-    3600,
-    3700,
-    3800,
-    3900,
-    4000,
-    4100,
-    4200,
-    4300,
-    4400,
-    4500,
-    4600,
-    4700,
-    4800,
-    4900,
-    5000,
-    5100,
-    5200,
-    5300,
-    5400,
-    5500,
-    5600,
-    5700,
-    5800,
-    5900,
-    6000,
-    6500,
-    7000,
-    7500,
-    8000,
-    8500,
-    9000,
-    9500,
-    10000,
-    10500
-];
+const VECTOR_NODATA = -32768;
 
 
-const CAPE_COLORS = [
-    "#ffffff",
-    "#f0f0f0",
-    "#e1e1e1",
-    "#d2d2d2",
-    "#c3c3c3",
-    "#a5a5a5",
-    "#969696",
-    "#878787",
-    "#787878",
-    "#696969",
-
-    "#3b5269",
-    "#475f74",
-    "#546c7f",
-    "#60798a",
-    "#6d8695",
-    "#7993a1",
-    "#86a0ac",
-    "#92adb7",
-    "#9fbac2",
-    "#abc7ce",
-
-    "#e6de99",
-    "#e4d289",
-    "#e3c679",
-    "#e1b96a",
-    "#dfae5a",
-    "#dfa24b",
-    "#dd963c",
-    "#dc8a2f",
-    "#da7e24",
-    "#d9731c",
-
-    "#d3491f",
-    "#cb4323",
-    "#c23d27",
-    "#b9362b",
-    "#b13131",
-    "#a82b37",
-    "#9f253d",
-    "#971f44",
-    "#8e1a4a",
-    "#861550",
-
-    "#700e89",
-    "#7b1c93",
-    "#872b9e",
-    "#923aa8",
-    "#9e4ab2",
-    "#a95bbd",
-    "#b56ac7",
-    "#c07ad1",
-    "#cc8adc",
-    "#d79ae6",
-
-    "#e6bfc3",
-    "#dfb1b7",
-    "#d9a4ad",
-    "#d297a1",
-    "#cc8a95",
-    "#c57c8a",
-    "#be707e",
-    "#b86272",
-    "#b25667",
-    "#ac485b",
-
-    "#844049",
-    "#8a4953",
-    "#91545c",
-    "#985e66",
-    "#9e6970",
-    "#a57279",
-    "#ab7d83",
-    "#b2878c",
-    "#b99295"
-];
-
-
-const CAPE_LEGEND_MAX = 6000;
-
-
-/* ==========================================================
-   FIELD REGISTRY
-   ========================================================== */
-
-const WEATHER_FIELDS = {
-
-    sbcape: {
-
-        name:
-            "Surface-Based CAPE",
-
-        shortName:
-            "SBCAPE",
-
-        units:
-            "J/kg",
-
-        transparentBelow:
-            100,
-
-        bounds:
-            CAPE_BOUNDS,
-
-        colors:
-            CAPE_COLORS,
-
-        legendMax:
-            CAPE_LEGEND_MAX
-    },
-
-
-    mlcape: {
-
-        name:
-            "Mixed-Layer CAPE",
-
-        shortName:
-            "MLCAPE",
-
-        units:
-            "J/kg",
-
-        transparentBelow:
-            100,
-
-        bounds:
-            CAPE_BOUNDS,
-
-        colors:
-            CAPE_COLORS,
-
-        legendMax:
-            CAPE_LEGEND_MAX
-    },
-
-
-    mucape: {
-
-        name:
-            "Most-Unstable CAPE",
-
-        shortName:
-            "MUCAPE",
-
-        units:
-            "J/kg",
-
-        transparentBelow:
-            100,
-
-        bounds:
-            CAPE_BOUNDS,
-
-        colors:
-            CAPE_COLORS,
-
-        legendMax:
-            CAPE_LEGEND_MAX
-    }
-
-};
-
-
-/* ==========================================================
+/* =========================================================================================
    SECTORS
-   ========================================================== */
+   ========================================================================================= */
 
 const sectors = {
 
     lbf: {
-        name:
-            "LBF CWA",
-
-        bounds:
-            [
-                [-103.4, 39.8],
-                [-98.6, 43.3]
-            ]
+        name: "LBF CWA",
+        bounds: [
+            [-103.4, 39.8],
+            [-98.6, 43.3]
+        ]
     },
-
 
     regional: {
-        name:
-            "LBF Regional",
-
-        bounds:
-            [
-                [-106.0, 38.0],
-                [-96.0, 45.0]
-            ]
+        name: "LBF Regional",
+        bounds: [
+            [-106.0, 38.0],
+            [-96.0, 45.0]
+        ]
     },
-
 
     nebraska: {
-        name:
-            "Nebraska",
-
-        bounds:
-            [
-                [-104.7, 39.4],
-                [-95.0, 43.6]
-            ]
+        name: "Nebraska",
+        bounds: [
+            [-104.7, 39.4],
+            [-95.0, 43.6]
+        ]
     },
-
 
     northern_plains: {
-        name:
-            "Northern Plains",
-
-        bounds:
-            [
-                [-107.5, 39.5],
-                [-94.0, 49.5]
-            ]
+        name: "Northern Plains",
+        bounds: [
+            [-107.5, 39.5],
+            [-94.0, 49.5]
+        ]
     },
-
 
     central_plains: {
-        name:
-            "Central Plains",
-
-        bounds:
-            [
-                [-106.5, 34.0],
-                [-91.0, 45.5]
-            ]
+        name: "Central Plains",
+        bounds: [
+            [-106.5, 34.0],
+            [-91.0, 45.5]
+        ]
     },
-
 
     southern_plains: {
-        name:
-            "Southern Plains",
-
-        bounds:
-            [
-                [-106.5, 25.0],
-                [-93.0, 38.5]
-            ]
+        name: "Southern Plains",
+        bounds: [
+            [-106.5, 25.0],
+            [-93.0, 38.5]
+        ]
     },
-
 
     high_plains: {
-        name:
-            "High Plains",
-
-        bounds:
-            [
-                [-108.5, 28.0],
-                [-97.0, 49.5]
-            ]
+        name: "High Plains",
+        bounds: [
+            [-108.5, 28.0],
+            [-97.0, 49.5]
+        ]
     },
-
 
     midwest: {
-        name:
-            "Midwest",
-
-        bounds:
-            [
-                [-104.0, 35.0],
-                [-80.0, 49.5]
-            ]
+        name: "Midwest",
+        bounds: [
+            [-104.0, 35.0],
+            [-80.0, 49.5]
+        ]
     },
-
 
     rockies: {
-        name:
-            "Rockies",
-
-        bounds:
-            [
-                [-116.0, 30.0],
-                [-101.0, 49.5]
-            ]
+        name: "Rockies",
+        bounds: [
+            [-116.0, 30.0],
+            [-101.0, 49.5]
+        ]
     },
 
-
     conus: {
-        name:
-            "CONUS",
-
-        bounds:
-            [
-                [-125.0, 24.0],
-                [-66.0, 50.0]
-            ]
+        name: "CONUS",
+        bounds: [
+            [-125.0, 24.0],
+            [-66.0, 50.0]
+        ]
     }
 
 };
 
 
-/* ==========================================================
-   GENERAL HELPERS
-   ========================================================== */
+/* =========================================================================================
+   CAPE COLOR TABLE
+   ========================================================================================= */
 
-function clamp(
-    value,
-    minimum,
-    maximum
-) {
+const CAPE_BOUNDS = [
+    0,100,200,300,400,500,600,700,800,900,
+    1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,
+    2000,2100,2200,2300,2400,2500,2600,2700,2800,2900,
+    3000,3100,3200,3300,3400,3500,3600,3700,3800,3900,
+    4000,4100,4200,4300,4400,4500,4600,4700,4800,4900,
+    5000,5100,5200,5300,5400,5500,5600,5700,5800,5900,
+    6000,6500,7000,7500,8000,8500,9000,9500,10000,10500
+];
 
-    return Math.max(
-        minimum,
-        Math.min(
-            maximum,
-            value
-        )
-    );
-}
-
-
-function hexToRgb(
-    hex
-) {
-
-    const value =
-        parseInt(
-            hex.replace(
-                "#",
-                ""
-            ),
-            16
-        );
+const CAPE_COLORS = [
+    "#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3",
+    "#a5a5a5","#969696","#878787","#787878","#696969",
+    "#3b5269","#475f74","#546c7f","#60798a","#6d8695",
+    "#7993a1","#86a0ac","#92adb7","#9fbac2","#abc7ce",
+    "#e6de99","#e4d289","#e3c679","#e1b96a","#dfae5a",
+    "#dfa24b","#dd963c","#dc8a2f","#da7e24","#d9731c",
+    "#d3491f","#cb4323","#c23d27","#b9362b","#b13131",
+    "#a82b37","#9f253d","#971f44","#8e1a4a","#861550",
+    "#700e89","#7b1c93","#872b9e","#923aa8","#9e4ab2",
+    "#a95bbd","#b56ac7","#c07ad1","#cc8adc","#d79ae6",
+    "#e6bfc3","#dfb1b7","#d9a4ad","#d297a1","#cc8a95",
+    "#c57c8a","#be707e","#b86272","#b25667","#ac485b",
+    "#844049","#8a4953","#91545c","#985e66","#9e6970",
+    "#a57279","#ab7d83","#b2878c","#b99295"
+];
 
 
-    return [
+/* =========================================================================================
+   DEWPOINT COLOR TABLE
+   ========================================================================================= */
 
-        (value >> 16) & 255,
-
-        (value >> 8) & 255,
-
-        value & 255
-
-    ];
-}
-
-
-/* ==========================================================
-   PRE-CALCULATE RGB COLORS
-   ========================================================== */
-
-for (
-    const config
-    of
-    Object.values(
-        WEATHER_FIELDS
-    )
-) {
-
-    config.rgb =
-        config.colors.map(
-            hexToRgb
-        );
-
-}
+const DEWPOINT_COLORS = [
+    "#946e4f","#926d4e","#906c4e","#8e6b4d","#8c6a4d","#8b694c",
+    "#89674c","#87664b","#85654a","#83644a","#816349","#7f6249",
+    "#7d6147","#7b6047","#795f46","#775e45","#755c45","#735b44",
+    "#715a44","#705943","#6f5843","#6d5742","#6b5641","#695541",
+    "#675440","#655340","#63513f","#61503e","#5f4f3e","#5d4e3d",
+    "#5b4c3d","#594b3c","#574a3c","#56493b","#54483a","#52473a",
+    "#504539","#4e4439","#4c4338","#4a4237","#484136","#4c4335",
+    "#504739","#554c3d","#595042","#5d5546","#61594a","#665e4e",
+    "#6a6252","#6e6756","#736b5b","#77705f","#7b7463","#7f7967",
+    "#847d6b","#888270","#8c8674","#918b78","#958f7c","#999480",
+    "#9d9884","#a29d89","#a6a18d","#aaa691","#aeaa95","#b3af99",
+    "#b7b39d","#bbb8a2","#c0bca6","#c4c1aa","#c8c5ae","#cccab2",
+    "#d1ceb7","#d5d3bb","#d9d7bf","#dedcc3","#e2e0c7","#e6e5cb",
+    "#eae9d0","#efeed4","#f3f2d8","#e7f5e6","#d9f0d7","#caeac9",
+    "#bce4ba","#aedeab","#a0d99c","#92d38d","#84ce7f","#76c870",
+    "#69c362","#42ad35","#3da231","#38982c","#338d27","#2d8222",
+    "#28781e","#236d19","#1e6215","#195810","#144d0c","#6aa2ae",
+    "#60959f","#588891","#4e7a82","#456d73","#3c6066","#325357",
+    "#294648","#20393a","#162c2b","#686699","#625e93","#5b568d",
+    "#554e87","#4f4681","#483e7b","#423675","#3c2e6f","#352669",
+    "#2f1d63","#704170","#754673","#7a4c75","#805176","#855778",
+    "#8b5c7a","#90627c","#96677d","#9b6d7f","#a07281"
+];
 
 
-/* ==========================================================
-   ACTIVE FIELD HELPERS
-   ========================================================== */
+/* =========================================================================================
+   FIELD DEFINITIONS
+   ========================================================================================= */
 
-function getActiveFieldConfig() {
+const WEATHER_FIELDS = {
 
-    return (
-        WEATHER_FIELDS[
-            activeField
-        ]
-        ||
-        null
-    );
+    sbcape: {
+        name: "Surface-Based CAPE",
+        shortName: "SBCAPE",
+        units: "J/kg",
+        type: "cape"
+    },
 
-}
+    mlcape: {
+        name: "Mixed-Layer CAPE",
+        shortName: "MLCAPE",
+        units: "J/kg",
+        type: "cape"
+    },
 
+    mucape: {
+        name: "Most-Unstable CAPE",
+        shortName: "MUCAPE",
+        units: "J/kg",
+        type: "cape"
+    },
 
-/* ==========================================================
-   COLOR LOOKUP
-   ========================================================== */
-
-function getColorIndex(
-    value,
-    config
-) {
-
-    if (
-        !Number.isFinite(
-            value
-        )
-    ) {
-
-        return -1;
-
+    sfc_dewpoint: {
+        name: "Surface Dewpoint",
+        shortName: "Surface Dewpoint",
+        units: "°F",
+        type: "dewpoint"
     }
 
+};
 
-    for (
-        let i = 0;
-        i < config.colors.length;
-        i++
-    ) {
 
-        if (
-            value >=
-                config.bounds[i]
-            &&
-            value <
-                config.bounds[i + 1]
-        ) {
+const VECTOR_FIELDS = {
 
-            return i;
+    sfc_wind: {
+        name: "Surface Wind",
+        shortName: "Surface Wind"
+    },
 
-        }
-
+    srwind_4_6km: {
+        name: "4–6 km Storm-Relative Wind",
+        shortName: "4–6 km SR Wind"
     }
 
+};
 
-    if (
-        value >=
-        config.bounds[
-            config.bounds.length - 1
-        ]
-    ) {
 
-        return (
-            config.colors.length - 1
-        );
+/* =========================================================================================
+   STATE
+   ========================================================================================= */
 
-    }
+let currentRun = null;
 
+let runMetadata = null;
 
-    return -1;
+let activeField = "sbcape";
 
-}
+const activeOverlays = {
+    surfaceWind: false,
+    srWind46: false
+};
 
+let fieldMetadata = {};
 
-function getWeatherRgba(
-    value,
-    config
-) {
+let vectorMetadata = {};
 
-    if (
-        !Number.isFinite(
-            value
-        )
-        ||
-        value ===
-            WEATHER_NODATA
-        ||
-        value <
-            config.transparentBelow
-    ) {
+let citiesEnabled = false;
 
-        return [
-            0,
-            0,
-            0,
-            0
-        ];
 
-    }
+/* =========================================================================================
+   CACHES
+   ========================================================================================= */
 
+const scalarTileCache = new Map();
 
-    const index =
-        getColorIndex(
-            value,
-            config
-        );
+const vectorTileCache = new Map();
 
 
-    if (
-        index < 0
-    ) {
+/* =========================================================================================
+   GENERATION COUNTERS
+   ========================================================================================= */
 
-        return [
-            0,
-            0,
-            0,
-            0
-        ];
+let scalarRenderGeneration = 0;
 
-    }
+let vectorRenderGeneration = 0;
 
+let cursorGeneration = 0;
 
-    const rgb =
-        config.rgb[index];
 
+/* =========================================================================================
+   DOM
+   ========================================================================================= */
 
-    return [
+const mapContainer =
+    document.getElementById("map");
 
-        rgb[0],
+const mapWrapper =
+    document.getElementById("map-wrapper");
 
-        rgb[1],
+const weatherCanvas =
+    document.getElementById("weather-canvas");
 
-        rgb[2],
+const vectorCanvas =
+    document.getElementById("vector-canvas");
 
-        255
+const geographyCanvas =
+    document.getElementById("geography-canvas");
 
-    ];
+const weatherCtx =
+    weatherCanvas.getContext("2d");
 
-}
+const vectorCtx =
+    vectorCanvas.getContext("2d");
 
+const geographyCtx =
+    geographyCanvas.getContext("2d");
 
-/* ==========================================================
-   APPLICATION STATE
-   ========================================================== */
+const fieldSelect =
+    document.getElementById("field-select");
 
-let latestData =
-    null;
+const sectorSelect =
+    document.getElementById("sector-select");
 
+const citiesToggle =
+    document.getElementById("cities-toggle");
 
-const fieldMetadata =
-    new Map();
+const surfaceWindToggle =
+    document.getElementById("sfc-wind-toggle");
 
+const srWind46Toggle =
+    document.getElementById("srwind-46-toggle");
 
-let activeField =
-    "none";
+const runIdElement =
+    document.getElementById("run-id");
 
+const analysisTimeElement =
+    document.getElementById("analysis-time");
 
-let weatherRenderGeneration =
-    0;
+const statusElement =
+    document.getElementById("status");
 
+const legend =
+    document.getElementById("legend");
 
-let weatherRedrawTimer =
-    null;
+const legendTitle =
+    document.getElementById("legend-title");
 
+const legendCanvas =
+    document.getElementById("legend-bar");
 
-let weatherCanvas =
-    null;
+const legendCtx =
+    legendCanvas.getContext("2d");
 
+const legendLabels =
+    document.getElementById("legend-labels");
 
-let weatherCtx =
-    null;
+const cursorField =
+    document.getElementById("cursor-field");
 
+const cursorValue =
+    document.getElementById("cursor-value");
 
-let geographyCanvas =
-    null;
+const cursorLocation =
+    document.getElementById("cursor-location");
 
 
-let geographyCtx =
-    null;
+/* =========================================================================================
+   MAP
+   ========================================================================================= */
 
+const map = new maplibregl.Map({
 
-let countiesGeoJSON =
-    null;
+    container: "map",
 
+    style: {
+        version: 8,
 
-let statesGeoJSON =
-    null;
+        sources: {},
 
+        layers: [
+            {
+                id: "background",
+                type: "background",
 
-let citiesGeoJSON =
-    null;
-
-
-/*
- * IMPORTANT:
- *
- * Cache keys include:
- *
- * FIELD
- * RUN
- * ZOOM
- * X
- * Y
- *
- * That prevents SBCAPE tiles from accidentally being reused
- * when switching to MLCAPE or MUCAPE.
- */
-
-const weatherTileCache =
-    new Map();
-
-
-let weatherImageGeoBounds =
-    null;
-
-
-let weatherImageCssWidth =
-    0;
-
-
-let weatherImageCssHeight =
-    0;
-
-
-/* ==========================================================
-   CURSOR STATE
-   ========================================================== */
-
-let cursorPanel =
-    null;
-
-
-let lastCursorSampleTime =
-    0;
-
-
-let pendingCursorEvent =
-    null;
-
-
-let cursorSampleTimer =
-    null;
-
-
-let cursorRequestGeneration =
-    0;
-
-
-/* ==========================================================
-   MAP STYLE
-   ========================================================== */
-
-const mapStyle = {
-
-    version: 8,
-
-    sources: {},
-
-    layers: [
-
-        {
-
-            id:
-                "background",
-
-            type:
-                "background",
-
-            paint: {
-
-                "background-color":
-                    "#ffffff"
-
+                paint: {
+                    "background-color": "#ffffff"
+                }
             }
+        ]
+    },
 
-        }
+    center: [
+        -100.75,
+        41.1
+    ],
 
-    ]
+    zoom: 6,
 
-};
+    minZoom: 3,
 
+    maxZoom: 9,
 
-/* ==========================================================
-   CREATE MAP
-   ========================================================== */
+    attributionControl: false,
 
-const map =
-    new maplibregl.Map({
+    dragRotate: false,
 
-        container:
-            "map",
+    pitchWithRotate: false
 
-        style:
-            mapStyle,
-
-        center:
-            [
-                -100.75,
-                41.1
-            ],
-
-        zoom:
-            6,
-
-        minZoom:
-            2,
-
-        maxZoom:
-            12,
-
-        attributionControl:
-            false
-
-    });
+});
 
 
-/* ==========================================================
-   MAP CONTROLS
-   ========================================================== */
+map.dragRotate.disable();
+
+map.touchZoomRotate.disableRotation();
+
 
 map.addControl(
 
     new maplibregl.NavigationControl({
-
-        showCompass:
-            false,
-
-        showZoom:
-            true
-
+        showCompass: false,
+        showZoom: true
     }),
 
     "top-right"
@@ -837,302 +430,211 @@ map.addControl(
 map.addControl(
 
     new maplibregl.AttributionControl({
-
-        compact:
-            true,
+        compact: true,
 
         customAttribution:
             "Geography: U.S. Census Bureau / us-atlas"
-
-    }),
-
-    "bottom-right"
+    })
 
 );
 
 
-/* ==========================================================
-   DOM ELEMENTS
-   ========================================================== */
+/* =========================================================================================
+   GEOGRAPHY DATA
+   ========================================================================================= */
 
-const sectorSelect =
-    document.getElementById(
-        "sector-select"
+let countyFeatures = [];
+
+let stateFeatures = [];
+
+let cityFeatures = [];
+
+
+/* =========================================================================================
+   CANVAS SIZE
+   ========================================================================================= */
+
+function resizeCanvas(canvas) {
+
+    const rect =
+        mapWrapper.getBoundingClientRect();
+
+    const dpr =
+        window.devicePixelRatio || 1;
+
+    const targetWidth =
+        Math.round(rect.width * dpr);
+
+    const targetHeight =
+        Math.round(rect.height * dpr);
+
+    if (
+        canvas.width !== targetWidth ||
+        canvas.height !== targetHeight
+    ) {
+
+        canvas.width =
+            targetWidth;
+
+        canvas.height =
+            targetHeight;
+
+        canvas.style.width =
+            `${rect.width}px`;
+
+        canvas.style.height =
+            `${rect.height}px`;
+
+    }
+
+}
+
+
+function prepareContext(canvas, ctx) {
+
+    resizeCanvas(canvas);
+
+    const dpr =
+        window.devicePixelRatio || 1;
+
+    ctx.setTransform(
+        dpr,
+        0,
+        0,
+        dpr,
+        0,
+        0
     );
 
-
-const statesToggle =
-    document.getElementById(
-        "states-toggle"
+    ctx.clearRect(
+        0,
+        0,
+        canvas.width / dpr,
+        canvas.height / dpr
     );
 
-
-const countiesToggle =
-    document.getElementById(
-        "counties-toggle"
-    );
+}
 
 
-const citiesToggle =
-    document.getElementById(
-        "cities-toggle"
-    );
+function resizeAllCanvases() {
+
+    resizeCanvas(weatherCanvas);
+
+    resizeCanvas(vectorCanvas);
+
+    resizeCanvas(geographyCanvas);
+
+}
 
 
-const fieldSelect =
-    document.getElementById(
-        "field-select"
-    );
+/* =========================================================================================
+   FETCH JSON
+   ========================================================================================= */
 
-
-const fieldInfo =
-    document.getElementById(
-        "field-info"
-    );
-
-
-const fieldName =
-    document.getElementById(
-        "field-name"
-    );
-
-
-const fieldTime =
-    document.getElementById(
-        "field-time"
-    );
-
-
-const weatherLegend =
-    document.getElementById(
-        "weather-legend"
-    );
-
-
-const legendCanvas =
-    document.getElementById(
-        "legend-canvas"
-    );
-
-
-const legendTitle =
-    document.getElementById(
-        "legend-title"
-    );
-
-
-const legendUnits =
-    document.getElementById(
-        "legend-units"
-    );
-
-
-/* ==========================================================
-   LOAD LATEST.JSON
-   ========================================================== */
-
-async function loadLatestData() {
-
-    const url =
-        `${S3_BASE_URL}/latest.json` +
-        `?cb=${Date.now()}`;
-
-
-    console.log(
-        "[MULTIFIELD] Loading latest:",
-        url
-    );
-
+async function fetchJSON(url) {
 
     const response =
         await fetch(
             url,
             {
-                cache:
-                    "no-store"
+                cache: "no-store"
             }
         );
 
-
-    if (
-        !response.ok
-    ) {
+    if (!response.ok) {
 
         throw new Error(
-            `latest.json failed: ` +
-            `${response.status}`
+            `HTTP ${response.status}: ${url}`
         );
 
     }
 
-
-    latestData =
-        await response.json();
-
-
-    console.log(
-        "[MULTIFIELD] Latest:",
-        latestData
-    );
-
-
-    return latestData;
+    return await response.json();
 
 }
 
 
-/* ==========================================================
-   GET RUN ID
-   ========================================================== */
+/* =========================================================================================
+   LOAD RUN
+   ========================================================================================= */
 
-function getLatestRunId() {
+async function loadLatestRun() {
 
-    if (
-        !latestData
+    statusElement.textContent =
+        "Loading latest run...";
+
+    const latest =
+        await fetchJSON(
+            `${S3_BASE_URL}/latest.json?t=${Date.now()}`
+        );
+
+    currentRun =
+        latest.run;
+
+    runIdElement.textContent =
+        currentRun;
+
+    analysisTimeElement.textContent =
+        formatAnalysisTime(
+            latest.analysis_time
+        );
+
+    runMetadata =
+        await fetchJSON(
+            `${S3_BASE_URL}/runs/${currentRun}/metadata.json`
+        );
+
+
+    fieldMetadata = {};
+
+    for (
+        const fieldKey
+        of
+        latest.fields || []
     ) {
 
-        return null;
+        fieldMetadata[fieldKey] =
+            await fetchJSON(
+                `${S3_BASE_URL}/runs/${currentRun}/${fieldKey}/metadata.json`
+            );
 
     }
 
 
-    return (
+    vectorMetadata = {};
 
-        latestData.run
-        ||
-        latestData.run_id
-        ||
-        latestData.cycle
-        ||
-        latestData.analysis
-        ||
-        null
+    for (
+        const vectorKey
+        of
+        latest.overlays || []
+    ) {
 
-    );
+        vectorMetadata[vectorKey] =
+            await fetchJSON(
+                `${S3_BASE_URL}/runs/${currentRun}/overlays/${vectorKey}/metadata.json`
+            );
+
+    }
+
+
+    statusElement.textContent =
+        `Loaded ${currentRun}`;
 
 }
 
 
-/* ==========================================================
-   FIELD METADATA
-   ========================================================== */
+/* =========================================================================================
+   TIME FORMAT
+   ========================================================================================= */
 
-async function loadFieldMetadata(
-    fieldKey
-) {
+function formatAnalysisTime(value) {
 
-    const runId =
-        getLatestRunId();
-
-
-    if (
-        !runId
-    ) {
-
-        throw new Error(
-            "No latest run ID."
-        );
-
+    if (!value) {
+        return "--";
     }
-
-
-    const cacheKey =
-        `${fieldKey}/${runId}`;
-
-
-    if (
-        fieldMetadata.has(
-            cacheKey
-        )
-    ) {
-
-        return (
-            fieldMetadata.get(
-                cacheKey
-            )
-        );
-
-    }
-
-
-    const url =
-
-        `${S3_BASE_URL}/` +
-        `runs/${runId}/` +
-        `${fieldKey}/` +
-        `metadata.json` +
-        `?cb=${Date.now()}`;
-
-
-    console.log(
-        `[MULTIFIELD] Loading ` +
-        `${fieldKey} metadata:`,
-        url
-    );
-
-
-    const response =
-        await fetch(
-            url,
-            {
-                cache:
-                    "no-store"
-            }
-        );
-
-
-    if (
-        !response.ok
-    ) {
-
-        throw new Error(
-
-            `${fieldKey} metadata ` +
-            `failed: ` +
-            `${response.status}`
-
-        );
-
-    }
-
-
-    const metadata =
-        await response.json();
-
-
-    fieldMetadata.set(
-        cacheKey,
-        metadata
-    );
-
-
-    return metadata;
-
-}
-
-
-/* ==========================================================
-   ANALYSIS TIME
-   ========================================================== */
-
-function formatAnalysisTime(
-    value
-) {
-
-    if (
-        !value
-    ) {
-
-        return "";
-
-    }
-
 
     const date =
-        new Date(
-            value
-        );
-
+        new Date(value);
 
     if (
         Number.isNaN(
@@ -1140,18 +642,11 @@ function formatAnalysisTime(
         )
     ) {
 
-        return String(
-            value
-        );
+        return value;
 
     }
 
-
-    const yyyy =
-        date.getUTCFullYear();
-
-
-    const mm =
+    const month =
         String(
             date.getUTCMonth() + 1
         ).padStart(
@@ -1159,8 +654,7 @@ function formatAnalysisTime(
             "0"
         );
 
-
-    const dd =
+    const day =
         String(
             date.getUTCDate()
         ).padStart(
@@ -1168,8 +662,7 @@ function formatAnalysisTime(
             "0"
         );
 
-
-    const hh =
+    const hour =
         String(
             date.getUTCHours()
         ).padStart(
@@ -1177,1044 +670,56 @@ function formatAnalysisTime(
             "0"
         );
 
-
     return (
-        `${yyyy}-${mm}-${dd} ${hh}Z`
+        `${month}/${day}/${date.getUTCFullYear()} ` +
+        `${hour}Z`
     );
 
 }
 
 
-function getAnalysisTime(
-    metadata = null
-) {
+/* =========================================================================================
+   TILE ZOOM
+   ========================================================================================= */
 
-    let analysisTime =
+function getDataZoom() {
 
-        metadata?.analysis_time
-        ||
-        latestData?.analysis_time
-        ||
-        latestData?.valid_time
-        ||
-        latestData?.time
-        ||
-        null;
+    const zoom =
+        map.getZoom();
 
-
-    const runId =
-        getLatestRunId();
-
-
-    if (
-        !analysisTime
-        &&
-        runId
-        &&
-        /^\d{8}_\d{2}$/.test(
-            runId
-        )
-    ) {
-
-        analysisTime =
-
-            `${runId.slice(0,4)}-` +
-            `${runId.slice(4,6)}-` +
-            `${runId.slice(6,8)}T` +
-            `${runId.slice(9,11)}:` +
-            `00:00Z`;
-
+    if (zoom < 4.5) {
+        return 4;
     }
 
+    if (zoom < 5.5) {
+        return 5;
+    }
 
-    return analysisTime;
+    if (zoom < 6.5) {
+        return 6;
+    }
+
+    return 7;
 
 }
 
 
-/* ==========================================================
-   LEGEND
-   ========================================================== */
-
-function drawWeatherLegend() {
-
-    const config =
-        getActiveFieldConfig();
-
-
-    if (
-        !config
-        ||
-        !legendCanvas
-    ) {
-
-        return;
-
-    }
-
-
-    const ctx =
-        legendCanvas.getContext(
-            "2d"
-        );
-
-
-    const width =
-        legendCanvas.width;
-
-
-    const height =
-        legendCanvas.height;
-
-
-    ctx.clearRect(
-        0,
-        0,
-        width,
-        height
-    );
-
-
-    for (
-        let x = 0;
-        x < width;
-        x++
-    ) {
-
-        const fraction =
-            x /
-            Math.max(
-                1,
-                width - 1
-            );
-
-
-        const value =
-            fraction *
-            config.legendMax;
-
-
-        let index =
-            getColorIndex(
-                value,
-                config
-            );
-
-
-        if (
-            index < 0
-        ) {
-
-            index = 0;
-
-        }
-
-
-        const rgb =
-            config.rgb[index];
-
-
-        ctx.fillStyle =
-            `rgb(` +
-            `${rgb[0]},` +
-            `${rgb[1]},` +
-            `${rgb[2]}` +
-            `)`;
-
-
-        ctx.fillRect(
-            x,
-            0,
-            1,
-            height
-        );
-
-    }
-
-
-    if (
-        legendTitle
-    ) {
-
-        legendTitle.textContent =
-            config.name;
-
-    }
-
-
-    if (
-        legendUnits
-    ) {
-
-        legendUnits.textContent =
-            config.units;
-
-    }
-
-
-    updateLegendLabels();
-
-}
-
-
-/* ==========================================================
-   LEGEND LABEL POSITIONING
-   ========================================================== */
-
-function updateLegendLabels() {
-
-    const config =
-        getActiveFieldConfig();
-
-
-    if (
-        !config
-        ||
-        !weatherLegend
-    ) {
-
-        return;
-
-    }
-
-
-    const oldLabels =
-        weatherLegend.querySelector(
-            ".legend-labels"
-        );
-
-
-    if (
-        oldLabels
-    ) {
-
-        oldLabels.remove();
-
-    }
-
-
-    const labels =
-        document.createElement(
-            "div"
-        );
-
-
-    labels.className =
-        "legend-labels";
-
-
-    Object.assign(
-        labels.style,
-        {
-
-            position:
-                "relative",
-
-            height:
-                "16px",
-
-            marginTop:
-                "3px",
-
-            fontSize:
-                "10px",
-
-            color:
-                "#333"
-
-        }
-    );
-
-
-    const values = [
-
-        0,
-
-        1000,
-
-        2000,
-
-        3000,
-
-        4000,
-
-        5000,
-
-        6000
-
-    ];
-
-
-    for (
-        const value
-        of
-        values
-    ) {
-
-        const label =
-            document.createElement(
-                "span"
-            );
-
-
-        label.textContent =
-
-            value ===
-                config.legendMax
-
-                ?
-
-                `${value}+`
-
-                :
-
-                String(
-                    value
-                );
-
-
-        const fraction =
-            value /
-            config.legendMax;
-
-
-        Object.assign(
-            label.style,
-            {
-
-                position:
-                    "absolute",
-
-                left:
-                    `${fraction * 100}%`,
-
-                whiteSpace:
-                    "nowrap"
-
-            }
-        );
-
-
-        if (
-            value === 0
-        ) {
-
-            label.style.transform =
-                "translateX(0)";
-
-        }
-
-        else if (
-            value ===
-            config.legendMax
-        ) {
-
-            label.style.transform =
-                "translateX(-100%)";
-
-        }
-
-        else {
-
-            label.style.transform =
-                "translateX(-50%)";
-
-        }
-
-
-        labels.appendChild(
-            label
-        );
-
-    }
-
-
-    legendCanvas.insertAdjacentElement(
-        "afterend",
-        labels
-    );
-
-}
-
-
-/* ==========================================================
-   CREATE OVERLAY CANVASES
-   ========================================================== */
-
-function createOverlayCanvases() {
-
-    const mapElement =
-        document.getElementById(
-            "map"
-        );
-
-
-    /* ------------------------------------------------------
-       WEATHER CANVAS
-       ------------------------------------------------------ */
-
-    weatherCanvas =
-        document.createElement(
-            "canvas"
-        );
-
-
-    weatherCanvas.id =
-        "weather-canvas";
-
-
-    Object.assign(
-        weatherCanvas.style,
-        {
-
-            position:
-                "absolute",
-
-            left:
-                "0",
-
-            top:
-                "0",
-
-            width:
-                "100%",
-
-            height:
-                "100%",
-
-            pointerEvents:
-                "none",
-
-            zIndex:
-                "2",
-
-            display:
-                "none",
-
-            transformOrigin:
-                "0 0",
-
-            willChange:
-                "transform"
-
-        }
-    );
-
-
-    mapElement.appendChild(
-        weatherCanvas
-    );
-
-
-    weatherCtx =
-        weatherCanvas.getContext(
-            "2d",
-            {
-                alpha:
-                    true
-            }
-        );
-
-
-    /* ------------------------------------------------------
-       GEOGRAPHY CANVAS
-       ------------------------------------------------------ */
-
-    geographyCanvas =
-        document.createElement(
-            "canvas"
-        );
-
-
-    geographyCanvas.id =
-        "geography-canvas";
-
-
-    Object.assign(
-        geographyCanvas.style,
-        {
-
-            position:
-                "absolute",
-
-            left:
-                "0",
-
-            top:
-                "0",
-
-            width:
-                "100%",
-
-            height:
-                "100%",
-
-            pointerEvents:
-                "none",
-
-            zIndex:
-                "3"
-
-        }
-    );
-
-
-    mapElement.appendChild(
-        geographyCanvas
-    );
-
-
-    geographyCtx =
-        geographyCanvas.getContext(
-            "2d",
-            {
-                alpha:
-                    true
-            }
-        );
-
-
-    resizeOverlayCanvases();
-
-}
-
-
-/* ==========================================================
-   CANVAS RESIZE
-   ========================================================== */
-
-function resizeCanvas(
-    canvas,
-    ctx
-) {
-
-    if (
-        !canvas
-        ||
-        !ctx
-    ) {
-
-        return;
-
-    }
-
-
-    const mapElement =
-        document.getElementById(
-            "map"
-        );
-
-
-    const rect =
-        mapElement.getBoundingClientRect();
-
-
-    const dpr =
-        window.devicePixelRatio
-        ||
-        1;
-
-
-    const width =
-        Math.max(
-            1,
-            Math.round(
-                rect.width *
-                dpr
-            )
-        );
-
-
-    const height =
-        Math.max(
-            1,
-            Math.round(
-                rect.height *
-                dpr
-            )
-        );
-
-
-    if (
-        canvas.width !==
-            width
-        ||
-        canvas.height !==
-            height
-    ) {
-
-        canvas.width =
-            width;
-
-        canvas.height =
-            height;
-
-    }
-
-
-    canvas.style.width =
-        `${rect.width}px`;
-
-
-    canvas.style.height =
-        `${rect.height}px`;
-
-
-    ctx.setTransform(
-        dpr,
-        0,
-        0,
-        dpr,
-        0,
-        0
-    );
-
-}
-
-
-function resizeOverlayCanvases() {
-
-    resizeCanvas(
-        weatherCanvas,
-        weatherCtx
-    );
-
-
-    resizeCanvas(
-        geographyCanvas,
-        geographyCtx
-    );
-
-}
-
-
-/* ==========================================================
-   CLEAR CANVAS
-   ========================================================== */
-
-function clearCanvas(
-    canvas,
-    ctx
-) {
-
-    if (
-        !canvas
-        ||
-        !ctx
-    ) {
-
-        return;
-
-    }
-
-
-    ctx.save();
-
-
-    ctx.setTransform(
-        1,
-        0,
-        0,
-        1,
-        0,
-        0
-    );
-
-
-    ctx.clearRect(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-    );
-
-
-    ctx.restore();
-
-}
-
-
-/* ==========================================================
-   CURSOR PANEL
-   ========================================================== */
-
-function createCursorPanel() {
-
-    const mapElement =
-        document.getElementById(
-            "map"
-        );
-
-
-    cursorPanel =
-        document.createElement(
-            "div"
-        );
-
-
-    cursorPanel.id =
-        "weather-cursor-panel";
-
-
-    Object.assign(
-        cursorPanel.style,
-        {
-
-            position:
-                "absolute",
-
-            right:
-                "12px",
-
-            bottom:
-                "42px",
-
-            minWidth:
-                "165px",
-
-            padding:
-                "8px 10px",
-
-            background:
-                "rgba(255,255,255,0.94)",
-
-            border:
-                "1px solid #999",
-
-            borderRadius:
-                "3px",
-
-            boxShadow:
-                "0 1px 3px rgba(0,0,0,0.12)",
-
-            color:
-                "#222",
-
-            fontFamily:
-                "Arial, Helvetica, sans-serif",
-
-            fontSize:
-                "11px",
-
-            lineHeight:
-                "1.35",
-
-            pointerEvents:
-                "none",
-
-            zIndex:
-                "10",
-
-            display:
-                "none"
-
-        }
-    );
-
-
-    mapElement.appendChild(
-        cursorPanel
-    );
-
-
-    setCursorPanelContents(
-        NaN,
-        null,
-        null
-    );
-
-}
-
-
-/* ==========================================================
-   CURSOR FORMATTING
-   ========================================================== */
-
-function formatLatitude(
-    latitude
-) {
-
-    if (
-        !Number.isFinite(
-            latitude
-        )
-    ) {
-
-        return "";
-
-    }
-
-
-    return (
-
-        `${Math.abs(latitude).toFixed(2)}°` +
-
-        (
-            latitude >= 0
-            ?
-            "N"
-            :
-            "S"
-        )
-
-    );
-
-}
-
-
-function formatLongitude(
-    longitude
-) {
-
-    if (
-        !Number.isFinite(
-            longitude
-        )
-    ) {
-
-        return "";
-
-    }
-
-
-    return (
-
-        `${Math.abs(longitude).toFixed(2)}°` +
-
-        (
-            longitude >= 0
-            ?
-            "E"
-            :
-            "W"
-        )
-
-    );
-
-}
-
-
-function formatWeatherValue(
-    value,
-    config
-) {
-
-    if (
-        !Number.isFinite(
-            value
-        )
-        ||
-        value ===
-            WEATHER_NODATA
-    ) {
-
-        return "N/A";
-
-    }
-
-
-    return (
-
-        Math.round(
-            value
-        ).toLocaleString(
-            "en-US"
-        )
-
-        +
-
-        ` ${config.units}`
-
-    );
-
-}
-
-
-/* ==========================================================
-   CURSOR PANEL CONTENT
-   ========================================================== */
-
-function setCursorPanelContents(
-    value,
-    latitude,
-    longitude
-) {
-
-    if (
-        !cursorPanel
-    ) {
-
-        return;
-
-    }
-
-
-    const config =
-        getActiveFieldConfig();
-
-
-    if (
-        !config
-    ) {
-
-        cursorPanel.innerHTML =
-            "";
-
-        return;
-
-    }
-
-
-    const valueText =
-        formatWeatherValue(
-            value,
-            config
-        );
-
-
-    const coordinateText =
-
-        Number.isFinite(
-            latitude
-        )
-
-        &&
-
-        Number.isFinite(
-            longitude
-        )
-
-        ?
-
-        `${formatLatitude(latitude)}, ` +
-        `${formatLongitude(longitude)}`
-
-        :
-
-        "";
-
-
-    cursorPanel.innerHTML =
-        "";
-
-
-    const title =
-        document.createElement(
-            "div"
-        );
-
-
-    title.textContent =
-        config.name;
-
-
-    Object.assign(
-        title.style,
-        {
-
-            fontWeight:
-                "700",
-
-            marginBottom:
-                "3px"
-
-        }
-    );
-
-
-    cursorPanel.appendChild(
-        title
-    );
-
-
-    const valueLine =
-        document.createElement(
-            "div"
-        );
-
-
-    valueLine.textContent =
-        `${config.shortName}: ` +
-        `${valueText}`;
-
-
-    Object.assign(
-        valueLine.style,
-        {
-
-            fontSize:
-                "12px",
-
-            fontWeight:
-                "700"
-
-        }
-    );
-
-
-    cursorPanel.appendChild(
-        valueLine
-    );
-
-
-    if (
-        coordinateText
-    ) {
-
-        const coordinateLine =
-            document.createElement(
-                "div"
-            );
-
-
-        coordinateLine.textContent =
-            coordinateText;
-
-
-        Object.assign(
-            coordinateLine.style,
-            {
-
-                marginTop:
-                    "2px",
-
-                color:
-                    "#666"
-
-            }
-        );
-
-
-        cursorPanel.appendChild(
-            coordinateLine
-        );
-
-    }
-
-}
-
-
-/* ==========================================================
-   XYZ TILE MATH
-   ========================================================== */
+/* =========================================================================================
+   WEB MERCATOR TILE MATH
+   ========================================================================================= */
 
 function lonToTileX(
     lon,
-    z
+    zoom
 ) {
 
-    return Math.floor(
+    const n =
+        2 ** zoom;
 
-        (
-            (lon + 180)
-            /
-            360
-        )
-
-        *
-
-        (2 ** z)
-
+    return (
+        (lon + 180) /
+        360 *
+        n
     );
 
 }
@@ -2222,1449 +727,1921 @@ function lonToTileX(
 
 function latToTileY(
     lat,
-    z
+    zoom
 ) {
+
+    const clipped =
+        Math.max(
+            -85.05112878,
+            Math.min(
+                85.05112878,
+                lat
+            )
+        );
+
+    const latRad =
+        clipped *
+        Math.PI /
+        180;
 
     const n =
-        2 ** z;
+        2 ** zoom;
 
-
-    const safeLatitude =
-        clamp(
-            lat,
-            -85.05112878,
-            85.05112878
-        );
-
-
-    const radians =
-        safeLatitude *
-        Math.PI /
-        180;
-
-
-    return Math.floor(
-
+    return (
         (
-
-            1
-
-            -
-
+            1 -
             Math.asinh(
                 Math.tan(
-                    radians
+                    latRad
                 )
-            )
-
-            /
-
+            ) /
             Math.PI
-
-        )
-
-        /
-
-        2
-
-        *
-
+        ) /
+        2 *
         n
-
     );
 
 }
 
 
-function longitudeToWorldTileX(
-    longitude,
-    z
-) {
+/* =========================================================================================
+   COLOR UTILITIES
+   ========================================================================================= */
 
-    return (
+function hexToRgb(hex) {
 
-        (longitude + 180)
-
-        /
-
-        360
-
-        *
-
-        (2 ** z)
-
-    );
-
-}
-
-
-function latitudeToWorldTileY(
-    latitude,
-    z
-) {
-
-    const safeLatitude =
-        clamp(
-            latitude,
-            -85.05112878,
-            85.05112878
+    const clean =
+        hex.replace(
+            "#",
+            ""
         );
-
-
-    const radians =
-        safeLatitude *
-        Math.PI /
-        180;
-
-
-    return (
-
-        (
-
-            1
-
-            -
-
-            Math.asinh(
-                Math.tan(
-                    radians
-                )
-            )
-
-            /
-
-            Math.PI
-
-        )
-
-        /
-
-        2
-
-        *
-
-        (2 ** z)
-
-    );
-
-}
-
-
-/* ==========================================================
-   SELECT NUMERICAL TILE ZOOM
-   ========================================================== */
-
-function getWeatherZoom() {
-
-    const zoom =
-        map.getZoom();
-
-
-    if (
-        zoom < 4.5
-    ) {
-
-        return 4;
-
-    }
-
-
-    if (
-        zoom < 5.5
-    ) {
-
-        return 5;
-
-    }
-
-
-    if (
-        zoom < 6.5
-    ) {
-
-        return 6;
-
-    }
-
-
-    return 7;
-
-}
-
-
-/* ==========================================================
-   VISIBLE TILE RANGE
-   ========================================================== */
-
-function getVisibleTileRange(
-    z
-) {
-
-    const bounds =
-        map.getBounds();
-
-
-    const west =
-        clamp(
-            bounds.getWest(),
-            -179.999,
-            179.999
-        );
-
-
-    const east =
-        clamp(
-            bounds.getEast(),
-            -179.999,
-            179.999
-        );
-
-
-    const south =
-        clamp(
-            bounds.getSouth(),
-            -85.05112878,
-            85.05112878
-        );
-
-
-    const north =
-        clamp(
-            bounds.getNorth(),
-            -85.05112878,
-            85.05112878
-        );
-
-
-    let minX =
-        lonToTileX(
-            Math.min(
-                west,
-                east
-            ),
-            z
-        );
-
-
-    let maxX =
-        lonToTileX(
-            Math.max(
-                west,
-                east
-            ),
-            z
-        );
-
-
-    let minY =
-        latToTileY(
-            north,
-            z
-        );
-
-
-    let maxY =
-        latToTileY(
-            south,
-            z
-        );
-
-
-    const maximumTile =
-        (2 ** z) - 1;
-
-
-    /*
-     * Two-tile buffer.
-     */
-
-    minX =
-        clamp(
-            minX - 2,
-            0,
-            maximumTile
-        );
-
-
-    maxX =
-        clamp(
-            maxX + 2,
-            0,
-            maximumTile
-        );
-
-
-    minY =
-        clamp(
-            minY - 2,
-            0,
-            maximumTile
-        );
-
-
-    maxY =
-        clamp(
-            maxY + 2,
-            0,
-            maximumTile
-        );
-
 
     return {
+        r: parseInt(
+            clean.substring(
+                0,
+                2
+            ),
+            16
+        ),
 
-        minX,
+        g: parseInt(
+            clean.substring(
+                2,
+                4
+            ),
+            16
+        ),
 
-        maxX,
-
-        minY,
-
-        maxY
-
+        b: parseInt(
+            clean.substring(
+                4,
+                6
+            ),
+            16
+        )
     };
 
 }
 
 
-/* ==========================================================
-   LOAD NUMERICAL TILE
-   ========================================================== */
+const capeRgb =
+    CAPE_COLORS.map(
+        hexToRgb
+    );
 
-async function loadWeatherTile(
-    fieldKey,
-    runId,
+
+const dewpointRgb =
+    DEWPOINT_COLORS.map(
+        hexToRgb
+    );
+
+
+function capeColor(value) {
+
+    /*
+     * Keep <100 J/kg transparent.
+     */
+
+    if (
+        !Number.isFinite(value) ||
+        value < 100
+    ) {
+
+        return null;
+
+    }
+
+    let index =
+        CAPE_BOUNDS.length - 2;
+
+    for (
+        let i = 0;
+        i < CAPE_BOUNDS.length - 1;
+        i++
+    ) {
+
+        if (
+            value >= CAPE_BOUNDS[i] &&
+            value < CAPE_BOUNDS[i + 1]
+        ) {
+
+            index = i;
+            break;
+
+        }
+
+    }
+
+    index =
+        Math.max(
+            0,
+            Math.min(
+                capeRgb.length - 1,
+                index
+            )
+        );
+
+    return capeRgb[index];
+
+}
+
+
+function dewpointColor(value) {
+
+    if (!Number.isFinite(value)) {
+        return null;
+    }
+
+    /*
+     * One color for each 1°F bin:
+     *
+     * [-41,-40)
+     * [-40,-39)
+     * ...
+     * [89,90)
+     *
+     * Values outside the display range are clipped.
+     */
+
+    const clipped =
+        Math.max(
+            -41,
+            Math.min(
+                89.999,
+                value
+            )
+        );
+
+    let index =
+        Math.floor(
+            clipped - (-41)
+        );
+
+    index =
+        Math.max(
+            0,
+            Math.min(
+                dewpointRgb.length - 1,
+                index
+            )
+        );
+
+    return dewpointRgb[index];
+
+}
+
+
+function getFieldColor(
+    field,
+    value
+) {
+
+    const definition =
+        WEATHER_FIELDS[field];
+
+    if (!definition) {
+        return null;
+    }
+
+    if (
+        definition.type === "cape"
+    ) {
+
+        return capeColor(
+            value
+        );
+
+    }
+
+    if (
+        definition.type === "dewpoint"
+    ) {
+
+        return dewpointColor(
+            value
+        );
+
+    }
+
+    return null;
+
+}
+
+
+/* =========================================================================================
+   SCALAR TILE LOADING
+   ========================================================================================= */
+
+async function loadScalarTile(
+    field,
     z,
     x,
     y
 ) {
 
     const key =
-
-        `${fieldKey}/` +
-        `${runId}/` +
-        `${z}/` +
-        `${x}/` +
-        `${y}`;
-
+        `${field}:${currentRun}:${z}/${x}/${y}`;
 
     if (
-        weatherTileCache.has(
+        scalarTileCache.has(
             key
         )
     ) {
 
-        return (
-            weatherTileCache.get(
-                key
-            )
+        return scalarTileCache.get(
+            key
+        );
+
+    }
+
+    const promise =
+        (async () => {
+
+            const url =
+                `${S3_BASE_URL}/runs/${currentRun}/${field}/z${z}/${x}/${y}.bin`;
+
+            const response =
+                await fetch(url);
+
+            if (!response.ok) {
+
+                return null;
+
+            }
+
+            const buffer =
+                await response.arrayBuffer();
+
+            const expectedBytes =
+                TILE_SIZE *
+                TILE_SIZE *
+                2;
+
+            if (
+                buffer.byteLength !==
+                expectedBytes
+            ) {
+
+                console.warn(
+                    "Unexpected scalar tile size:",
+                    url,
+                    buffer.byteLength
+                );
+
+                return null;
+
+            }
+
+            const data =
+                new Uint16Array(
+                    buffer
+                );
+
+            return data;
+
+        })();
+
+    scalarTileCache.set(
+        key,
+        promise
+    );
+
+    return promise;
+
+}
+
+
+/* =========================================================================================
+   VECTOR TILE LOADING
+   ========================================================================================= */
+
+async function loadVectorTile(
+    field,
+    z,
+    x,
+    y
+) {
+
+    const key =
+        `${field}:${currentRun}:${z}/${x}/${y}`;
+
+    if (
+        vectorTileCache.has(
+            key
+        )
+    ) {
+
+        return vectorTileCache.get(
+            key
+        );
+
+    }
+
+    const promise =
+        (async () => {
+
+            const url =
+                `${S3_BASE_URL}/runs/${currentRun}/overlays/${field}/z${z}/${x}/${y}.bin`;
+
+            const response =
+                await fetch(url);
+
+            if (!response.ok) {
+
+                return null;
+
+            }
+
+            const buffer =
+                await response.arrayBuffer();
+
+            const expectedBytes =
+                TILE_SIZE *
+                TILE_SIZE *
+                2 *
+                2;
+
+            if (
+                buffer.byteLength !==
+                expectedBytes
+            ) {
+
+                console.warn(
+                    "Unexpected vector tile size:",
+                    url,
+                    buffer.byteLength
+                );
+
+                return null;
+
+            }
+
+            return new Int16Array(
+                buffer
+            );
+
+        })();
+
+    vectorTileCache.set(
+        key,
+        promise
+    );
+
+    return promise;
+
+}
+
+
+/* =========================================================================================
+   SCALAR DECODE
+   ========================================================================================= */
+
+function decodeScalarValue(
+    field,
+    encoded
+) {
+
+    if (
+        encoded === SCALAR_NODATA
+    ) {
+
+        return null;
+
+    }
+
+    const metadata =
+        fieldMetadata[field];
+
+    if (!metadata) {
+        return null;
+    }
+
+    const scale =
+        metadata.encoding.scale;
+
+    const offset =
+        metadata.encoding.offset;
+
+    const value =
+        encoded *
+        scale +
+        offset;
+
+    /*
+     * Filter obvious bad dewpoint fill values.
+     *
+     * The source run contained approximately -188°F in invalid cells.
+     */
+
+    if (
+        field === "sfc_dewpoint" &&
+        (
+            value < -100 ||
+            value > 120
+        )
+    ) {
+
+        return null;
+
+    }
+
+    return value;
+
+}
+
+
+/* =========================================================================================
+   VECTOR DECODE
+   ========================================================================================= */
+
+function decodeVectorComponent(
+    field,
+    encoded
+) {
+
+    if (
+        encoded === VECTOR_NODATA
+    ) {
+
+        return null;
+
+    }
+
+    const metadata =
+        vectorMetadata[field];
+
+    if (!metadata) {
+        return null;
+    }
+
+    return (
+        encoded *
+        metadata.encoding.scale +
+        metadata.encoding.offset
+    );
+
+}
+
+
+/* =========================================================================================
+   BILINEAR SCALAR SAMPLE
+   ========================================================================================= */
+
+async function sampleScalarAtLonLat(
+    field,
+    lon,
+    lat,
+    zoom
+) {
+
+    const tx =
+        lonToTileX(
+            lon,
+            zoom
+        );
+
+    const ty =
+        latToTileY(
+            lat,
+            zoom
+        );
+
+    const pixelX =
+        tx *
+        TILE_SIZE;
+
+    const pixelY =
+        ty *
+        TILE_SIZE;
+
+    const x0 =
+        Math.floor(
+            pixelX
+        );
+
+    const y0 =
+        Math.floor(
+            pixelY
+        );
+
+    const fx =
+        pixelX - x0;
+
+    const fy =
+        pixelY - y0;
+
+
+    async function sampleGlobalPixel(
+        gx,
+        gy
+    ) {
+
+        const tileX =
+            Math.floor(
+                gx /
+                TILE_SIZE
+            );
+
+        const tileY =
+            Math.floor(
+                gy /
+                TILE_SIZE
+            );
+
+        const localX =
+            (
+                (
+                    gx %
+                    TILE_SIZE
+                ) +
+                TILE_SIZE
+            ) %
+            TILE_SIZE;
+
+        const localY =
+            (
+                (
+                    gy %
+                    TILE_SIZE
+                ) +
+                TILE_SIZE
+            ) %
+            TILE_SIZE;
+
+        const tile =
+            await loadScalarTile(
+                field,
+                zoom,
+                tileX,
+                tileY
+            );
+
+        if (!tile) {
+            return null;
+        }
+
+        const encoded =
+            tile[
+                localY *
+                TILE_SIZE +
+                localX
+            ];
+
+        return decodeScalarValue(
+            field,
+            encoded
         );
 
     }
 
 
-    const url =
+    const [
+        v00,
+        v10,
+        v01,
+        v11
+    ] =
+        await Promise.all([
+            sampleGlobalPixel(
+                x0,
+                y0
+            ),
 
-        `${S3_BASE_URL}/` +
-        `runs/${runId}/` +
-        `${fieldKey}/` +
-        `z${z}/` +
-        `${x}/` +
-        `${y}.bin`;
+            sampleGlobalPixel(
+                x0 + 1,
+                y0
+            ),
+
+            sampleGlobalPixel(
+                x0,
+                y0 + 1
+            ),
+
+            sampleGlobalPixel(
+                x0 + 1,
+                y0 + 1
+            )
+        ]);
 
 
-    const response =
-        await fetch(
-            url
-        );
+    const samples = [
+        v00,
+        v10,
+        v01,
+        v11
+    ];
 
-
-    /*
-     * Missing edge tiles are expected around the native
-     * Lambert model footprint.
-     *
-     * Depending on S3 permissions, a missing public object
-     * may appear as either 403 or 404.
-     */
 
     if (
-        response.status === 403
-        ||
-        response.status === 404
+        samples.some(
+            value =>
+                value === null ||
+                !Number.isFinite(value)
+        )
     ) {
-
-        weatherTileCache.set(
-            key,
-            null
-        );
-
 
         return null;
 
     }
 
 
-    if (
-        !response.ok
-    ) {
+    const top =
+        v00 *
+        (1 - fx) +
+        v10 *
+        fx;
 
-        throw new Error(
+    const bottom =
+        v01 *
+        (1 - fx) +
+        v11 *
+        fx;
 
-            `Tile failed ` +
-            `${response.status}: ` +
-            `${url}`
-
-        );
-
-    }
-
-
-    const buffer =
-        await response.arrayBuffer();
-
-
-    const expectedBytes =
-
-        WEATHER_TILE_SIZE
-
-        *
-
-        WEATHER_TILE_SIZE
-
-        *
-
-        2;
-
-
-    if (
-        buffer.byteLength !==
-        expectedBytes
-    ) {
-
-        throw new Error(
-
-            `Unexpected byte length for ` +
-            `${fieldKey} ` +
-            `z${z}/${x}/${y}: ` +
-            `${buffer.byteLength}`
-
-        );
-
-    }
-
-
-    const view =
-        new DataView(
-            buffer
-        );
-
-
-    const values =
-        new Uint16Array(
-
-            WEATHER_TILE_SIZE
-
-            *
-
-            WEATHER_TILE_SIZE
-
-        );
-
-
-    /*
-     * Data was written little-endian.
-     */
-
-    for (
-        let i = 0;
-        i < values.length;
-        i++
-    ) {
-
-        values[i] =
-            view.getUint16(
-                i * 2,
-                true
-            );
-
-    }
-
-
-    weatherTileCache.set(
-        key,
-        values
+    return (
+        top *
+        (1 - fy) +
+        bottom *
+        fy
     );
 
-
-    return values;
-
 }
 
 
-/* ==========================================================
-   LOCATION -> TILE COORDINATE
-   ========================================================== */
+/* =========================================================================================
+   BILINEAR VECTOR SAMPLE
+   ========================================================================================= */
 
-function getTileCoordinateForLocation(
-    longitude,
-    latitude,
-    z
+async function sampleVectorAtLonLat(
+    field,
+    lon,
+    lat,
+    zoom
 ) {
-
-    const worldX =
-        longitudeToWorldTileX(
-            longitude,
-            z
-        );
-
-
-    const worldY =
-        latitudeToWorldTileY(
-            latitude,
-            z
-        );
-
-
-    const tileX =
-        Math.floor(
-            worldX
-        );
-
-
-    const tileY =
-        Math.floor(
-            worldY
-        );
-
-
-    /*
-     * -0.5 aligns the coordinate with pixel centers.
-     */
-
-    const pixelX =
-
-        (
-            worldX -
-            tileX
-        )
-
-        *
-
-        WEATHER_TILE_SIZE
-
-        -
-
-        0.5;
-
-
-    const pixelY =
-
-        (
-            worldY -
-            tileY
-        )
-
-        *
-
-        WEATHER_TILE_SIZE
-
-        -
-
-        0.5;
-
-
-    return {
-
-        worldX,
-
-        worldY,
-
-        tileX,
-
-        tileY,
-
-        pixelX,
-
-        pixelY
-
-    };
-
-}
-
-
-/* ==========================================================
-   GET TILE VALUE
-   ========================================================== */
-
-function getTileValue(
-    tile,
-    x,
-    y
-) {
-
-    if (
-        !tile
-    ) {
-
-        return WEATHER_NODATA;
-
-    }
-
-
-    if (
-        x < 0
-        ||
-        y < 0
-        ||
-        x >= WEATHER_TILE_SIZE
-        ||
-        y >= WEATHER_TILE_SIZE
-    ) {
-
-        return WEATHER_NODATA;
-
-    }
-
-
-    return tile[
-
-        y *
-        WEATHER_TILE_SIZE
-
-        +
-
-        x
-
-    ];
-
-}
-
-
-/* ==========================================================
-   CURSOR NUMERICAL SAMPLING
-   ========================================================== */
-
-async function sampleWeatherAtLocation(
-    longitude,
-    latitude
-) {
-
-    if (
-        !Number.isFinite(
-            longitude
-        )
-        ||
-        !Number.isFinite(
-            latitude
-        )
-    ) {
-
-        return NaN;
-
-    }
-
-
-    const fieldKey =
-        activeField;
-
-
-    const config =
-        WEATHER_FIELDS[
-            fieldKey
-        ];
-
-
-    if (
-        !config
-    ) {
-
-        return NaN;
-
-    }
-
-
-    const runId =
-        getLatestRunId();
-
-
-    if (
-        !runId
-    ) {
-
-        return NaN;
-
-    }
-
-
-    const z =
-        getWeatherZoom();
-
-
-    const coordinate =
-        getTileCoordinateForLocation(
-            longitude,
-            latitude,
-            z
-        );
-
-
-    const baseX =
-        Math.floor(
-            coordinate.pixelX
-        );
-
-
-    const baseY =
-        Math.floor(
-            coordinate.pixelY
-        );
-
 
     const tx =
-        coordinate.pixelX -
-        baseX;
-
+        lonToTileX(
+            lon,
+            zoom
+        );
 
     const ty =
-        coordinate.pixelY -
-        baseY;
+        latToTileY(
+            lat,
+            zoom
+        );
+
+    const pixelX =
+        tx *
+        TILE_SIZE;
+
+    const pixelY =
+        ty *
+        TILE_SIZE;
+
+    const x0 =
+        Math.floor(
+            pixelX
+        );
+
+    const y0 =
+        Math.floor(
+            pixelY
+        );
+
+    const fx =
+        pixelX - x0;
+
+    const fy =
+        pixelY - y0;
 
 
-    /*
-     * Resolve a pixel that may fall into a neighboring tile.
-     */
-
-    function resolvePixel(
-        tileX,
-        tileY,
-        localX,
-        localY
+    async function sampleGlobalPixel(
+        gx,
+        gy
     ) {
 
-        let resolvedTileX =
-            tileX;
+        const tileX =
+            Math.floor(
+                gx /
+                TILE_SIZE
+            );
 
+        const tileY =
+            Math.floor(
+                gy /
+                TILE_SIZE
+            );
 
-        let resolvedTileY =
-            tileY;
+        const localX =
+            (
+                (
+                    gx %
+                    TILE_SIZE
+                ) +
+                TILE_SIZE
+            ) %
+            TILE_SIZE;
 
+        const localY =
+            (
+                (
+                    gy %
+                    TILE_SIZE
+                ) +
+                TILE_SIZE
+            ) %
+            TILE_SIZE;
 
-        let resolvedX =
-            localX;
+        const tile =
+            await loadVectorTile(
+                field,
+                zoom,
+                tileX,
+                tileY
+            );
 
-
-        let resolvedY =
-            localY;
-
-
-        while (
-            resolvedX < 0
-        ) {
-
-            resolvedTileX--;
-
-            resolvedX +=
-                WEATHER_TILE_SIZE;
-
+        if (!tile) {
+            return null;
         }
 
+        const baseIndex =
+            (
+                localY *
+                TILE_SIZE +
+                localX
+            ) *
+            2;
 
-        while (
-            resolvedX >=
-            WEATHER_TILE_SIZE
+        const encodedU =
+            tile[
+                baseIndex
+            ];
+
+        const encodedV =
+            tile[
+                baseIndex + 1
+            ];
+
+        const u =
+            decodeVectorComponent(
+                field,
+                encodedU
+            );
+
+        const v =
+            decodeVectorComponent(
+                field,
+                encodedV
+            );
+
+        if (
+            u === null ||
+            v === null
         ) {
 
-            resolvedTileX++;
-
-            resolvedX -=
-                WEATHER_TILE_SIZE;
+            return null;
 
         }
-
-
-        while (
-            resolvedY < 0
-        ) {
-
-            resolvedTileY--;
-
-            resolvedY +=
-                WEATHER_TILE_SIZE;
-
-        }
-
-
-        while (
-            resolvedY >=
-            WEATHER_TILE_SIZE
-        ) {
-
-            resolvedTileY++;
-
-            resolvedY -=
-                WEATHER_TILE_SIZE;
-
-        }
-
 
         return {
-
-            tileX:
-                resolvedTileX,
-
-            tileY:
-                resolvedTileY,
-
-            pixelX:
-                resolvedX,
-
-            pixelY:
-                resolvedY
-
+            u,
+            v
         };
 
     }
 
 
-    const sampleLocations = [
+    const [
+        p00,
+        p10,
+        p01,
+        p11
+    ] =
+        await Promise.all([
+            sampleGlobalPixel(
+                x0,
+                y0
+            ),
 
-        resolvePixel(
-            coordinate.tileX,
-            coordinate.tileY,
-            baseX,
-            baseY
-        ),
+            sampleGlobalPixel(
+                x0 + 1,
+                y0
+            ),
 
-        resolvePixel(
-            coordinate.tileX,
-            coordinate.tileY,
-            baseX + 1,
-            baseY
-        ),
+            sampleGlobalPixel(
+                x0,
+                y0 + 1
+            ),
 
-        resolvePixel(
-            coordinate.tileX,
-            coordinate.tileY,
-            baseX,
-            baseY + 1
-        ),
+            sampleGlobalPixel(
+                x0 + 1,
+                y0 + 1
+            )
+        ]);
 
-        resolvePixel(
-            coordinate.tileX,
-            coordinate.tileY,
-            baseX + 1,
-            baseY + 1
-        )
 
-    ];
+    if (
+        !p00 ||
+        !p10 ||
+        !p01 ||
+        !p11
+    ) {
 
+        return null;
+
+    }
+
+
+    const topU =
+        p00.u *
+        (1 - fx) +
+        p10.u *
+        fx;
+
+    const bottomU =
+        p01.u *
+        (1 - fx) +
+        p11.u *
+        fx;
+
+    const topV =
+        p00.v *
+        (1 - fx) +
+        p10.v *
+        fx;
+
+    const bottomV =
+        p01.v *
+        (1 - fx) +
+        p11.v *
+        fx;
+
+
+    return {
+
+        u:
+            topU *
+            (1 - fy) +
+            bottomU *
+            fy,
+
+        v:
+            topV *
+            (1 - fy) +
+            bottomV *
+            fy
+
+    };
+
+}
+
+
+/* =========================================================================================
+   RENDER SCALAR FIELD
+   ========================================================================================= */
+
+async function renderWeather() {
+
+    const generation =
+        ++scalarRenderGeneration;
+
+    prepareContext(
+        weatherCanvas,
+        weatherCtx
+    );
+
+
+    if (
+        activeField === "none" ||
+        !currentRun
+    ) {
+
+        updateLegend();
+        return;
+
+    }
+
+
+    const rect =
+        mapWrapper.getBoundingClientRect();
+
+    const width =
+        Math.max(
+            1,
+            Math.round(
+                rect.width
+            )
+        );
+
+    const height =
+        Math.max(
+            1,
+            Math.round(
+                rect.height
+            )
+        );
+
+
+    /*
+     * Render at half resolution for performance, then scale smoothly.
+     *
+     * Numerical sampling remains bilinear.
+     */
+
+    const renderScale =
+        0.5;
+
+    const renderWidth =
+        Math.max(
+            1,
+            Math.round(
+                width *
+                renderScale
+            )
+        );
+
+    const renderHeight =
+        Math.max(
+            1,
+            Math.round(
+                height *
+                renderScale
+            )
+        );
+
+
+    const offscreen =
+        document.createElement(
+            "canvas"
+        );
+
+    offscreen.width =
+        renderWidth;
+
+    offscreen.height =
+        renderHeight;
+
+    const offCtx =
+        offscreen.getContext(
+            "2d"
+        );
+
+    const imageData =
+        offCtx.createImageData(
+            renderWidth,
+            renderHeight
+        );
+
+    const pixels =
+        imageData.data;
+
+    const zoom =
+        getDataZoom();
+
+
+    /*
+     * Cache samples by tile so the renderer does not issue four fetches
+     * for every pixel independently.
+     */
 
     const requiredTiles =
         new Map();
 
 
-    for (
-        const location
-        of
-        sampleLocations
-    ) {
+    const bounds =
+        map.getBounds();
 
-        const key =
-            `${location.tileX}/` +
-            `${location.tileY}`;
+    const west =
+        bounds.getWest();
+
+    const east =
+        bounds.getEast();
+
+    const north =
+        bounds.getNorth();
+
+    const south =
+        bounds.getSouth();
 
 
-        if (
-            !requiredTiles.has(
-                key
+    const tileXMin =
+        Math.floor(
+            lonToTileX(
+                west,
+                zoom
             )
-        ) {
-
-            requiredTiles.set(
-                key,
-                {
-
-                    tileX:
-                        location.tileX,
-
-                    tileY:
-                        location.tileY
-
-                }
-            );
-
-        }
-
-    }
-
-
-    const loadedTiles =
-        new Map();
-
-
-    await Promise.all(
-
-        Array.from(
-            requiredTiles.entries()
-        ).map(
-
-            async (
-                [
-                    key,
-                    location
-                ]
-            ) => {
-
-                try {
-
-                    const tile =
-                        await loadWeatherTile(
-
-                            fieldKey,
-
-                            runId,
-
-                            z,
-
-                            location.tileX,
-
-                            location.tileY
-
-                        );
-
-
-                    loadedTiles.set(
-                        key,
-                        tile
-                    );
-
-                }
-
-                catch (
-                    error
-                ) {
-
-                    console.warn(
-
-                        "[MULTIFIELD CURSOR] " +
-                        "Tile load failed:",
-
-                        fieldKey,
-
-                        location.tileX,
-
-                        location.tileY,
-
-                        error
-
-                    );
-
-
-                    loadedTiles.set(
-                        key,
-                        null
-                    );
-
-                }
-
-            }
-
-        )
-
-    );
-
-
-    function valueForLocation(
-        location
-    ) {
-
-        const key =
-            `${location.tileX}/` +
-            `${location.tileY}`;
-
-
-        const tile =
-            loadedTiles.get(
-                key
-            );
-
-
-        return getTileValue(
-
-            tile,
-
-            location.pixelX,
-
-            location.pixelY
-
-        );
-
-    }
-
-
-    const q00 =
-        valueForLocation(
-            sampleLocations[0]
-        );
-
-
-    const q10 =
-        valueForLocation(
-            sampleLocations[1]
-        );
-
-
-    const q01 =
-        valueForLocation(
-            sampleLocations[2]
-        );
-
-
-    const q11 =
-        valueForLocation(
-            sampleLocations[3]
-        );
-
-
-    const samples = [
-
-        {
-
-            value:
-                q00,
-
-            weight:
-                (1 - tx) *
-                (1 - ty)
-
-        },
-
-        {
-
-            value:
-                q10,
-
-            weight:
-                tx *
-                (1 - ty)
-
-        },
-
-        {
-
-            value:
-                q01,
-
-            weight:
-                (1 - tx) *
-                ty
-
-        },
-
-        {
-
-            value:
-                q11,
-
-            weight:
-                tx *
-                ty
-
-        }
-
-    ];
-
-
-    let weightedSum =
-        0;
-
-
-    let totalWeight =
-        0;
+        ) - 1;
+
+    const tileXMax =
+        Math.floor(
+            lonToTileX(
+                east,
+                zoom
+            )
+        ) + 1;
+
+    const tileYMin =
+        Math.floor(
+            latToTileY(
+                north,
+                zoom
+            )
+        ) - 1;
+
+    const tileYMax =
+        Math.floor(
+            latToTileY(
+                south,
+                zoom
+            )
+        ) + 1;
+
+
+    const promises = [];
 
 
     for (
-        const sample
-        of
-        samples
-    ) {
-
-        if (
-            sample.value ===
-            WEATHER_NODATA
-        ) {
-
-            continue;
-
-        }
-
-
-        weightedSum +=
-
-            sample.value
-
-            *
-
-            sample.weight;
-
-
-        totalWeight +=
-            sample.weight;
-
-    }
-
-
-    if (
-        totalWeight <
-        0.001
-    ) {
-
-        return NaN;
-
-    }
-
-
-    return (
-
-        weightedSum
-
-        /
-
-        totalWeight
-
-    );
-
-}
-
-
-/* ==========================================================
-   PROCESS CURSOR SAMPLE
-   ========================================================== */
-
-async function processCursorSample(
-    longitude,
-    latitude,
-    generation
-) {
-
-    const requestedField =
-        activeField;
-
-
-    if (
-        !WEATHER_FIELDS[
-            requestedField
-        ]
-    ) {
-
-        return;
-
-    }
-
-
-    setCursorPanelContents(
-        NaN,
-        latitude,
-        longitude
-    );
-
-
-    try {
-
-        const value =
-            await sampleWeatherAtLocation(
-                longitude,
-                latitude
-            );
-
-
-        if (
-            generation !==
-                cursorRequestGeneration
-            ||
-            activeField !==
-                requestedField
-        ) {
-
-            return;
-
-        }
-
-
-        setCursorPanelContents(
-            value,
-            latitude,
-            longitude
-        );
-
-    }
-
-    catch (
-        error
-    ) {
-
-        if (
-            generation !==
-            cursorRequestGeneration
-        ) {
-
-            return;
-
-        }
-
-
-        console.warn(
-
-            "[MULTIFIELD CURSOR] " +
-            "Sampling failed:",
-
-            error
-
-        );
-
-
-        setCursorPanelContents(
-            NaN,
-            latitude,
-            longitude
-        );
-
-    }
-
-}
-
-
-/* ==========================================================
-   CURSOR THROTTLING
-   ========================================================== */
-
-function queueCursorSample(
-    event
-) {
-
-    if (
-        !WEATHER_FIELDS[
-            activeField
-        ]
-        ||
-        !cursorPanel
-    ) {
-
-        return;
-
-    }
-
-
-    pendingCursorEvent = {
-
-        longitude:
-            event.lngLat.lng,
-
-        latitude:
-            event.lngLat.lat
-
-    };
-
-
-    const now =
-        performance.now();
-
-
-    const elapsed =
-        now -
-        lastCursorSampleTime;
-
-
-    if (
-        elapsed >=
-        CURSOR_SAMPLE_INTERVAL_MS
-    ) {
-
-        runQueuedCursorSample();
-
-        return;
-
-    }
-
-
-    if (
-        cursorSampleTimer
-    ) {
-
-        return;
-
-    }
-
-
-    cursorSampleTimer =
-        setTimeout(
-
-            () => {
-
-                cursorSampleTimer =
-                    null;
-
-
-                runQueuedCursorSample();
-
-            },
-
-            CURSOR_SAMPLE_INTERVAL_MS
-            -
-            elapsed
-
-        );
-
-}
-
-
-function runQueuedCursorSample() {
-
-    if (
-        !pendingCursorEvent
-    ) {
-
-        return;
-
-    }
-
-
-    const event =
-        pendingCursorEvent;
-
-
-    pendingCursorEvent =
-        null;
-
-
-    lastCursorSampleTime =
-        performance.now();
-
-
-    const generation =
-        ++cursorRequestGeneration;
-
-
-    processCursorSample(
-
-        event.longitude,
-
-        event.latitude,
-
-        generation
-
-    );
-
-}
-
-
-/* ==========================================================
-   LOAD NUMERICAL MOSAIC
-   ========================================================== */
-
-async function loadNumericalMosaic(
-    fieldKey,
-    runId,
-    z,
-    range
-) {
-
-    const tileColumns =
-
-        range.maxX
-
-        -
-
-        range.minX
-
-        +
-
-        1;
-
-
-    const tileRows =
-
-        range.maxY
-
-        -
-
-        range.minY
-
-        +
-
-        1;
-
-
-    const width =
-
-        tileColumns
-
-        *
-
-        WEATHER_TILE_SIZE;
-
-
-    const height =
-
-        tileRows
-
-        *
-
-        WEATHER_TILE_SIZE;
-
-
-    const mosaic =
-        new Uint16Array(
-
-            width
-
-            *
-
-            height
-
-        );
-
-
-    mosaic.fill(
-        WEATHER_NODATA
-    );
-
-
-    const requests =
-        [];
-
-
-    for (
-        let tileY = range.minY;
-        tileY <= range.maxY;
-        tileY++
+        let y = tileYMin;
+        y <= tileYMax;
+        y++
     ) {
 
         for (
-            let tileX = range.minX;
-            tileX <= range.maxX;
-            tileX++
+            let x = tileXMin;
+            x <= tileXMax;
+            x++
         ) {
 
-            requests.push({
+            const key =
+                `${x}/${y}`;
 
-                tileX,
+            const promise =
+                loadScalarTile(
+                    activeField,
+                    zoom,
+                    x,
+                    y
+                ).then(
+                    tile => {
+                        requiredTiles.set(
+                            key,
+                            tile
+                        );
+                    }
+                );
 
-                tileY,
+            promises.push(
+                promise
+            );
 
-                promise:
-                    loadWeatherTile(
+        }
 
-                        fieldKey,
+    }
 
-                        runId,
 
-                        z,
+    await Promise.all(
+        promises
+    );
 
-                        tileX,
 
-                        tileY
+    if (
+        generation !==
+        scalarRenderGeneration
+    ) {
 
-                    )
+        return;
 
+    }
+
+
+    function localSample(
+        lon,
+        lat
+    ) {
+
+        const tx =
+            lonToTileX(
+                lon,
+                zoom
+            );
+
+        const ty =
+            latToTileY(
+                lat,
+                zoom
+            );
+
+        const px =
+            tx *
+            TILE_SIZE;
+
+        const py =
+            ty *
+            TILE_SIZE;
+
+        const x0 =
+            Math.floor(
+                px
+            );
+
+        const y0 =
+            Math.floor(
+                py
+            );
+
+        const fx =
+            px - x0;
+
+        const fy =
+            py - y0;
+
+
+        function getPixel(
+            gx,
+            gy
+        ) {
+
+            const tileX =
+                Math.floor(
+                    gx /
+                    TILE_SIZE
+                );
+
+            const tileY =
+                Math.floor(
+                    gy /
+                    TILE_SIZE
+                );
+
+            const localX =
+                (
+                    (
+                        gx %
+                        TILE_SIZE
+                    ) +
+                    TILE_SIZE
+                ) %
+                TILE_SIZE;
+
+            const localY =
+                (
+                    (
+                        gy %
+                        TILE_SIZE
+                    ) +
+                    TILE_SIZE
+                ) %
+                TILE_SIZE;
+
+            const tile =
+                requiredTiles.get(
+                    `${tileX}/${tileY}`
+                );
+
+            if (!tile) {
+                return null;
+            }
+
+            return decodeScalarValue(
+                activeField,
+                tile[
+                    localY *
+                    TILE_SIZE +
+                    localX
+                ]
+            );
+
+        }
+
+
+        const v00 =
+            getPixel(
+                x0,
+                y0
+            );
+
+        const v10 =
+            getPixel(
+                x0 + 1,
+                y0
+            );
+
+        const v01 =
+            getPixel(
+                x0,
+                y0 + 1
+            );
+
+        const v11 =
+            getPixel(
+                x0 + 1,
+                y0 + 1
+            );
+
+
+        if (
+            v00 === null ||
+            v10 === null ||
+            v01 === null ||
+            v11 === null
+        ) {
+
+            return null;
+
+        }
+
+
+        const top =
+            v00 *
+            (1 - fx) +
+            v10 *
+            fx;
+
+        const bottom =
+            v01 *
+            (1 - fx) +
+            v11 *
+            fx;
+
+
+        return (
+            top *
+            (1 - fy) +
+            bottom *
+            fy
+        );
+
+    }
+
+
+    let pixelIndex =
+        0;
+
+
+    for (
+        let py = 0;
+        py < renderHeight;
+        py++
+    ) {
+
+        const screenY =
+            (
+                py + 0.5
+            ) /
+            renderScale;
+
+
+        for (
+            let px = 0;
+            px < renderWidth;
+            px++
+        ) {
+
+            const screenX =
+                (
+                    px + 0.5
+                ) /
+                renderScale;
+
+
+            const lngLat =
+                map.unproject(
+                    [
+                        screenX,
+                        screenY
+                    ]
+                );
+
+
+            const value =
+                localSample(
+                    lngLat.lng,
+                    lngLat.lat
+                );
+
+
+            const color =
+                getFieldColor(
+                    activeField,
+                    value
+                );
+
+
+            if (color) {
+
+                pixels[
+                    pixelIndex
+                ] =
+                    color.r;
+
+                pixels[
+                    pixelIndex + 1
+                ] =
+                    color.g;
+
+                pixels[
+                    pixelIndex + 2
+                ] =
+                    color.b;
+
+                pixels[
+                    pixelIndex + 3
+                ] =
+                    235;
+
+            }
+            else {
+
+                pixels[
+                    pixelIndex + 3
+                ] =
+                    0;
+
+            }
+
+
+            pixelIndex += 4;
+
+        }
+
+    }
+
+
+    if (
+        generation !==
+        scalarRenderGeneration
+    ) {
+
+        return;
+
+    }
+
+
+    offCtx.putImageData(
+        imageData,
+        0,
+        0
+    );
+
+
+    prepareContext(
+        weatherCanvas,
+        weatherCtx
+    );
+
+
+    weatherCtx.imageSmoothingEnabled =
+        true;
+
+
+    weatherCtx.drawImage(
+        offscreen,
+        0,
+        0,
+        width,
+        height
+    );
+
+
+    updateLegend();
+
+}
+
+
+/* =========================================================================================
+   BARB DENSITY
+   ========================================================================================= */
+
+function getBarbSpacing() {
+
+    const zoom =
+        map.getZoom();
+
+    if (zoom < 4.5) {
+        return 60;
+    }
+
+    if (zoom < 5.5) {
+        return 54;
+    }
+
+    if (zoom < 6.5) {
+        return 48;
+    }
+
+    if (zoom < 7.5) {
+        return 42;
+    }
+
+    return 38;
+
+}
+
+
+/* =========================================================================================
+   DRAW WIND BARB
+   ========================================================================================= */
+
+function drawWindBarb(
+    ctx,
+    x,
+    y,
+    u,
+    v,
+    options = {}
+) {
+
+    const speed =
+        Math.hypot(
+            u,
+            v
+        );
+
+
+    if (
+        !Number.isFinite(speed)
+    ) {
+
+        return;
+
+    }
+
+
+    const color =
+        options.color ||
+        "#000000";
+
+    const staffLength =
+        options.staffLength ||
+        23;
+
+    const lineWidth =
+        options.lineWidth ||
+        1.25;
+
+
+    ctx.save();
+
+    ctx.strokeStyle =
+        color;
+
+    ctx.fillStyle =
+        color;
+
+    ctx.lineWidth =
+        lineWidth;
+
+    ctx.lineCap =
+        "round";
+
+    ctx.lineJoin =
+        "round";
+
+
+    /*
+     * Calm / near calm.
+     */
+
+    if (
+        speed < 2.5
+    ) {
+
+        ctx.beginPath();
+
+        ctx.arc(
+            x,
+            y,
+            3.0,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.stroke();
+
+        ctx.restore();
+
+        return;
+
+    }
+
+
+    /*
+     * Meteorological barb:
+     *
+     * u > 0 = wind toward east
+     * v > 0 = wind toward north
+     *
+     * The shaft extends toward the direction the wind is FROM.
+     *
+     * Canvas Y increases downward, so:
+     *
+     * shaft screen vector =
+     *      (-u, +v)
+     */
+
+    const shaftX =
+        -u /
+        speed;
+
+    const shaftY =
+        v /
+        speed;
+
+
+    const endX =
+        x +
+        shaftX *
+        staffLength;
+
+    const endY =
+        y +
+        shaftY *
+        staffLength;
+
+
+    ctx.beginPath();
+
+    ctx.moveTo(
+        x,
+        y
+    );
+
+    ctx.lineTo(
+        endX,
+        endY
+    );
+
+    ctx.stroke();
+
+
+    /*
+     * Round to nearest 5 kt.
+     */
+
+    let rounded =
+        Math.round(
+            speed /
+            5
+        ) *
+        5;
+
+
+    if (
+        rounded < 5
+    ) {
+
+        ctx.restore();
+        return;
+
+    }
+
+
+    let flags50 =
+        Math.floor(
+            rounded /
+            50
+        );
+
+    rounded -=
+        flags50 *
+        50;
+
+
+    let feathers10 =
+        Math.floor(
+            rounded /
+            10
+        );
+
+    rounded -=
+        feathers10 *
+        10;
+
+
+    const half5 =
+        rounded >= 5;
+
+
+    /*
+     * Unit vector perpendicular to the shaft.
+     */
+
+    const perpX =
+        -shaftY;
+
+    const perpY =
+        shaftX;
+
+
+    const featherLength =
+        9;
+
+    const halfFeatherLength =
+        5;
+
+    const spacing =
+        4.1;
+
+
+    let distanceFromTip =
+        0;
+
+
+    /*
+     * 50 kt triangular flags
+     */
+
+    for (
+        let i = 0;
+        i < flags50;
+        i++
+    ) {
+
+        const ax =
+            endX -
+            shaftX *
+            distanceFromTip;
+
+        const ay =
+            endY -
+            shaftY *
+            distanceFromTip;
+
+
+        const bx =
+            ax +
+            perpX *
+            featherLength +
+            shaftX *
+            spacing;
+
+        const by =
+            ay +
+            perpY *
+            featherLength +
+            shaftY *
+            spacing;
+
+
+        const cx =
+            ax -
+            shaftX *
+            (
+                spacing * 2
+            );
+
+        const cy =
+            ay -
+            shaftY *
+            (
+                spacing * 2
+            );
+
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            ax,
+            ay
+        );
+
+        ctx.lineTo(
+            bx,
+            by
+        );
+
+        ctx.lineTo(
+            cx,
+            cy
+        );
+
+        ctx.closePath();
+
+        ctx.fill();
+
+
+        distanceFromTip +=
+            spacing * 2.7;
+
+    }
+
+
+    /*
+     * 10 kt full feathers
+     */
+
+    for (
+        let i = 0;
+        i < feathers10;
+        i++
+    ) {
+
+        const ax =
+            endX -
+            shaftX *
+            distanceFromTip;
+
+        const ay =
+            endY -
+            shaftY *
+            distanceFromTip;
+
+
+        const bx =
+            ax +
+            perpX *
+            featherLength +
+            shaftX *
+            3;
+
+        const by =
+            ay +
+            perpY *
+            featherLength +
+            shaftY *
+            3;
+
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            ax,
+            ay
+        );
+
+        ctx.lineTo(
+            bx,
+            by
+        );
+
+        ctx.stroke();
+
+
+        distanceFromTip +=
+            spacing;
+
+    }
+
+
+    /*
+     * 5 kt half feather
+     */
+
+    if (half5) {
+
+        /*
+         * Add a little separation if this is the only feather.
+         */
+
+        if (
+            flags50 === 0 &&
+            feathers10 === 0
+        ) {
+
+            distanceFromTip +=
+                spacing;
+        }
+
+
+        const ax =
+            endX -
+            shaftX *
+            distanceFromTip;
+
+        const ay =
+            endY -
+            shaftY *
+            distanceFromTip;
+
+
+        const bx =
+            ax +
+            perpX *
+            halfFeatherLength +
+            shaftX *
+            1.5;
+
+        const by =
+            ay +
+            perpY *
+            halfFeatherLength +
+            shaftY *
+            1.5;
+
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            ax,
+            ay
+        );
+
+        ctx.lineTo(
+            bx,
+            by
+        );
+
+        ctx.stroke();
+
+    }
+
+
+    ctx.restore();
+
+}
+
+
+/* =========================================================================================
+   RENDER ONE VECTOR OVERLAY
+   ========================================================================================= */
+
+async function renderVectorField(
+    field,
+    generation,
+    xOffset = 0,
+    yOffset = 0
+) {
+
+    const rect =
+        mapWrapper.getBoundingClientRect();
+
+    const width =
+        rect.width;
+
+    const height =
+        rect.height;
+
+    const spacing =
+        getBarbSpacing();
+
+    const zoom =
+        getDataZoom();
+
+
+    /*
+     * When both vector layers are enabled, offset the second grid slightly
+     * so the two barb sets do not sit directly on top of one another.
+     */
+
+    const startX =
+        spacing / 2 +
+        xOffset;
+
+    const startY =
+        spacing / 2 +
+        yOffset;
+
+
+    const samples = [];
+
+
+    for (
+        let y = startY;
+        y < height;
+        y += spacing
+    ) {
+
+        for (
+            let x = startX;
+            x < width;
+            x += spacing
+        ) {
+
+            const lngLat =
+                map.unproject(
+                    [
+                        x,
+                        y
+                    ]
+                );
+
+
+            samples.push({
+                x,
+                y,
+                lon: lngLat.lng,
+                lat: lngLat.lat
             });
 
         }
@@ -3675,71 +2652,36 @@ async function loadNumericalMosaic(
     const results =
         await Promise.all(
 
-            requests.map(
+            samples.map(
+                async sample => {
 
-                async request => {
-
-                    try {
-
-                        return {
-
-                            tileX:
-                                request.tileX,
-
-                            tileY:
-                                request.tileY,
-
-                            values:
-                                await request.promise
-
-                        };
-
-                    }
-
-                    catch (
-                        error
-                    ) {
-
-                        console.error(
-
-                            "[MULTIFIELD] " +
-                            "Tile load error:",
-
-                            fieldKey,
-
-                            request.tileX,
-
-                            request.tileY,
-
-                            error
-
+                    const vector =
+                        await sampleVectorAtLonLat(
+                            field,
+                            sample.lon,
+                            sample.lat,
+                            zoom
                         );
 
-
-                        return {
-
-                            tileX:
-                                request.tileX,
-
-                            tileY:
-                                request.tileY,
-
-                            values:
-                                null
-
-                        };
-
-                    }
+                    return {
+                        ...sample,
+                        vector
+                    };
 
                 }
-
             )
 
         );
 
 
-    let loadedTiles =
-        0;
+    if (
+        generation !==
+        vectorRenderGeneration
+    ) {
+
+        return;
+
+    }
 
 
     for (
@@ -3748,1390 +2690,224 @@ async function loadNumericalMosaic(
         results
     ) {
 
-        if (
-            !result.values
-        ) {
-
+        if (!result.vector) {
             continue;
-
         }
 
 
-        loadedTiles++;
-
-
-        const offsetTileX =
-
-            result.tileX
-
-            -
-
-            range.minX;
-
-
-        const offsetTileY =
-
-            result.tileY
-
-            -
-
-            range.minY;
-
-
-        const destinationX =
-
-            offsetTileX
-
-            *
-
-            WEATHER_TILE_SIZE;
-
-
-        const destinationY =
-
-            offsetTileY
-
-            *
-
-            WEATHER_TILE_SIZE;
-
-
-        for (
-            let row = 0;
-            row < WEATHER_TILE_SIZE;
-            row++
-        ) {
-
-            const sourceStart =
-
-                row
-
-                *
-
-                WEATHER_TILE_SIZE;
-
-
-            const sourceEnd =
-
-                sourceStart
-
-                +
-
-                WEATHER_TILE_SIZE;
-
-
-            const destinationStart =
-
-                (
-
-                    destinationY
-
-                    +
-
-                    row
-
-                )
-
-                *
-
-                width
-
-                +
-
-                destinationX;
-
-
-            mosaic.set(
-
-                result.values.subarray(
-
-                    sourceStart,
-
-                    sourceEnd
-
-                ),
-
-                destinationStart
-
-            );
-
-        }
-
-    }
-
-
-    console.log(
-
-        "[MULTIFIELD MOSAIC]",
-
-        {
-
-            field:
-                fieldKey,
-
-            zoom:
-                z,
-
-            width,
-
-            height,
-
-            requestedTiles:
-                results.length,
-
-            loadedTiles
-
-        }
-
-    );
-
-
-    return {
-
-        values:
-            mosaic,
-
-        width,
-
-        height,
-
-        minTileX:
-            range.minX,
-
-        minTileY:
-            range.minY,
-
-        maxTileX:
-            range.maxX,
-
-        maxTileY:
-            range.maxY,
-
-        z
-
-    };
-
-}
-
-
-/* ==========================================================
-   MOSAIC VALUE
-   ========================================================== */
-
-function getMosaicValue(
-    mosaic,
-    x,
-    y
-) {
-
-    if (
-        x < 0
-        ||
-        y < 0
-        ||
-        x >= mosaic.width
-        ||
-        y >= mosaic.height
-    ) {
-
-        return WEATHER_NODATA;
-
-    }
-
-
-    return mosaic.values[
-
-        y *
-        mosaic.width
-
-        +
-
-        x
-
-    ];
-
-}
-
-
-/* ==========================================================
-   BILINEAR NUMERICAL INTERPOLATION
-   ========================================================== */
-
-function sampleBilinear(
-    mosaic,
-    sourceX,
-    sourceY
-) {
-
-    const x0 =
-        Math.floor(
-            sourceX
-        );
-
-
-    const y0 =
-        Math.floor(
-            sourceY
-        );
-
-
-    const x1 =
-        x0 + 1;
-
-
-    const y1 =
-        y0 + 1;
-
-
-    const tx =
-        sourceX -
-        x0;
-
-
-    const ty =
-        sourceY -
-        y0;
-
-
-    const samples = [
-
-        {
-
-            value:
-                getMosaicValue(
-                    mosaic,
-                    x0,
-                    y0
-                ),
-
-            weight:
-                (1 - tx)
-                *
-                (1 - ty)
-
-        },
-
-        {
-
-            value:
-                getMosaicValue(
-                    mosaic,
-                    x1,
-                    y0
-                ),
-
-            weight:
-                tx
-                *
-                (1 - ty)
-
-        },
-
-        {
-
-            value:
-                getMosaicValue(
-                    mosaic,
-                    x0,
-                    y1
-                ),
-
-            weight:
-                (1 - tx)
-                *
-                ty
-
-        },
-
-        {
-
-            value:
-                getMosaicValue(
-                    mosaic,
-                    x1,
-                    y1
-                ),
-
-            weight:
-                tx
-                *
-                ty
-
-        }
-
-    ];
-
-
-    let weightedSum =
-        0;
-
-
-    let totalWeight =
-        0;
-
-
-    for (
-        const sample
-        of
-        samples
-    ) {
-
-        if (
-            sample.value ===
-            WEATHER_NODATA
-        ) {
-
-            continue;
-
-        }
-
-
-        weightedSum +=
-
-            sample.value
-
-            *
-
-            sample.weight;
-
-
-        totalWeight +=
-            sample.weight;
-
-    }
-
-
-    if (
-        totalWeight <
-        0.001
-    ) {
-
-        return NaN;
-
-    }
-
-
-    return (
-
-        weightedSum
-
-        /
-
-        totalWeight
-
-    );
-
-}
-
-
-/* ==========================================================
-   SCREEN POINT -> MOSAIC COORDINATE
-   ========================================================== */
-
-function screenPointToMosaicCoordinate(
-    mosaic,
-    screenX,
-    screenY
-) {
-
-    const lngLat =
-        map.unproject(
-            [
-                screenX,
-                screenY
-            ]
-        );
-
-
-    const worldTileX =
-        longitudeToWorldTileX(
-            lngLat.lng,
-            mosaic.z
-        );
-
-
-    const worldTileY =
-        latitudeToWorldTileY(
-            lngLat.lat,
-            mosaic.z
-        );
-
-
-    return {
-
-        x:
-
-            (
-
-                worldTileX
-
-                -
-
-                mosaic.minTileX
-
-            )
-
-            *
-
-            WEATHER_TILE_SIZE
-
-            -
-
-            0.5,
-
-
-        y:
-
-            (
-
-                worldTileY
-
-                -
-
-                mosaic.minTileY
-
-            )
-
-            *
-
-            WEATHER_TILE_SIZE
-
-            -
-
-            0.5
-
-    };
-
-}
-
-
-/* ==========================================================
-   WEATHER IMAGE BOUNDS
-   ========================================================== */
-
-function captureWeatherImageBounds() {
-
-    const mapElement =
-        document.getElementById(
-            "map"
-        );
-
-
-    const rect =
-        mapElement.getBoundingClientRect();
-
-
-    const nw =
-        map.unproject(
-            [
-                0,
-                0
-            ]
-        );
-
-
-    const se =
-        map.unproject(
-            [
-                rect.width,
-                rect.height
-            ]
-        );
-
-
-    weatherImageGeoBounds = {
-
-        west:
-            nw.lng,
-
-        north:
-            nw.lat,
-
-        east:
-            se.lng,
-
-        south:
-            se.lat
-
-    };
-
-
-    weatherImageCssWidth =
-        rect.width;
-
-
-    weatherImageCssHeight =
-        rect.height;
-
-}
-
-
-/* ==========================================================
-   WEATHER TRANSFORM
-   ========================================================== */
-
-function resetWeatherTransform() {
-
-    if (
-        !weatherCanvas
-    ) {
-
-        return;
-
-    }
-
-
-    weatherCanvas.style.transform =
-        "none";
-
-}
-
-
-function transformWeatherCanvasToCurrentMap() {
-
-    if (
-        !WEATHER_FIELDS[
-            activeField
-        ]
-        ||
-        !weatherCanvas
-        ||
-        !weatherImageGeoBounds
-    ) {
-
-        return;
-
-    }
-
-
-    const nw =
-        map.project(
-            [
-
-                weatherImageGeoBounds.west,
-
-                weatherImageGeoBounds.north
-
-            ]
-        );
-
-
-    const se =
-        map.project(
-            [
-
-                weatherImageGeoBounds.east,
-
-                weatherImageGeoBounds.south
-
-            ]
-        );
-
-
-    const projectedWidth =
-        se.x -
-        nw.x;
-
-
-    const projectedHeight =
-        se.y -
-        nw.y;
-
-
-    if (
-        !Number.isFinite(
-            projectedWidth
-        )
-        ||
-        !Number.isFinite(
-            projectedHeight
-        )
-        ||
-        projectedWidth <= 0
-        ||
-        projectedHeight <= 0
-        ||
-        weatherImageCssWidth <= 0
-        ||
-        weatherImageCssHeight <= 0
-    ) {
-
-        return;
-
-    }
-
-
-    const scaleX =
-
-        projectedWidth
-
-        /
-
-        weatherImageCssWidth;
-
-
-    const scaleY =
-
-        projectedHeight
-
-        /
-
-        weatherImageCssHeight;
-
-
-    weatherCanvas.style.transform =
-
-        `translate(` +
-        `${nw.x}px, ` +
-        `${nw.y}px` +
-        `) ` +
-
-        `scale(` +
-        `${scaleX}, ` +
-        `${scaleY}` +
-        `)`;
-
-}
-
-
-/* ==========================================================
-   RENDER INTERPOLATED WEATHER MOSAIC
-   ========================================================== */
-
-function renderInterpolatedMosaic(
-    mosaic,
-    fieldKey
-) {
-
-    const config =
-        WEATHER_FIELDS[
-            fieldKey
-        ];
-
-
-    if (
-        !config
-    ) {
-
-        return;
-
-    }
-
-
-    const mapElement =
-        document.getElementById(
-            "map"
-        );
-
-
-    const rect =
-        mapElement.getBoundingClientRect();
-
-
-    const renderWidth =
-        Math.max(
-
-            1,
-
-            Math.round(
-
-                rect.width
-
-                *
-
-                WEATHER_RENDER_SCALE
-
-            )
-
-        );
-
-
-    const renderHeight =
-        Math.max(
-
-            1,
-
-            Math.round(
-
-                rect.height
-
-                *
-
-                WEATHER_RENDER_SCALE
-
-            )
-
-        );
-
-
-    const renderCanvas =
-        document.createElement(
-            "canvas"
-        );
-
-
-    renderCanvas.width =
-        renderWidth;
-
-
-    renderCanvas.height =
-        renderHeight;
-
-
-    const renderCtx =
-        renderCanvas.getContext(
-            "2d",
+        drawWindBarb(
+            vectorCtx,
+            result.x,
+            result.y,
+            result.vector.u,
+            result.vector.v,
             {
-                alpha:
-                    true
+                color: "#000000",
+                staffLength: 23,
+                lineWidth: 1.2
             }
         );
-
-
-    const imageData =
-        renderCtx.createImageData(
-            renderWidth,
-            renderHeight
-        );
-
-
-    const pixels =
-        imageData.data;
-
-
-    let validPixels =
-        0;
-
-
-    let transparentPixels =
-        0;
-
-
-    let minimumRendered =
-        Infinity;
-
-
-    let maximumRendered =
-        -Infinity;
-
-
-    for (
-        let py = 0;
-        py < renderHeight;
-        py++
-    ) {
-
-        const screenY =
-
-            (py + 0.5)
-
-            /
-
-            WEATHER_RENDER_SCALE;
-
-
-        const leftCoordinate =
-            screenPointToMosaicCoordinate(
-
-                mosaic,
-
-                0,
-
-                screenY
-
-            );
-
-
-        const rightCoordinate =
-            screenPointToMosaicCoordinate(
-
-                mosaic,
-
-                rect.width,
-
-                screenY
-
-            );
-
-
-        const sourceY =
-            leftCoordinate.y;
-
-
-        const sourceXStart =
-            leftCoordinate.x;
-
-
-        const sourceXEnd =
-            rightCoordinate.x;
-
-
-        const sourceXStep =
-
-            (
-
-                sourceXEnd
-
-                -
-
-                sourceXStart
-
-            )
-
-            /
-
-            renderWidth;
-
-
-        let sourceX =
-
-            sourceXStart
-
-            +
-
-            sourceXStep * 0.5;
-
-
-        for (
-            let px = 0;
-            px < renderWidth;
-            px++
-        ) {
-
-            const value =
-                sampleBilinear(
-
-                    mosaic,
-
-                    sourceX,
-
-                    sourceY
-
-                );
-
-
-            const pixelIndex =
-
-                (
-
-                    py
-
-                    *
-
-                    renderWidth
-
-                    +
-
-                    px
-
-                )
-
-                *
-
-                4;
-
-
-            if (
-                !Number.isFinite(
-                    value
-                )
-                ||
-                value <
-                    config.transparentBelow
-            ) {
-
-                pixels[
-                    pixelIndex
-                ] = 0;
-
-
-                pixels[
-                    pixelIndex + 1
-                ] = 0;
-
-
-                pixels[
-                    pixelIndex + 2
-                ] = 0;
-
-
-                pixels[
-                    pixelIndex + 3
-                ] = 0;
-
-
-                transparentPixels++;
-
-
-                sourceX +=
-                    sourceXStep;
-
-
-                continue;
-
-            }
-
-
-            const rgba =
-                getWeatherRgba(
-                    value,
-                    config
-                );
-
-
-            pixels[
-                pixelIndex
-            ] =
-                rgba[0];
-
-
-            pixels[
-                pixelIndex + 1
-            ] =
-                rgba[1];
-
-
-            pixels[
-                pixelIndex + 2
-            ] =
-                rgba[2];
-
-
-            pixels[
-                pixelIndex + 3
-            ] =
-                rgba[3];
-
-
-            validPixels++;
-
-
-            if (
-                value <
-                minimumRendered
-            ) {
-
-                minimumRendered =
-                    value;
-
-            }
-
-
-            if (
-                value >
-                maximumRendered
-            ) {
-
-                maximumRendered =
-                    value;
-
-            }
-
-
-            sourceX +=
-                sourceXStep;
-
-        }
 
     }
-
-
-    renderCtx.putImageData(
-        imageData,
-        0,
-        0
-    );
-
-
-    resetWeatherTransform();
-
-
-    resizeCanvas(
-        weatherCanvas,
-        weatherCtx
-    );
-
-
-    clearCanvas(
-        weatherCanvas,
-        weatherCtx
-    );
-
-
-    weatherCtx.save();
-
-
-    weatherCtx.imageSmoothingEnabled =
-        true;
-
-
-    weatherCtx.imageSmoothingQuality =
-        "high";
-
-
-    weatherCtx.drawImage(
-
-        renderCanvas,
-
-        0,
-        0,
-
-        renderWidth,
-        renderHeight,
-
-        0,
-        0,
-
-        rect.width,
-        rect.height
-
-    );
-
-
-    weatherCtx.restore();
-
-
-    captureWeatherImageBounds();
-
-
-    console.log(
-
-        "[MULTIFIELD RENDER]",
-
-        {
-
-            field:
-                fieldKey,
-
-            renderWidth,
-
-            renderHeight,
-
-            interpolation:
-                "bilinear numerical",
-
-            validPixels,
-
-            transparentPixels,
-
-            min:
-
-                minimumRendered ===
-                Infinity
-
-                ?
-
-                null
-
-                :
-
-                Number(
-                    minimumRendered.toFixed(
-                        1
-                    )
-                ),
-
-            max:
-
-                maximumRendered ===
-                -Infinity
-
-                ?
-
-                null
-
-                :
-
-                Number(
-                    maximumRendered.toFixed(
-                        1
-                    )
-                )
-
-        }
-
-    );
 
 }
 
 
-/* ==========================================================
-   RENDER WEATHER OVERLAY
-   ========================================================== */
+/* =========================================================================================
+   RENDER VECTOR OVERLAYS
+   ========================================================================================= */
 
-async function renderWeatherOverlay() {
-
-    const requestedField =
-        activeField;
-
-
-    const config =
-        WEATHER_FIELDS[
-            requestedField
-        ];
-
-
-    if (
-        !config
-    ) {
-
-        return;
-
-    }
-
+async function renderVectors() {
 
     const generation =
-        ++weatherRenderGeneration;
+        ++vectorRenderGeneration;
 
 
-    const startTime =
-        performance.now();
+    prepareContext(
+        vectorCanvas,
+        vectorCtx
+    );
 
+
+    if (!currentRun) {
+        return;
+    }
+
+
+    const promises = [];
+
+
+    const bothEnabled =
+        activeOverlays.surfaceWind &&
+        activeOverlays.srWind46;
+
+
+    if (
+        activeOverlays.surfaceWind
+    ) {
+
+        promises.push(
+
+            renderVectorField(
+                "sfc_wind",
+                generation,
+                bothEnabled ? -7 : 0,
+                bothEnabled ? -7 : 0
+            )
+
+        );
+
+    }
+
+
+    if (
+        activeOverlays.srWind46
+    ) {
+
+        promises.push(
+
+            renderVectorField(
+                "srwind_4_6km",
+                generation,
+                bothEnabled ? 7 : 0,
+                bothEnabled ? 7 : 0
+            )
+
+        );
+
+    }
+
+
+    await Promise.all(
+        promises
+    );
+
+}
+
+
+/* =========================================================================================
+   GEOGRAPHY LOAD
+   ========================================================================================= */
+
+async function loadGeography() {
+
+    statusElement.textContent =
+        "Loading geography...";
+
+
+    /*
+     * Counties / states
+     */
+
+    const topologyResponse =
+        await fetch(
+            "data/counties-10m.json"
+        );
+
+    if (!topologyResponse.ok) {
+
+        throw new Error(
+            "Could not load data/counties-10m.json"
+        );
+
+    }
+
+    const topology =
+        await topologyResponse.json();
+
+
+    if (
+        topology.objects.counties
+    ) {
+
+        const counties =
+            topojson.feature(
+                topology,
+                topology.objects.counties
+            );
+
+        countyFeatures =
+            counties.features;
+
+    }
+
+
+    if (
+        topology.objects.states
+    ) {
+
+        const states =
+            topojson.feature(
+                topology,
+                topology.objects.states
+            );
+
+        stateFeatures =
+            states.features;
+
+    }
+
+
+    /*
+     * Cities
+     */
 
     try {
 
-        if (
-            !latestData
-        ) {
-
-            await loadLatestData();
-
-        }
-
-
-        const runId =
-            getLatestRunId();
-
-
-        if (
-            !runId
-        ) {
-
-            throw new Error(
-                "No latest run ID."
+        const cityResponse =
+            await fetch(
+                "data/cities.geojson"
             );
 
-        }
-
-
-        /*
-         * If latest.json includes a fields array, make sure
-         * this field actually exists in the run.
-         */
-
         if (
-            Array.isArray(
-                latestData.fields
-            )
-            &&
-            !latestData.fields.includes(
-                requestedField
-            )
+            cityResponse.ok
         ) {
 
-            throw new Error(
+            const cities =
+                await cityResponse.json();
 
-                `${requestedField} ` +
-                `is not available in ` +
-                `${runId}.`
-
-            );
+            cityFeatures =
+                cities.features || [];
 
         }
-
-
-        await loadFieldMetadata(
-            requestedField
-        );
-
-
-        if (
-            generation !==
-                weatherRenderGeneration
-            ||
-            activeField !==
-                requestedField
-        ) {
-
-            return;
-
-        }
-
-
-        const z =
-            getWeatherZoom();
-
-
-        const range =
-            getVisibleTileRange(
-                z
-            );
-
-
-        console.log(
-
-            `[MULTIFIELD] Rendering ` +
-            `${requestedField} ` +
-            `${runId} ` +
-            `at numerical z${z}`
-
-        );
-
-
-        const mosaic =
-            await loadNumericalMosaic(
-
-                requestedField,
-
-                runId,
-
-                z,
-
-                range
-
-            );
-
-
-        if (
-            generation !==
-                weatherRenderGeneration
-            ||
-            activeField !==
-                requestedField
-        ) {
-
-            return;
-
-        }
-
-
-        renderInterpolatedMosaic(
-
-            mosaic,
-
-            requestedField
-
-        );
-
-
-        /*
-         * Redraw geography after weather so states/counties/
-         * cities remain visually above the CAPE shading.
-         */
-
-        renderGeographyOverlay();
-
-
-        const elapsed =
-
-            performance.now()
-
-            -
-
-            startTime;
-
-
-        console.log(
-
-            `[MULTIFIELD] ` +
-            `${requestedField} render ` +
-            `complete in ` +
-            `${elapsed.toFixed(0)} ms.`
-
-        );
 
     }
+    catch (error) {
 
-    catch (
-        error
-    ) {
-
-        console.error(
-
-            `[MULTIFIELD] ` +
-            `${requestedField} ` +
-            `render failed:`,
-
+        console.warn(
+            "Cities could not be loaded:",
             error
-
         );
 
-
-        if (
-            activeField ===
-            requestedField
-        ) {
-
-            fieldTime.textContent =
-                "Unable to load this field.";
-
-        }
-
     }
+
+
+    console.log(
+        `Counties: ${countyFeatures.length}`
+    );
+
+    console.log(
+        `States: ${stateFeatures.length}`
+    );
+
+    console.log(
+        `Cities: ${cityFeatures.length}`
+    );
 
 }
 
 
-/* ==========================================================
-   SCHEDULE HIGH-QUALITY REDRAW
-   ========================================================== */
+/* =========================================================================================
+   DRAW GEOJSON LINE
+   ========================================================================================= */
 
-function scheduleWeatherRedraw() {
-
-    if (
-        !WEATHER_FIELDS[
-            activeField
-        ]
-    ) {
-
-        return;
-
-    }
-
-
-    if (
-        weatherRedrawTimer
-    ) {
-
-        clearTimeout(
-            weatherRedrawTimer
-        );
-
-    }
-
-
-    weatherRedrawTimer =
-        setTimeout(
-
-            async () => {
-
-                weatherRedrawTimer =
-                    null;
-
-
-                await renderWeatherOverlay();
-
-            },
-
-            WEATHER_REDRAW_DEBOUNCE_MS
-
-        );
-
-}
-
-
-/* ==========================================================
-   GEOJSON LINE DRAWING
-   ========================================================== */
-
-function drawLineString(
+function drawLineCoordinates(
     coordinates,
     ctx
 ) {
 
     if (
-        !coordinates
-        ||
+        !coordinates ||
         coordinates.length < 2
     ) {
 
@@ -5150,53 +2926,25 @@ function drawLineString(
         coordinates
     ) {
 
-        const longitude =
-            coordinate[0];
-
-
-        const latitude =
-            coordinate[1];
-
-
-        if (
-            !Number.isFinite(
-                longitude
-            )
-            ||
-            !Number.isFinite(
-                latitude
-            )
-        ) {
-
-            continue;
-
-        }
-
-
         const point =
             map.project(
-                [
-                    longitude,
-                    latitude
-                ]
+                {
+                    lng: coordinate[0],
+                    lat: coordinate[1]
+                }
             );
 
 
-        if (
-            !started
-        ) {
+        if (!started) {
 
             ctx.moveTo(
                 point.x,
                 point.y
             );
 
-
-            started =
-                true;
+            started = true;
 
         }
-
         else {
 
             ctx.lineTo(
@@ -5211,21 +2959,17 @@ function drawLineString(
 }
 
 
-/* ==========================================================
-   DRAW GEOJSON GEOMETRY
-   ========================================================== */
+/* =========================================================================================
+   DRAW GEOMETRY
+   ========================================================================================= */
 
 function drawGeometry(
     geometry,
     ctx
 ) {
 
-    if (
-        !geometry
-    ) {
-
+    if (!geometry) {
         return;
-
     }
 
 
@@ -5235,7 +2979,7 @@ function drawGeometry(
 
         case "LineString":
 
-            drawLineString(
+            drawLineCoordinates(
                 geometry.coordinates,
                 ctx
             );
@@ -5251,7 +2995,7 @@ function drawGeometry(
                 geometry.coordinates
             ) {
 
-                drawLineString(
+                drawLineCoordinates(
                     line,
                     ctx
                 );
@@ -5269,10 +3013,12 @@ function drawGeometry(
                 geometry.coordinates
             ) {
 
-                drawLineString(
+                drawLineCoordinates(
                     ring,
                     ctx
                 );
+
+                ctx.closePath();
 
             }
 
@@ -5293,10 +3039,12 @@ function drawGeometry(
                     polygon
                 ) {
 
-                    drawLineString(
+                    drawLineCoordinates(
                         ring,
                         ctx
                     );
+
+                    ctx.closePath();
 
                 }
 
@@ -5304,161 +3052,108 @@ function drawGeometry(
 
             break;
 
-
-        case "GeometryCollection":
-
-            for (
-                const child
-                of
-                geometry.geometries
-            ) {
-
-                drawGeometry(
-                    child,
-                    ctx
-                );
-
-            }
-
-            break;
-
     }
 
 }
 
 
-/* ==========================================================
-   DRAW GEOJSON
-   ========================================================== */
-
-function drawGeoJSON(
-    geojson,
-    ctx
-) {
-
-    if (
-        !geojson
-    ) {
-
-        return;
-
-    }
-
-
-    if (
-        geojson.type ===
-        "FeatureCollection"
-    ) {
-
-        for (
-            const feature
-            of
-            geojson.features
-        ) {
-
-            drawGeometry(
-                feature.geometry,
-                ctx
-            );
-
-        }
-
-
-        return;
-
-    }
-
-
-    if (
-        geojson.type ===
-        "Feature"
-    ) {
-
-        drawGeometry(
-            geojson.geometry,
-            ctx
-        );
-
-
-        return;
-
-    }
-
-
-    drawGeometry(
-        geojson,
-        ctx
-    );
-
-}
-
-
-/* ==========================================================
-   CITY HELPERS
-   ========================================================== */
+/* =========================================================================================
+   CITY CLASS
+   ========================================================================================= */
 
 function getCityClass(
     feature
 ) {
 
+    const properties =
+        feature.properties || {};
+
+
     const value =
+        properties.city_class ??
+        properties.class ??
+        properties.rank ??
+        properties.scalerank ??
+        5;
+
+
+    const parsed =
         Number(
-
-            feature.properties
-                ?.city_class
-
+            value
         );
 
 
-    return (
-
+    if (
         Number.isFinite(
-            value
+            parsed
         )
+    ) {
 
-        ?
+        return parsed;
 
-        value
+    }
 
-        :
 
-        99
+    return 5;
 
+}
+
+
+/* =========================================================================================
+   CITY NAME
+   ========================================================================================= */
+
+function getCityName(
+    feature
+) {
+
+    const properties =
+        feature.properties || {};
+
+
+    return (
+        properties.name ||
+        properties.NAME ||
+        properties.city ||
+        properties.CITY ||
+        ""
     );
 
 }
 
 
+/* =========================================================================================
+   SHOULD DRAW CITY
+   ========================================================================================= */
+
 function shouldDrawCity(
-    feature,
-    zoom
+    feature
 ) {
 
-    const name =
-        feature.properties
-            ?.name
-        ||
-        "";
-
+    const zoom =
+        map.getZoom();
 
     const cityClass =
         getCityClass(
+            feature
+        );
+
+    const name =
+        getCityName(
             feature
         );
 
 
     /*
-     * Promote North Platte.
+     * Promote North Platte to regional visibility.
      */
 
     if (
-        name ===
-        "North Platte"
+        name.toLowerCase() ===
+        "north platte"
     ) {
 
-        return (
-            zoom >= 4
-        );
+        return zoom >= 4;
 
     }
 
@@ -5467,9 +3162,7 @@ function shouldDrawCity(
         cityClass <= 2
     ) {
 
-        return (
-            zoom >= 2
-        );
+        return zoom >= 2;
 
     }
 
@@ -5478,9 +3171,7 @@ function shouldDrawCity(
         cityClass === 3
     ) {
 
-        return (
-            zoom >= 4
-        );
+        return zoom >= 4;
 
     }
 
@@ -5489,188 +3180,58 @@ function shouldDrawCity(
         cityClass === 4
     ) {
 
-        return (
-            zoom >= 5
-        );
+        return zoom >= 5;
 
     }
 
 
-    if (
-        cityClass === 5
-    ) {
-
-        return (
-            zoom >= 6
-        );
-
-    }
-
-
-    return false;
+    return zoom >= 6;
 
 }
 
 
-function getCityFontSize(
-    feature,
-    zoom
-) {
-
-    const name =
-        feature.properties
-            ?.name
-        ||
-        "";
-
-
-    const cityClass =
-        getCityClass(
-            feature
-        );
-
-
-    if (
-        name ===
-        "North Platte"
-    ) {
-
-        return clamp(
-
-            10 +
-            (zoom - 4) *
-            0.8,
-
-            10,
-
-            14
-
-        );
-
-    }
-
-
-    if (
-        cityClass <= 2
-    ) {
-
-        return clamp(
-
-            10 +
-            (zoom - 2) *
-            0.5,
-
-            10,
-
-            14
-
-        );
-
-    }
-
-
-    if (
-        cityClass === 3
-    ) {
-
-        return clamp(
-
-            10 +
-            (zoom - 4) *
-            0.6,
-
-            10,
-
-            14
-
-        );
-
-    }
-
-
-    if (
-        cityClass === 4
-    ) {
-
-        return clamp(
-
-            9.5 +
-            (zoom - 5) *
-            0.5,
-
-            9.5,
-
-            12.5
-
-        );
-
-    }
-
-
-    return clamp(
-
-        9 +
-        (zoom - 6) *
-        0.5,
-
-        9,
-
-        11.5
-
-    );
-
-}
-
-
-/* ==========================================================
+/* =========================================================================================
    DRAW CITIES
-   ========================================================== */
+   ========================================================================================= */
 
 function drawCities() {
 
-    if (
-        !citiesToggle.checked
-        ||
-        !citiesGeoJSON
-        ||
-        !geographyCtx
-    ) {
-
+    if (!citiesEnabled) {
         return;
-
     }
 
 
-    const zoom =
-        map.getZoom();
+    geographyCtx.save();
 
 
-    const bounds =
-        map.getBounds();
-
+    geographyCtx.font =
+        '11px Arial, Helvetica, sans-serif';
 
     geographyCtx.textAlign =
         "center";
 
-
     geographyCtx.textBaseline =
         "middle";
 
+    geographyCtx.lineWidth =
+        3;
 
-    geographyCtx.lineJoin =
-        "round";
+    geographyCtx.strokeStyle =
+        "rgba(255,255,255,0.95)";
+
+    geographyCtx.fillStyle =
+        "#222222";
 
 
     for (
         const feature
         of
-        citiesGeoJSON.features
+        cityFeatures
     ) {
 
         if (
             !shouldDrawCity(
-                feature,
-                zoom
+                feature
             )
         ) {
 
@@ -5680,31 +3241,8 @@ function drawCities() {
 
 
         if (
-            feature.geometry
-                ?.type
-            !==
-            "Point"
-        ) {
-
-            continue;
-
-        }
-
-
-        const [
-            longitude,
-            latitude
-        ] =
-            feature.geometry.coordinates;
-
-
-        if (
-            !bounds.contains(
-                [
-                    longitude,
-                    latitude
-                ]
-            )
+            !feature.geometry ||
+            feature.geometry.type !== "Point"
         ) {
 
             continue;
@@ -5713,12 +3251,38 @@ function drawCities() {
 
 
         const name =
-            feature.properties
-                ?.name;
+            getCityName(
+                feature
+            );
+
+
+        if (!name) {
+            continue;
+        }
+
+
+        const coordinate =
+            feature.geometry.coordinates;
+
+
+        const point =
+            map.project(
+                {
+                    lng: coordinate[0],
+                    lat: coordinate[1]
+                }
+            );
+
+
+        const rect =
+            mapWrapper.getBoundingClientRect();
 
 
         if (
-            !name
+            point.x < -100 ||
+            point.x > rect.width + 100 ||
+            point.y < -50 ||
+            point.y > rect.height + 50
         ) {
 
             continue;
@@ -5726,53 +3290,11 @@ function drawCities() {
         }
 
 
-        const point =
-            map.project(
-                [
-                    longitude,
-                    latitude
-                ]
-            );
-
-
-        const fontSize =
-            getCityFontSize(
-                feature,
-                zoom
-            );
-
-
-        geographyCtx.font =
-
-            `${fontSize}px ` +
-            `Arial, Helvetica, sans-serif`;
-
-
-        /*
-         * White halo.
-         */
-
-        geographyCtx.strokeStyle =
-            "rgba(255,255,255,0.96)";
-
-
-        geographyCtx.lineWidth =
-            3;
-
-
         geographyCtx.strokeText(
             name,
             point.x,
             point.y
         );
-
-
-        /*
-         * City label.
-         */
-
-        geographyCtx.fillStyle =
-            "#111111";
 
 
         geographyCtx.fillText(
@@ -5783,995 +3305,831 @@ function drawCities() {
 
     }
 
+
+    geographyCtx.restore();
+
 }
 
 
-/* ==========================================================
+/* =========================================================================================
    RENDER GEOGRAPHY
-   ========================================================== */
+   ========================================================================================= */
 
-function renderGeographyOverlay() {
+function renderGeography() {
 
-    if (
-        !geographyCanvas
-        ||
-        !geographyCtx
-    ) {
-
-        return;
-
-    }
-
-
-    resizeCanvas(
+    prepareContext(
         geographyCanvas,
         geographyCtx
     );
 
 
-    clearCanvas(
-        geographyCanvas,
-        geographyCtx
-    );
+    /*
+     * Counties
+     */
 
+    geographyCtx.save();
 
-    geographyCtx.lineJoin =
-        "round";
+    geographyCtx.beginPath();
 
-
-    geographyCtx.lineCap =
-        "round";
-
-
-    /* ------------------------------------------------------
-       COUNTIES
-       ------------------------------------------------------ */
-
-    if (
-        countiesToggle.checked
-        &&
-        countiesGeoJSON
+    for (
+        const feature
+        of
+        countyFeatures
     ) {
 
-        geographyCtx.beginPath();
-
-
-        drawGeoJSON(
-            countiesGeoJSON,
+        drawGeometry(
+            feature.geometry,
             geographyCtx
         );
 
-
-        geographyCtx.strokeStyle =
-            "rgba(155,155,155,0.75)";
-
-
-        geographyCtx.lineWidth =
-            0.55;
-
-
-        geographyCtx.stroke();
-
     }
 
+    geographyCtx.strokeStyle =
+        "rgba(125,125,125,0.58)";
 
-    /* ------------------------------------------------------
-       STATES
-       ------------------------------------------------------ */
+    geographyCtx.lineWidth =
+        0.55;
 
-    if (
-        statesToggle.checked
-        &&
-        statesGeoJSON
+    geographyCtx.stroke();
+
+    geographyCtx.restore();
+
+
+    /*
+     * States
+     */
+
+    geographyCtx.save();
+
+    geographyCtx.beginPath();
+
+    for (
+        const feature
+        of
+        stateFeatures
     ) {
 
-        geographyCtx.beginPath();
-
-
-        drawGeoJSON(
-            statesGeoJSON,
+        drawGeometry(
+            feature.geometry,
             geographyCtx
         );
 
-
-        geographyCtx.strokeStyle =
-            "rgba(65,65,65,0.95)";
-
-
-        geographyCtx.lineWidth =
-            1.25;
-
-
-        geographyCtx.stroke();
-
     }
 
+    geographyCtx.strokeStyle =
+        "rgba(45,45,45,0.92)";
 
-    /* ------------------------------------------------------
-       CITIES
-       ------------------------------------------------------ */
+    geographyCtx.lineWidth =
+        1.35;
+
+    geographyCtx.stroke();
+
+    geographyCtx.restore();
+
+
+    /*
+     * Cities
+     */
 
     drawCities();
 
 }
 
 
-/* ==========================================================
-   LOAD BASE GEOGRAPHY
-   ========================================================== */
+/* =========================================================================================
+   LEGEND
+   ========================================================================================= */
 
-async function loadBaseGeography() {
-
-    const response =
-        await fetch(
-            "data/counties-10m.json"
-        );
-
+function updateLegend() {
 
     if (
-        !response.ok
+        activeField === "none"
     ) {
 
-        throw new Error(
-            "Unable to load " +
-            "counties-10m.json"
-        );
-
-    }
-
-
-    const topology =
-        await response.json();
-
-
-    countiesGeoJSON =
-        topojson.feature(
-
-            topology,
-
-            topology.objects.counties
-
-        );
-
-
-    statesGeoJSON =
-        topojson.feature(
-
-            topology,
-
-            topology.objects.states
-
-        );
-
-
-    /*
-     * Cities are optional.
-     */
-
-    try {
-
-        const cityResponse =
-            await fetch(
-                "data/cities.geojson"
-            );
-
-
-        if (
-            cityResponse.ok
-        ) {
-
-            citiesGeoJSON =
-                await cityResponse.json();
-
-        }
-
-    }
-
-    catch (
-        error
-    ) {
-
-        console.warn(
-
-            "Unable to load cities:",
-
-            error
-
-        );
-
-    }
-
-
-    renderGeographyOverlay();
-
-}
-
-
-/* ==========================================================
-   UPDATE FIELD INFORMATION
-   ========================================================== */
-
-function updateFieldInfo(
-    metadata = null
-) {
-
-    const config =
-        getActiveFieldConfig();
-
-
-    if (
-        !config
-    ) {
+        legend.style.display =
+            "none";
 
         return;
 
     }
 
 
-    fieldName.textContent =
-        config.name;
-
-
-    const analysisTime =
-        getAnalysisTime(
-            metadata
-        );
-
-
-    fieldTime.textContent =
-
-        analysisTime
-
-        ?
-
-        `Analysis: ` +
-        `${formatAnalysisTime(analysisTime)}`
-
-        :
-
-        "Latest analysis";
-
-}
-
-
-/* ==========================================================
-   ENABLE FIELD
-   ========================================================== */
-
-async function enableWeatherField(
-    fieldKey
-) {
-
-    const config =
+    const definition =
         WEATHER_FIELDS[
-            fieldKey
+            activeField
         ];
 
 
-    if (
-        !config
-    ) {
+    if (!definition) {
 
-        disableWeatherField();
+        legend.style.display =
+            "none";
 
         return;
 
     }
 
 
-    /*
-     * Cancel render/cursor work belonging to the old field.
-     */
-
-    ++weatherRenderGeneration;
-
-    ++cursorRequestGeneration;
+    legend.style.display =
+        "block";
 
 
-    if (
-        weatherRedrawTimer
-    ) {
+    legendTitle.textContent =
+        `${definition.name} (${definition.units})`;
 
-        clearTimeout(
-            weatherRedrawTimer
+
+    const rect =
+        legendCanvas.getBoundingClientRect();
+
+
+    const width =
+        Math.max(
+            360,
+            Math.round(
+                rect.width
+            )
         );
 
-
-        weatherRedrawTimer =
-            null;
-
-    }
+    const height =
+        17;
 
 
-    if (
-        cursorSampleTimer
-    ) {
+    legendCanvas.width =
+        width;
 
-        clearTimeout(
-            cursorSampleTimer
-        );
+    legendCanvas.height =
+        height;
 
 
-        cursorSampleTimer =
-            null;
-
-    }
-
-
-    pendingCursorEvent =
-        null;
-
-
-    /*
-     * Set active field.
-     */
-
-    activeField =
-        fieldKey;
-
-
-    /*
-     * Show field UI.
-     */
-
-    fieldInfo.style.display =
-        "block";
-
-
-    weatherLegend.style.display =
-        "block";
-
-
-    fieldName.textContent =
-        config.name;
-
-
-    fieldTime.textContent =
-        "Loading latest analysis...";
-
-
-    weatherCanvas.style.display =
-        "block";
-
-
-    if (
-        cursorPanel
-    ) {
-
-        cursorPanel.style.display =
-            "none";
-
-    }
-
-
-    resetWeatherTransform();
-
-
-    clearCanvas(
-        weatherCanvas,
-        weatherCtx
+    legendCtx.clearRect(
+        0,
+        0,
+        width,
+        height
     );
 
 
-    weatherImageGeoBounds =
-        null;
-
-
-    /*
-     * Update legend for selected field.
-     */
-
-    drawWeatherLegend();
-
-
-    try {
-
-        if (
-            !latestData
-        ) {
-
-            await loadLatestData();
-
-        }
-
-
-        const metadata =
-            await loadFieldMetadata(
-                fieldKey
-            );
-
-
-        /*
-         * User may have selected another field while the
-         * metadata request was running.
-         */
-
-        if (
-            activeField !==
-            fieldKey
-        ) {
-
-            return;
-
-        }
-
-
-        updateFieldInfo(
-            metadata
-        );
-
-
-        await renderWeatherOverlay();
-
-    }
-
-    catch (
-        error
-    ) {
-
-        console.error(
-
-            `[MULTIFIELD] Unable to ` +
-            `enable ${fieldKey}:`,
-
-            error
-
-        );
-
-
-        if (
-            activeField ===
-            fieldKey
-        ) {
-
-            fieldTime.textContent =
-                "Unable to load this field.";
-
-        }
-
-    }
-
-}
-
-
-/* ==========================================================
-   DISABLE FIELD
-   ========================================================== */
-
-function disableWeatherField() {
-
-    activeField =
-        "none";
-
-
-    ++weatherRenderGeneration;
-
-    ++cursorRequestGeneration;
+    legendLabels.innerHTML =
+        "";
 
 
     if (
-        weatherRedrawTimer
+        definition.type === "cape"
     ) {
 
-        clearTimeout(
-            weatherRedrawTimer
-        );
+        const minValue =
+            0;
 
+        const maxValue =
+            6000;
 
-        weatherRedrawTimer =
-            null;
 
-    }
-
-
-    if (
-        cursorSampleTimer
-    ) {
-
-        clearTimeout(
-            cursorSampleTimer
-        );
-
-
-        cursorSampleTimer =
-            null;
-
-    }
-
-
-    pendingCursorEvent =
-        null;
-
-
-    resetWeatherTransform();
-
-
-    clearCanvas(
-        weatherCanvas,
-        weatherCtx
-    );
-
-
-    if (
-        weatherCanvas
-    ) {
-
-        weatherCanvas.style.display =
-            "none";
-
-    }
-
-
-    fieldInfo.style.display =
-        "none";
-
-
-    weatherLegend.style.display =
-        "none";
-
-
-    if (
-        cursorPanel
-    ) {
-
-        cursorPanel.style.display =
-            "none";
-
-    }
-
-
-    weatherImageGeoBounds =
-        null;
-
-
-    renderGeographyOverlay();
-
-}
-
-
-/* ==========================================================
-   MAP LOAD
-   ========================================================== */
-
-map.on(
-
-    "load",
-
-    async () => {
-
-        try {
-
-            /*
-             * Create direct canvas overlays.
-             */
-
-            createOverlayCanvases();
-
-
-            /*
-             * Create numerical cursor panel.
-             */
-
-            createCursorPanel();
-
-
-            /*
-             * Load states/counties/cities.
-             */
-
-            await loadBaseGeography();
-
-
-            /*
-             * Start at LBF.
-             */
-
-            map.fitBounds(
-
-                sectors.lbf.bounds,
-
-                {
-
-                    padding:
-                        30,
-
-                    duration:
-                        0
-
-                }
-
-            );
-
-
-            /*
-             * Load latest run information.
-             */
-
-            await loadLatestData();
-
-
-            console.log(
-
-                "[MULTIFIELD] " +
-                "SPCOA viewer ready.",
-
-                {
-
-                    run:
-                        getLatestRunId(),
-
-                    fields:
-                        latestData?.fields
-                        ||
-                        []
-
-                }
-
-            );
-
-        }
-
-        catch (
-            error
+        for (
+            let x = 0;
+            x < width;
+            x++
         ) {
 
-            console.error(
-
-                "Viewer initialization failed:",
-
-                error
-
-            );
-
-        }
-
-    }
-
-);
-
-
-/* ==========================================================
-   SECTOR SELECTOR
-   ========================================================== */
-
-sectorSelect.addEventListener(
-
-    "change",
-
-    () => {
-
-        const sector =
-            sectors[
-                sectorSelect.value
-            ];
+            const value =
+                minValue +
+                (
+                    x /
+                    Math.max(
+                        1,
+                        width - 1
+                    )
+                ) *
+                (
+                    maxValue -
+                    minValue
+                );
 
 
-        if (
-            !sector
-        ) {
+            const color =
+                capeColor(
+                    Math.max(
+                        100,
+                        value
+                    )
+                );
 
-            return;
 
-        }
+            if (color) {
 
+                legendCtx.fillStyle =
+                    `rgb(${color.r},${color.g},${color.b})`;
 
-        map.fitBounds(
-
-            sector.bounds,
-
-            {
-
-                padding:
-                    30,
-
-                duration:
-                    700
+                legendCtx.fillRect(
+                    x,
+                    0,
+                    1,
+                    height
+                );
 
             }
 
+        }
+
+
+        const ticks = [
+            0,
+            1000,
+            2000,
+            3000,
+            4000,
+            5000,
+            6000
+        ];
+
+
+        addLegendLabels(
+            ticks,
+            minValue,
+            maxValue
+        );
+
+    }
+    else {
+
+        const minValue =
+            -40;
+
+        const maxValue =
+            90;
+
+
+        for (
+            let x = 0;
+            x < width;
+            x++
+        ) {
+
+            const value =
+                minValue +
+                (
+                    x /
+                    Math.max(
+                        1,
+                        width - 1
+                    )
+                ) *
+                (
+                    maxValue -
+                    minValue
+                );
+
+
+            const color =
+                dewpointColor(
+                    value
+                );
+
+
+            if (color) {
+
+                legendCtx.fillStyle =
+                    `rgb(${color.r},${color.g},${color.b})`;
+
+                legendCtx.fillRect(
+                    x,
+                    0,
+                    1,
+                    height
+                );
+
+            }
+
+        }
+
+
+        const ticks = [
+            -40,
+            -20,
+            0,
+            20,
+            40,
+            60,
+            80,
+            90
+        ];
+
+
+        addLegendLabels(
+            ticks,
+            minValue,
+            maxValue
         );
 
     }
 
+}
+
+
+/* =========================================================================================
+   LEGEND LABELS
+   ========================================================================================= */
+
+function addLegendLabels(
+    values,
+    minimum,
+    maximum
+) {
+
+    for (
+        const value
+        of
+        values
+    ) {
+
+        const label =
+            document.createElement(
+                "span"
+            );
+
+        label.className =
+            "legend-label";
+
+        label.textContent =
+            value;
+
+
+        const percentage =
+            (
+                value -
+                minimum
+            ) /
+            (
+                maximum -
+                minimum
+            ) *
+            100;
+
+
+        label.style.left =
+            `${percentage}%`;
+
+
+        legendLabels.appendChild(
+            label
+        );
+
+    }
+
+}
+
+
+/* =========================================================================================
+   CURSOR
+   ========================================================================================= */
+
+let lastCursorUpdate =
+    0;
+
+
+async function updateCursor(
+    event
+) {
+
+    const now =
+        performance.now();
+
+
+    if (
+        now -
+        lastCursorUpdate <
+        35
+    ) {
+
+        return;
+
+    }
+
+
+    lastCursorUpdate =
+        now;
+
+
+    const generation =
+        ++cursorGeneration;
+
+
+    if (
+        activeField === "none"
+    ) {
+
+        cursorField.textContent =
+            "No filled field";
+
+        cursorValue.textContent =
+            "--";
+
+        return;
+
+    }
+
+
+    const definition =
+        WEATHER_FIELDS[
+            activeField
+        ];
+
+
+    cursorField.textContent =
+        definition.shortName;
+
+
+    const zoom =
+        getDataZoom();
+
+
+    const value =
+        await sampleScalarAtLonLat(
+            activeField,
+            event.lngLat.lng,
+            event.lngLat.lat,
+            zoom
+        );
+
+
+    if (
+        generation !==
+        cursorGeneration
+    ) {
+
+        return;
+
+    }
+
+
+    if (
+        value === null ||
+        !Number.isFinite(
+            value
+        )
+    ) {
+
+        cursorValue.textContent =
+            "N/A";
+
+    }
+    else if (
+        definition.type ===
+        "dewpoint"
+    ) {
+
+        cursorValue.textContent =
+            `${value.toFixed(1)} °F`;
+
+    }
+    else {
+
+        cursorValue.textContent =
+            `${Math.round(value)} J/kg`;
+
+    }
+
+
+    cursorLocation.textContent =
+        `${event.lngLat.lat.toFixed(3)}°, ` +
+        `${event.lngLat.lng.toFixed(3)}°`;
+
+}
+
+
+/* =========================================================================================
+   FIT SECTOR
+   ========================================================================================= */
+
+function fitSector(
+    sectorKey
+) {
+
+    const sector =
+        sectors[
+            sectorKey
+        ];
+
+    if (!sector) {
+        return;
+    }
+
+
+    map.fitBounds(
+        sector.bounds,
+        {
+            padding: 25,
+            duration: 450
+        }
+    );
+
+}
+
+
+/* =========================================================================================
+   RENDER EVERYTHING
+   ========================================================================================= */
+
+async function renderAll() {
+
+    renderGeography();
+
+    await Promise.all([
+        renderWeather(),
+        renderVectors()
+    ]);
+
+}
+
+
+/* =========================================================================================
+   MAP EVENTS
+   ========================================================================================= */
+
+let moveEndTimer =
+    null;
+
+
+map.on(
+    "move",
+    () => {
+
+        /*
+         * Geography is cheap enough to redraw during movement.
+         *
+         * Numerical fields are redrawn once movement ends.
+         */
+
+        renderGeography();
+
+    }
 );
 
 
-/* ==========================================================
-   MAP FEATURE TOGGLES
-   ========================================================== */
+map.on(
+    "moveend",
+    () => {
 
-statesToggle.addEventListener(
+        clearTimeout(
+            moveEndTimer
+        );
 
-    "change",
 
-    renderGeographyOverlay
+        moveEndTimer =
+            setTimeout(
+                () => {
 
+                    renderAll();
+
+                },
+                100
+            );
+
+    }
 );
 
 
-countiesToggle.addEventListener(
-
-    "change",
-
-    renderGeographyOverlay
-
+map.on(
+    "mousemove",
+    updateCursor
 );
 
 
-citiesToggle.addEventListener(
+map.on(
+    "resize",
+    () => {
 
-    "change",
+        resizeAllCanvases();
 
-    renderGeographyOverlay
+        renderAll();
 
+    }
 );
 
 
-/* ==========================================================
-   FIELD SELECTOR
-   ========================================================== */
+/* =========================================================================================
+   FIELD SELECT
+   ========================================================================================= */
 
 fieldSelect.addEventListener(
-
     "change",
+    async event => {
 
-    async () => {
+        activeField =
+            event.target.value;
 
-        const fieldKey =
+
+        scalarRenderGeneration++;
+
+        cursorGeneration++;
+
+
+        cursorValue.textContent =
+            "--";
+
+
+        updateLegend();
+
+
+        await renderWeather();
+
+    }
+);
+
+
+/* =========================================================================================
+   SECTOR SELECT
+   ========================================================================================= */
+
+sectorSelect.addEventListener(
+    "change",
+    event => {
+
+        fitSector(
+            event.target.value
+        );
+
+    }
+);
+
+
+/* =========================================================================================
+   CITY TOGGLE
+   ========================================================================================= */
+
+citiesToggle.addEventListener(
+    "change",
+    event => {
+
+        citiesEnabled =
+            event.target.checked;
+
+        renderGeography();
+
+    }
+);
+
+
+/* =========================================================================================
+   SURFACE WIND TOGGLE
+   ========================================================================================= */
+
+surfaceWindToggle.addEventListener(
+    "change",
+    async event => {
+
+        activeOverlays.surfaceWind =
+            event.target.checked;
+
+        await renderVectors();
+
+    }
+);
+
+
+/* =========================================================================================
+   4-6 KM SR WIND TOGGLE
+   ========================================================================================= */
+
+srWind46Toggle.addEventListener(
+    "change",
+    async event => {
+
+        activeOverlays.srWind46 =
+            event.target.checked;
+
+        await renderVectors();
+
+    }
+);
+
+
+/* =========================================================================================
+   WINDOW RESIZE
+   ========================================================================================= */
+
+window.addEventListener(
+    "resize",
+    () => {
+
+        map.resize();
+
+        resizeAllCanvases();
+
+        renderAll();
+
+    }
+);
+
+
+/* =========================================================================================
+   INITIALIZE
+   ========================================================================================= */
+
+async function initialize() {
+
+    try {
+
+        statusElement.textContent =
+            "Initializing...";
+
+
+        await loadGeography();
+
+
+        await loadLatestRun();
+
+
+        resizeAllCanvases();
+
+
+        citiesEnabled =
+            false;
+
+        citiesToggle.checked =
+            false;
+
+
+        activeOverlays.surfaceWind =
+            false;
+
+        activeOverlays.srWind46 =
+            false;
+
+
+        surfaceWindToggle.checked =
+            false;
+
+        srWind46Toggle.checked =
+            false;
+
+
+        activeField =
             fieldSelect.value;
 
 
-        if (
-            WEATHER_FIELDS[
-                fieldKey
-            ]
-        ) {
-
-            await enableWeatherField(
-                fieldKey
-            );
-
-        }
-
-        else {
-
-            disableWeatherField();
-
-        }
-
-    }
-
-);
+        updateLegend();
 
 
-/* ==========================================================
-   CURSOR EVENTS
-   ========================================================== */
+        /*
+         * Initial LBF view
+         */
 
-map.on(
-
-    "mouseenter",
-
-    () => {
-
-        if (
-            WEATHER_FIELDS[
-                activeField
-            ]
-            &&
-            cursorPanel
-        ) {
-
-            cursorPanel.style.display =
-                "block";
-
-        }
-
-    }
-
-);
+        map.fitBounds(
+            sectors.lbf.bounds,
+            {
+                padding: 25,
+                duration: 0
+            }
+        );
 
 
-map.on(
+        /*
+         * Give MapLibre one frame to settle after fitBounds.
+         */
 
-    "mousemove",
+        requestAnimationFrame(
+            () => {
 
-    event => {
+                requestAnimationFrame(
+                    async () => {
 
-        if (
-            !WEATHER_FIELDS[
-                activeField
-            ]
-        ) {
+                        resizeAllCanvases();
 
-            return;
+                        renderGeography();
 
-        }
+                        await renderWeather();
 
+                        await renderVectors();
 
-        if (
-            cursorPanel
-        ) {
+                        statusElement.textContent =
+                            `Ready — ${currentRun}`;
 
-            cursorPanel.style.display =
-                "block";
+                    }
+                );
 
-        }
-
-
-        queueCursorSample(
-            event
+            }
         );
 
     }
+    catch (error) {
 
-);
+        console.error(
+            error
+        );
 
-
-map.on(
-
-    "mouseleave",
-
-    () => {
-
-        ++cursorRequestGeneration;
-
-
-        pendingCursorEvent =
-            null;
-
-
-        if (
-            cursorSampleTimer
-        ) {
-
-            clearTimeout(
-                cursorSampleTimer
-            );
-
-
-            cursorSampleTimer =
-                null;
-
-        }
-
-
-        if (
-            cursorPanel
-        ) {
-
-            cursorPanel.style.display =
-                "none";
-
-        }
+        statusElement.textContent =
+            `Error: ${error.message}`;
 
     }
 
-);
+}
 
 
-/* ==========================================================
-   MAP NAVIGATION
-   ========================================================== */
-
-map.on(
-
-    "movestart",
-
-    () => {
-
-        if (
-            weatherRedrawTimer
-        ) {
-
-            clearTimeout(
-                weatherRedrawTimer
-            );
-
-
-            weatherRedrawTimer =
-                null;
-
-        }
-
-    }
-
-);
-
-
-/*
- * While moving:
- *
- * - Keep the old weather image visually attached to the map
- *   using a CSS geographic transform.
- *
- * - Redraw geography continuously so counties/states/cities
- *   remain crisp.
- */
+/* =========================================================================================
+   START AFTER MAP LOAD
+   ========================================================================================= */
 
 map.on(
-
-    "move",
-
-    () => {
-
-        transformWeatherCanvasToCurrentMap();
-
-
-        renderGeographyOverlay();
-
-    }
-
-);
-
-
-/*
- * Once movement ends:
- *
- * - Leave transformed weather visible temporarily.
- * - Debounce.
- * - Rebuild a fresh numerical field at the new camera.
- */
-
-map.on(
-
-    "moveend",
-
-    () => {
-
-        if (
-            WEATHER_FIELDS[
-                activeField
-            ]
-        ) {
-
-            transformWeatherCanvasToCurrentMap();
-
-
-            scheduleWeatherRedraw();
-
-        }
-
-        else {
-
-            renderGeographyOverlay();
-
-        }
-
-    }
-
-);
-
-
-/* ==========================================================
-   MAP RESIZE
-   ========================================================== */
-
-map.on(
-
-    "resize",
-
-    () => {
-
-        resizeOverlayCanvases();
-
-
-        renderGeographyOverlay();
-
-
-        if (
-            WEATHER_FIELDS[
-                activeField
-            ]
-        ) {
-
-            resetWeatherTransform();
-
-
-            scheduleWeatherRedraw();
-
-        }
-
-    }
-
+    "load",
+    initialize
 );
