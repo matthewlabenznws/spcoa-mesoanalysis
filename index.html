@@ -1,259 +1,635 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+    <meta charset="UTF-8">
 
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
-  >
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
 
-  <title>SPCOA Mesoanalysis</title>
+    <title>SPCOA Mesoanalysis</title>
 
-  <!-- MapLibre -->
-  <link
-    href="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.css"
-    rel="stylesheet"
-  >
+    <!-- MapLibre -->
+    <link
+        href="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.css"
+        rel="stylesheet"
+    >
 
-  <!-- Site CSS -->
-  <link
-    rel="stylesheet"
-    href="style.css?v=20260921-sbcape3"
-  >
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+
+            font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
+
+            background: #ffffff;
+        }
+
+        #app {
+            display: flex;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* =========================================================
+           SIDEBAR
+           ========================================================= */
+
+        #sidebar {
+            width: 285px;
+            min-width: 285px;
+            height: 100%;
+
+            overflow-y: auto;
+
+            background: #f7f7f7;
+
+            border-right: 1px solid #bcbcbc;
+
+            padding: 16px;
+
+            z-index: 20;
+        }
+
+        #sidebar h1 {
+            margin: 0 0 4px 0;
+
+            font-size: 21px;
+            line-height: 1.2;
+
+            color: #1f1f1f;
+        }
+
+        .subtitle {
+            margin-bottom: 18px;
+
+            font-size: 12px;
+
+            color: #666666;
+        }
+
+        .control-section {
+            margin-bottom: 20px;
+        }
+
+        .control-section h2 {
+            margin: 0 0 8px 0;
+
+            font-size: 13px;
+            font-weight: 700;
+
+            color: #333333;
+
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        label {
+            display: block;
+
+            margin-bottom: 5px;
+
+            font-size: 13px;
+            font-weight: 600;
+
+            color: #333333;
+        }
+
+        select {
+            width: 100%;
+
+            padding: 8px 9px;
+
+            border: 1px solid #aaaaaa;
+            border-radius: 4px;
+
+            background: #ffffff;
+
+            color: #222222;
+
+            font-size: 13px;
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+
+            gap: 8px;
+
+            margin: 8px 0;
+
+            cursor: pointer;
+
+            font-size: 13px;
+            font-weight: 400;
+        }
+
+        .checkbox-row input {
+            width: 15px;
+            height: 15px;
+
+            margin: 0;
+        }
+
+        .divider {
+            height: 1px;
+
+            margin: 17px 0;
+
+            background: #d2d2d2;
+        }
+
+        #run-info {
+            padding: 10px;
+
+            background: #ffffff;
+
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+
+            font-size: 12px;
+            line-height: 1.45;
+
+            color: #333333;
+        }
+
+        #run-info .run-label {
+            font-weight: 700;
+        }
+
+        #status {
+            margin-top: 10px;
+
+            min-height: 18px;
+
+            font-size: 11px;
+
+            color: #555555;
+        }
+
+        /* =========================================================
+           MAP
+           ========================================================= */
+
+        #map-wrapper {
+            position: relative;
+
+            flex: 1;
+
+            height: 100%;
+
+            overflow: hidden;
+
+            background: #ffffff;
+        }
+
+        #map {
+            position: absolute;
+
+            inset: 0;
+
+            background: #ffffff;
+        }
+
+        /*
+         * Canvas stack:
+         *
+         * 2 = scalar weather shading
+         * 3 = wind barbs
+         * 4 = geography
+         */
+
+        #weather-canvas,
+        #vector-canvas,
+        #geography-canvas {
+            position: absolute;
+
+            top: 0;
+            left: 0;
+
+            width: 100%;
+            height: 100%;
+
+            pointer-events: none;
+        }
+
+        #weather-canvas {
+            z-index: 2;
+        }
+
+        #vector-canvas {
+            z-index: 3;
+        }
+
+        #geography-canvas {
+            z-index: 4;
+        }
+
+        /* =========================================================
+           LEGEND
+           ========================================================= */
+
+        #legend {
+            position: absolute;
+
+            left: 18px;
+            bottom: 20px;
+
+            z-index: 10;
+
+            min-width: 360px;
+
+            padding: 9px 11px 8px 11px;
+
+            background: rgba(255, 255, 255, 0.94);
+
+            border: 1px solid #777777;
+            border-radius: 3px;
+
+            box-shadow:
+                0 1px 4px rgba(0, 0, 0, 0.16);
+        }
+
+        #legend-title {
+            margin-bottom: 6px;
+
+            font-size: 12px;
+            font-weight: 700;
+
+            color: #222222;
+        }
+
+        #legend-bar {
+            width: 100%;
+            height: 17px;
+
+            border: 1px solid #666666;
+        }
+
+        #legend-labels {
+            position: relative;
+
+            width: 100%;
+            height: 18px;
+
+            margin-top: 2px;
+
+            font-size: 10px;
+
+            color: #333333;
+        }
+
+        .legend-label {
+            position: absolute;
+
+            top: 1px;
+
+            transform: translateX(-50%);
+
+            white-space: nowrap;
+        }
+
+        /* =========================================================
+           CURSOR VALUE
+           ========================================================= */
+
+        #cursor-panel {
+            position: absolute;
+
+            right: 16px;
+            bottom: 18px;
+
+            z-index: 10;
+
+            min-width: 190px;
+
+            padding: 8px 10px;
+
+            background: rgba(255, 255, 255, 0.94);
+
+            border: 1px solid #777777;
+            border-radius: 3px;
+
+            box-shadow:
+                0 1px 4px rgba(0, 0, 0, 0.16);
+
+            font-size: 12px;
+
+            color: #222222;
+        }
+
+        #cursor-field {
+            font-weight: 700;
+
+            margin-bottom: 2px;
+        }
+
+        #cursor-value {
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        #cursor-location {
+            margin-top: 2px;
+
+            font-size: 10px;
+
+            color: #666666;
+        }
+
+        /* =========================================================
+           MAPLIBRE
+           ========================================================= */
+
+        .maplibregl-ctrl-top-right {
+            z-index: 15;
+        }
+
+        .maplibregl-ctrl-attrib {
+            font-size: 9px;
+        }
+
+        /* =========================================================
+           MOBILE
+           ========================================================= */
+
+        @media (max-width: 800px) {
+
+            #sidebar {
+                width: 225px;
+                min-width: 225px;
+
+                padding: 12px;
+            }
+
+            #legend {
+                min-width: 290px;
+            }
+        }
+    </style>
 </head>
 
 <body>
 
-  <!-- =====================================================
-       HEADER
-       ===================================================== -->
-  <header class="site-header">
-    <div class="header-text">
-      <h1>SPCOA Mesoanalysis</h1>
-      <p>Interactive Surface and Mesoanalysis Viewer</p>
-    </div>
-  </header>
+<div id="app">
 
-
-  <!-- =====================================================
-       MAIN APPLICATION
-       ===================================================== -->
-  <main class="app">
-
-    <!-- ===================================================
+    <!-- =========================================================
          SIDEBAR
-         =================================================== -->
-    <aside class="sidebar">
+         ========================================================= -->
 
-      <!-- SECTOR -->
-      <section class="sidebar-section">
-        <h2>Sector</h2>
+    <aside id="sidebar">
 
-        <select id="sector-select">
-          <option value="lbf">LBF CWA</option>
-          <option value="regional">LBF Regional</option>
-          <option value="nebraska">Nebraska</option>
-          <option value="northern_plains">Northern Plains</option>
-          <option value="central_plains">Central Plains</option>
-          <option value="southern_plains">Southern Plains</option>
-          <option value="high_plains">High Plains</option>
-          <option value="midwest">Midwest</option>
-          <option value="rockies">Rockies</option>
-          <option value="conus">CONUS</option>
-        </select>
-      </section>
+        <h1>SPCOA Mesoanalysis</h1>
+
+        <div class="subtitle">
+            SFCOA-HRRR First Guess
+        </div>
 
 
-      <!-- MAP FEATURES -->
-      <section class="sidebar-section">
-        <h2>Map Features</h2>
+        <div class="control-section">
 
-        <label class="checkbox-row">
-          <input
-            id="states-toggle"
-            type="checkbox"
-            checked
-          >
-          <span>States</span>
-        </label>
+            <h2>Sector</h2>
 
-        <label class="checkbox-row">
-          <input
-            id="counties-toggle"
-            type="checkbox"
-            checked
-          >
-          <span>Counties</span>
-        </label>
+            <select id="sector-select">
 
-        <label class="checkbox-row">
-          <input
-            id="cwa-toggle"
-            type="checkbox"
-            disabled
-          >
-          <span>CWA Boundaries</span>
-        </label>
+                <option value="lbf">
+                    LBF CWA
+                </option>
 
-        <label class="checkbox-row">
-          <input
-            id="cities-toggle"
-            type="checkbox"
-          >
-          <span>Cities</span>
-        </label>
+                <option value="regional">
+                    LBF Regional
+                </option>
 
-        <label class="checkbox-row">
-          <input
-            id="highways-toggle"
-            type="checkbox"
-            disabled
-          >
-          <span>Highways</span>
-        </label>
-      </section>
+                <option value="nebraska">
+                    Nebraska
+                </option>
 
+                <option value="northern_plains">
+                    Northern Plains
+                </option>
 
-      <!-- CWA -->
-      <section class="sidebar-section">
-        <h2>CWA</h2>
+                <option value="central_plains">
+                    Central Plains
+                </option>
 
-        <select id="cwa-select" disabled>
-          <option>Coming Later</option>
-        </select>
+                <option value="southern_plains">
+                    Southern Plains
+                </option>
 
-        <p class="help-text">
-          CWA boundary support will be added later.
-        </p>
-      </section>
+                <option value="high_plains">
+                    High Plains
+                </option>
 
+                <option value="midwest">
+                    Midwest
+                </option>
 
-      <!-- SPCOA FIELDS -->
-      <section class="sidebar-section">
-        <h2>SPCOA Fields</h2>
+                <option value="rockies">
+                    Rockies
+                </option>
 
-        <label for="field-select">
-          Field
-        </label>
+                <option value="conus">
+                    CONUS
+                </option>
 
-        <select id="field-select">
-
-          <option value="none">
-            None
-          </option>
-
-          <option value="sbcape">
-            Surface-Based CAPE
-          </option>
-
-          <option value="mlcape">
-            Mixed-Layer CAPE
-          </option>
-
-          <option value="mucape">
-            Most-Unstable CAPE
-          </option>
-
-        </select>
-
-
-        <!-- FIELD INFORMATION -->
-        <div
-          id="field-info"
-          class="field-info"
-          style="display:none;"
-        >
-
-          <div id="field-name"></div>
-
-          <div id="field-time"></div>
+            </select>
 
         </div>
 
-      </section>
+
+        <div class="control-section">
+
+            <h2>Filled Field</h2>
+
+            <select id="field-select">
+
+                <option value="none">
+                    None
+                </option>
+
+                <option value="sbcape" selected>
+                    Surface-Based CAPE
+                </option>
+
+                <option value="mlcape">
+                    Mixed-Layer CAPE
+                </option>
+
+                <option value="mucape">
+                    Most-Unstable CAPE
+                </option>
+
+                <option value="sfc_dewpoint">
+                    Surface Dewpoint
+                </option>
+
+            </select>
+
+        </div>
+
+
+        <div class="control-section">
+
+            <h2>Vector Overlays</h2>
+
+            <label class="checkbox-row">
+
+                <input
+                    id="sfc-wind-toggle"
+                    type="checkbox"
+                >
+
+                <span>
+                    Surface Wind Barbs
+                </span>
+
+            </label>
+
+
+            <label class="checkbox-row">
+
+                <input
+                    id="srwind-46-toggle"
+                    type="checkbox"
+                >
+
+                <span>
+                    4–6 km SR Wind Barbs
+                </span>
+
+            </label>
+
+        </div>
+
+
+        <div class="control-section">
+
+            <h2>Map Layers</h2>
+
+            <label class="checkbox-row">
+
+                <input
+                    id="cities-toggle"
+                    type="checkbox"
+                >
+
+                <span>
+                    Cities
+                </span>
+
+            </label>
+
+        </div>
+
+
+        <div class="divider"></div>
+
+
+        <div id="run-info">
+
+            <div>
+                <span class="run-label">
+                    Run:
+                </span>
+
+                <span id="run-id">
+                    Loading...
+                </span>
+            </div>
+
+            <div>
+                <span class="run-label">
+                    Analysis:
+                </span>
+
+                <span id="analysis-time">
+                    Loading...
+                </span>
+            </div>
+
+        </div>
+
+
+        <div id="status">
+            Initializing...
+        </div>
 
     </aside>
 
 
-    <!-- ===================================================
+    <!-- =========================================================
          MAP
-         =================================================== -->
-    <section class="map-wrapper">
+         ========================================================= -->
 
-      <div id="map"></div>
+    <main id="map-wrapper">
+
+        <div id="map"></div>
+
+        <canvas id="weather-canvas"></canvas>
+
+        <canvas id="vector-canvas"></canvas>
+
+        <canvas id="geography-canvas"></canvas>
 
 
-      <!-- =================================================
-           WEATHER LEGEND
-           ================================================= -->
-      <div
-        id="weather-legend"
-        class="weather-legend"
-        style="display:none;"
-      >
+        <div id="legend">
 
-        <div
-          id="legend-title"
-          class="legend-title"
-        >
-          CAPE
+            <div id="legend-title">
+                Surface-Based CAPE (J/kg)
+            </div>
+
+            <canvas id="legend-bar"></canvas>
+
+            <div id="legend-labels"></div>
+
         </div>
 
-        <canvas
-          id="legend-canvas"
-          width="420"
-          height="18"
-        ></canvas>
 
-        <!--
-          These are initial fallback labels.
+        <div id="cursor-panel">
 
-          app.js replaces these with precisely positioned
-          numerical labels when a field is selected.
-        -->
-        <div class="legend-labels">
-          <span>0</span>
-          <span>1000</span>
-          <span>2000</span>
-          <span>3000</span>
-          <span>4000</span>
-          <span>5000</span>
-          <span>6000+</span>
+            <div id="cursor-field">
+                SBCAPE
+            </div>
+
+            <div id="cursor-value">
+                --
+            </div>
+
+            <div id="cursor-location">
+                Move cursor over map
+            </div>
+
         </div>
 
-        <div
-          id="legend-units"
-          class="legend-units"
-        >
-          J/kg
-        </div>
+    </main>
 
-      </div>
-
-    </section>
-
-  </main>
+</div>
 
 
-  <!-- =====================================================
-       JAVASCRIPT
-       ===================================================== -->
+<!-- MapLibre -->
+<script
+    src="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.js">
+</script>
 
-  <!-- MapLibre -->
-  <script
-    src="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.js"
-  ></script>
+<!-- TopoJSON -->
+<script
+    src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js">
+</script>
 
-  <!-- TopoJSON -->
-  <script
-    src="https://unpkg.com/topojson-client@3"
-  ></script>
-
-  <!-- Main application -->
-  <script
-    src="app.js?v=20260921-multifield1"
-  ></script>
+<!-- Main application -->
+<script src="app.js"></script>
 
 </body>
 </html>
