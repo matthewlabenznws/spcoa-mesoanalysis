@@ -4,16 +4,18 @@
    SPCOA MESOANALYSIS
    app.js
 
-   MapLibre viewer for numerical SPCOA/SFCOA data.
+   Interactive MapLibre viewer for SPCOA/SFCOA data.
 
    Current field:
    - Surface-Based CAPE
 
    Weather data:
    - AWS S3
-   - gzip-compressed uint16 numerical XYZ tiles
-   - 256 x 256 grid points per tile
+   - Numerical XYZ tiles
+   - 256 x 256 pixels
+   - uint16
    - little-endian
+   - uncompressed .bin files
    - nodata = 65535
    ========================================================== */
 
@@ -24,7 +26,6 @@
 
 const S3_BASE_URL =
   "https://spcoa-mesoanalysis.s3.us-east-2.amazonaws.com/spcoa";
-
 
 const WEATHER_TILE_SIZE = 256;
 
@@ -121,7 +122,7 @@ const sectors = {
 
 
 /* ==========================================================
-   SBCAPE THRESHOLDS
+   SBCAPE COLOR SCALE
    ========================================================== */
 
 const SBCAPE_BOUNDS = [
@@ -197,10 +198,6 @@ const SBCAPE_BOUNDS = [
   10500
 ];
 
-
-/* ==========================================================
-   SBCAPE COLORS
-   ========================================================== */
 
 const SBCAPE_COLORS = [
 
@@ -299,21 +296,21 @@ let weatherRenderGeneration = 0;
 
 
 /*
- * Currently displayed MapLibre weather tiles.
+ * Weather layers currently displayed on the map.
  */
 const activeWeatherTiles =
   new Map();
 
 
 /*
- * Decoded numerical tiles already downloaded.
+ * Numerical tiles already downloaded and decoded.
  */
 const weatherTileCache =
   new Map();
 
 
 /* ==========================================================
-   BASE MAP STYLE
+   BASE MAP
    ========================================================== */
 
 const mapStyle = {
@@ -338,10 +335,6 @@ const mapStyle = {
 
 };
 
-
-/* ==========================================================
-   CREATE MAP
-   ========================================================== */
 
 const map =
   new maplibregl.Map({
@@ -558,20 +551,9 @@ function getSbcapeRgba(value) {
 
   if (
     !Number.isFinite(value) ||
-    value === WEATHER_NODATA
+    value === WEATHER_NODATA ||
+    value < 0
   ) {
-
-    return [
-      0,
-      0,
-      0,
-      0
-    ];
-
-  }
-
-
-  if (value < 0) {
 
     return [
       0,
@@ -627,7 +609,7 @@ function getSbcapeRgba(value) {
 
 
 /* ==========================================================
-   LEGEND
+   SBCAPE LEGEND
    ========================================================== */
 
 function drawSbcapeLegend() {
@@ -786,10 +768,13 @@ async function loadLatestData() {
 
   const response =
     await fetch(
+
       url,
+
       {
         cache: "no-store"
       }
+
     );
 
 
@@ -822,7 +807,7 @@ async function loadLatestData() {
 
 
 /* ==========================================================
-   DETERMINE CURRENT RUN
+   GET CURRENT RUN
    ========================================================== */
 
 function getLatestRunId() {
@@ -833,30 +818,22 @@ function getLatestRunId() {
 
 
   if (latestData.run) {
-
     return latestData.run;
-
   }
 
 
   if (latestData.run_id) {
-
     return latestData.run_id;
-
   }
 
 
   if (latestData.cycle) {
-
     return latestData.cycle;
-
   }
 
 
   if (latestData.analysis) {
-
     return latestData.analysis;
-
   }
 
 
@@ -975,50 +952,22 @@ async function loadSbcapeMetadata() {
 
 
 /* ==========================================================
-   GZIP DECOMPRESSION
-   ========================================================== */
+   LOAD NUMERICAL SBCAPE TILE
 
-async function decompressGzip(
-  arrayBuffer
-) {
+   IMPORTANT:
+   S3 contains uncompressed files:
 
-  if (
-    typeof DecompressionStream ===
-    "undefined"
-  ) {
+   z7/27/45.bin
 
-    throw new Error(
-      "This browser does not support gzip DecompressionStream."
-    );
+   NOT:
 
-  }
+   z7/27/45.bin.gz
 
+   Each tile should be exactly:
 
-  const compressedStream =
-    new Blob([
-      arrayBuffer
-    ]).stream();
-
-
-  const decompressedStream =
-    compressedStream.pipeThrough(
-
-      new DecompressionStream(
-        "gzip"
-      )
-
-    );
-
-
-  return await new Response(
-    decompressedStream
-  ).arrayBuffer();
-
-}
-
-
-/* ==========================================================
-   LOAD NUMERICAL TILE
+   256 x 256 x 2 bytes
+   = 131072 bytes
+   = 128 KiB
    ========================================================== */
 
 async function loadWeatherTile(
@@ -1046,7 +995,7 @@ async function loadWeatherTile(
 
 
   const url =
-    `${S3_BASE_URL}/sbcape/${runId}/z${z}/${x}/${y}.bin.gz`;
+    `${S3_BASE_URL}/sbcape/${runId}/z${z}/${x}/${y}.bin`;
 
 
   const response =
@@ -1056,15 +1005,11 @@ async function loadWeatherTile(
 
 
   /*
-   * IMPORTANT:
+   * A missing tile around the edge of the SPCOA domain
+   * is normal.
    *
-   * Tiles outside the generated SPCOA footprint are normal.
-   *
-   * Because anonymous users do not have s3:ListBucket,
-   * Amazon S3 may return 403 instead of 404 for an object
-   * that does not exist.
-   *
-   * Therefore both 403 and 404 are treated as "no tile".
+   * S3 may return either 403 or 404 for a missing public
+   * object depending on bucket permissions.
    */
   if (
     response.status === 403 ||
@@ -1088,14 +1033,13 @@ async function loadWeatherTile(
   }
 
 
-  const compressedBuffer =
+  /*
+   * Tiles are already uncompressed binary files.
+   *
+   * Do NOT use DecompressionStream here.
+   */
+  const tileBuffer =
     await response.arrayBuffer();
-
-
-  const decompressedBuffer =
-    await decompressGzip(
-      compressedBuffer
-    );
 
 
   const expectedBytes =
@@ -1105,7 +1049,7 @@ async function loadWeatherTile(
 
 
   if (
-    decompressedBuffer.byteLength !==
+    tileBuffer.byteLength !==
     expectedBytes
   ) {
 
@@ -1113,7 +1057,7 @@ async function loadWeatherTile(
 
       `Unexpected tile size for ${url}. ` +
       `Expected ${expectedBytes} bytes, ` +
-      `received ${decompressedBuffer.byteLength}.`
+      `received ${tileBuffer.byteLength}.`
 
     );
 
@@ -1125,7 +1069,7 @@ async function loadWeatherTile(
    */
   const view =
     new DataView(
-      decompressedBuffer
+      tileBuffer
     );
 
 
@@ -1165,7 +1109,7 @@ async function loadWeatherTile(
 
 
 /* ==========================================================
-   NUMERICAL TILE → CANVAS
+   NUMERICAL TILE -> CANVAS
    ========================================================== */
 
 function createSbcapeTileCanvas(
@@ -1188,10 +1132,13 @@ function createSbcapeTileCanvas(
 
   const ctx =
     canvas.getContext(
+
       "2d",
+
       {
         alpha: true
       }
+
     );
 
 
@@ -1407,7 +1354,7 @@ function tileYToLat(
 
 
 /* ==========================================================
-   WEATHER TILE ZOOM
+   WEATHER ZOOM
    ========================================================== */
 
 function getWeatherZoom() {
@@ -1417,23 +1364,17 @@ function getWeatherZoom() {
 
 
   if (zoom < 4.5) {
-
     return 4;
-
   }
 
 
   if (zoom < 5.5) {
-
     return 5;
-
   }
 
 
   if (zoom < 6.5) {
-
     return 6;
-
   }
 
 
@@ -1443,7 +1384,7 @@ function getWeatherZoom() {
 
 
 /* ==========================================================
-   VISIBLE WEATHER TILES
+   GET VISIBLE WEATHER TILES
    ========================================================== */
 
 function getVisibleWeatherTiles(
@@ -1587,7 +1528,7 @@ function getVisibleWeatherTiles(
 
 
   /*
-   * One-tile buffer around visible map.
+   * Add one tile around the viewport.
    */
   minX =
     Math.max(
@@ -1718,7 +1659,7 @@ function getTileCoordinates(
 
 
 /* ==========================================================
-   REMOVE CURRENT WEATHER LAYERS
+   CLEAR WEATHER TILES
    ========================================================== */
 
 function clearWeatherTiles() {
@@ -1774,7 +1715,7 @@ function clearWeatherTiles() {
 
 
 /* ==========================================================
-   KEEP GEOGRAPHY ABOVE WEATHER
+   KEEP MAP FEATURES ABOVE WEATHER
    ========================================================== */
 
 function moveReferenceLayersToTop() {
@@ -1818,7 +1759,7 @@ function moveReferenceLayersToTop() {
 
 
 /* ==========================================================
-   ADD WEATHER TILE TO MAP
+   ADD WEATHER TILE
    ========================================================== */
 
 function addWeatherTileToMap(
@@ -1859,7 +1800,27 @@ function addWeatherTileToMap(
     canvasId;
 
 
-  canvas.style.display =
+  /*
+   * Keep the backing canvas out of view.
+   *
+   * MapLibre reads it through the canvas source.
+   */
+  canvas.style.position =
+    "absolute";
+
+  canvas.style.left =
+    "-99999px";
+
+  canvas.style.top =
+    "-99999px";
+
+  canvas.style.width =
+    `${WEATHER_TILE_SIZE}px`;
+
+  canvas.style.height =
+    `${WEATHER_TILE_SIZE}px`;
+
+  canvas.style.pointerEvents =
     "none";
 
 
@@ -1970,7 +1931,7 @@ async function renderSingleWeatherTile(
 
 
     /*
-     * An old render is no longer relevant.
+     * Stop if another render has started.
      */
     if (
       generation !==
@@ -1993,9 +1954,7 @@ async function renderSingleWeatherTile(
 
 
     /*
-     * Tile does not exist.
-     *
-     * This is normal around the edge of the SPCOA domain.
+     * Missing tile.
      */
     if (!values) {
 
@@ -2169,7 +2128,10 @@ async function renderSbcape() {
 
 
     console.log(
-      "SBCAPE render complete."
+
+      `SBCAPE render complete. ` +
+      `${activeWeatherTiles.size} tiles displayed.`
+
     );
 
   }
@@ -2273,12 +2235,16 @@ function updateSbcapeFieldInfo() {
     fieldTime.textContent =
       `Analysis: ${formatAnalysisTime(analysisTime)}`;
 
-  } else if (runId) {
+  }
+
+  else if (runId) {
 
     fieldTime.textContent =
       `Run: ${runId}`;
 
-  } else {
+  }
+
+  else {
 
     fieldTime.textContent =
       "Latest analysis";
@@ -3038,7 +3004,7 @@ map.on(
 
 
       /*
-       * Preload latest analysis information.
+       * Preload the latest analysis information.
        */
       try {
 
@@ -3098,9 +3064,7 @@ sectorSelect.addEventListener(
 
 
     if (!sector) {
-
       return;
-
     }
 
 
