@@ -15,10 +15,7 @@
 
     <!-- ===================================================
          MAPLIBRE GL JS
-
          Version 5.11.0
-         Supports local/system font rendering when the
-         style does not contain a "glyphs" property.
     ==================================================== -->
 
     <link
@@ -180,10 +177,7 @@
                 </label>
 
 
-                <!-- CWA BOUNDARIES
-                     
-                     Deferred for now.
-                -->
+                <!-- CWA BOUNDARIES -->
 
                 <label class="checkbox-row">
 
@@ -200,14 +194,16 @@
                 </label>
 
 
-                <!-- CITIES -->
+                <!-- CITIES
+                     
+                     Unchecked by default.
+                -->
 
                 <label class="checkbox-row">
 
                     <input
                         id="cities-toggle"
                         type="checkbox"
-                        checked
                     >
 
                     <span>
@@ -217,10 +213,7 @@
                 </label>
 
 
-                <!-- HIGHWAYS
-                     
-                     Disabled for now.
-                -->
+                <!-- HIGHWAYS -->
 
                 <label class="checkbox-row">
 
@@ -315,8 +308,7 @@
     <!-- ===================================================
          MAPLIBRE GL JS
 
-         IMPORTANT:
-         MapLibre must load before app.js.
+         Must load before app.js.
     ==================================================== -->
 
     <script
@@ -326,9 +318,6 @@
 
     <!-- ===================================================
          TOPOJSON CLIENT
-
-         Converts counties-10m.json from TopoJSON to GeoJSON
-         for MapLibre.
     ==================================================== -->
 
     <script
@@ -338,14 +327,9 @@
 
     <!-- ===================================================
          APPLICATION JAVASCRIPT
-
-         Cache-busting query:
-         Change this value whenever we make a substantial
-         app.js update if the browser/GitHub Pages appears
-         to be serving an older copy.
     ==================================================== -->
 
-    <script src="app.js?v=20260920-sectors1"></script>
+    <script src="app.js?v=20260920-citiesoff1"></script>
 
 
 </body>
