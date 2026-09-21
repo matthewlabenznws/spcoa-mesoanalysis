@@ -1,309 +1,412 @@
-/* =========================================================
+/* ==========================================================
+   SPCOA MESOANALYSIS
+   Main Stylesheet
+   ========================================================== */
+
+
+/* ==========================================================
    GLOBAL
-========================================================= */
+   ========================================================== */
 
 * {
-    box-sizing: border-box;
+  box-sizing: border-box;
 }
-
 
 html,
 body {
-    margin: 0;
-    padding: 0;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
 
-    width: 100%;
-    height: 100%;
+  font-family: Arial, Helvetica, sans-serif;
 
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
-
-    background: #ffffff;
-
-    color: #222222;
+  background: #ffffff;
+  color: #222222;
 }
 
 
-/* =========================================================
+/* ==========================================================
    HEADER
-========================================================= */
+   ========================================================== */
 
 .site-header {
-    height: 74px;
+  height: 74px;
 
-    display: flex;
-    align-items: center;
+  display: flex;
+  align-items: center;
 
-    padding: 0 22px;
+  padding: 0 22px;
 
-    background: #ffffff;
+  background: #ffffff;
+  border-bottom: 1px solid #cccccc;
 
-    border-bottom: 1px solid #cccccc;
-
-    position: relative;
-
-    z-index: 10;
+  position: relative;
+  z-index: 10;
 }
-
 
 .header-text h1 {
-    margin: 0;
+  margin: 0;
 
-    font-size: 22px;
-    font-weight: 700;
+  font-size: 22px;
+  font-weight: 700;
 }
-
 
 .header-text p {
-    margin: 3px 0 0;
+  margin: 3px 0 0;
 
-    font-size: 13px;
-
-    color: #666666;
+  font-size: 13px;
+  color: #666666;
 }
 
 
-/* =========================================================
-   APPLICATION LAYOUT
-========================================================= */
+/* ==========================================================
+   MAIN APPLICATION
+   ========================================================== */
 
 .app {
-    display: flex;
+  display: flex;
 
-    width: 100%;
-
-    height: calc(100vh - 74px);
+  width: 100%;
+  height: calc(100vh - 74px);
 }
 
 
-/* =========================================================
+/* ==========================================================
    SIDEBAR
-========================================================= */
+   ========================================================== */
 
 .sidebar {
-    width: 285px;
-    min-width: 285px;
+  width: 285px;
+  min-width: 285px;
+  height: 100%;
 
-    height: 100%;
+  overflow-y: auto;
 
-    overflow-y: auto;
+  padding: 18px;
 
-    padding: 18px;
+  background: #ffffff;
 
-    background: #ffffff;
+  border-right: 1px solid #cccccc;
 
-    border-right: 1px solid #cccccc;
-
-    position: relative;
-
-    z-index: 5;
+  position: relative;
+  z-index: 5;
 }
 
 
-/* =========================================================
+/* ==========================================================
    SIDEBAR SECTIONS
-========================================================= */
+   ========================================================== */
 
 .sidebar-section {
-    padding-bottom: 20px;
+  padding-bottom: 20px;
+  margin-bottom: 20px;
 
-    margin-bottom: 20px;
-
-    border-bottom: 1px solid #e2e2e2;
+  border-bottom: 1px solid #e2e2e2;
 }
-
 
 .sidebar-section:last-child {
-    border-bottom: none;
+  border-bottom: none;
 }
-
 
 .sidebar-section h2 {
-    margin: 0 0 10px;
+  margin: 0 0 10px;
 
-    font-size: 13px;
+  font-size: 13px;
+  font-weight: 700;
 
-    font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
 
-    text-transform: uppercase;
-
-    letter-spacing: 0.6px;
-
-    color: #444444;
+  color: #444444;
 }
 
 
-/* =========================================================
+/* ==========================================================
    SELECT MENUS
-========================================================= */
+   ========================================================== */
 
 select {
-    width: 100%;
+  width: 100%;
 
-    padding: 9px 10px;
+  padding: 9px 10px;
 
-    background: #ffffff;
+  background: #ffffff;
 
-    border: 1px solid #bcbcbc;
+  border: 1px solid #bcbcbc;
+  border-radius: 4px;
 
-    border-radius: 4px;
+  color: #222222;
 
-    color: #222222;
+  font-size: 14px;
 
-    font-size: 14px;
-
-    cursor: pointer;
+  cursor: pointer;
 }
-
 
 select:hover {
-    border-color: #777777;
+  border-color: #777777;
+}
+
+select:focus {
+  outline: none;
+
+  border-color: #555555;
+}
+
+select:disabled {
+  background: #f3f3f3;
+  color: #999999;
+
+  cursor: not-allowed;
 }
 
 
-/* =========================================================
-   CHECKBOXES
-========================================================= */
+/* ==========================================================
+   CHECKBOX ROWS
+   ========================================================== */
 
 .checkbox-row {
-    display: flex;
+  display: flex;
+  align-items: center;
 
-    align-items: center;
+  gap: 8px;
 
-    gap: 8px;
+  margin-bottom: 10px;
 
-    margin-bottom: 10px;
+  font-size: 14px;
 
-    font-size: 14px;
-
-    cursor: pointer;
+  cursor: pointer;
 }
-
 
 .checkbox-row input {
-    width: 16px;
-    height: 16px;
+  width: 16px;
+  height: 16px;
 
-    margin: 0;
+  margin: 0;
 
-    cursor: pointer;
+  cursor: pointer;
+}
+
+.checkbox-row:has(input:disabled) {
+  color: #999999;
+
+  cursor: not-allowed;
+}
+
+.checkbox-row input:disabled {
+  cursor: not-allowed;
 }
 
 
-/* =========================================================
+/* ==========================================================
    HELP TEXT
-========================================================= */
+   ========================================================== */
 
 .help-text {
-    margin: 8px 0 0;
+  margin: 8px 0 0;
 
-    font-size: 11px;
+  font-size: 11px;
+  line-height: 1.4;
 
-    line-height: 1.4;
-
-    color: #777777;
+  color: #777777;
 }
 
 
-/* =========================================================
-   WEATHER PLACEHOLDER
-========================================================= */
+/* ==========================================================
+   SPCOA FIELD INFORMATION
+   ========================================================== */
 
-.weather-placeholder p {
-    margin: 0;
+.field-info {
+  margin-top: 12px;
 
-    font-size: 12px;
+  padding: 9px 10px;
 
-    line-height: 1.5;
+  background: #fafafa;
 
-    color: #777777;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#field-name {
+  font-weight: 700;
+
+  color: #222222;
+}
+
+#field-time {
+  margin-top: 4px;
+
+  color: #666666;
 }
 
 
-/* =========================================================
-   MAP
-========================================================= */
+/* ==========================================================
+   MAP WRAPPER
+   ========================================================== */
 
 .map-wrapper {
-    flex: 1;
+  flex: 1;
 
-    position: relative;
+  position: relative;
 
-    min-width: 0;
+  min-width: 0;
 
-    background: #ffffff;
+  background: #ffffff;
+
+  overflow: hidden;
 }
 
+
+/* ==========================================================
+   MAP
+   ========================================================== */
 
 #map {
-    position: absolute;
+  position: absolute;
 
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
 
-    background: #ffffff;
+  background: #ffffff;
 }
 
 
-/* =========================================================
+/* ==========================================================
+   WEATHER LEGEND
+   ========================================================== */
+
+.weather-legend {
+  position: absolute;
+
+  left: 18px;
+  bottom: 18px;
+
+  width: 450px;
+
+  padding: 10px 14px;
+
+  background: rgba(255, 255, 255, 0.94);
+
+  border: 1px solid #999999;
+  border-radius: 3px;
+
+  z-index: 8;
+
+  pointer-events: none;
+}
+
+.legend-title {
+  margin-bottom: 7px;
+
+  font-size: 12px;
+  font-weight: 700;
+
+  color: #222222;
+}
+
+
+/* ==========================================================
+   LEGEND COLOR BAR
+   ========================================================== */
+
+#legend-canvas {
+  display: block;
+
+  width: 100%;
+  height: 18px;
+
+  border: 1px solid #555555;
+
+  image-rendering: pixelated;
+}
+
+
+/* ==========================================================
+   LEGEND LABELS
+   ========================================================== */
+
+.legend-labels {
+  display: flex;
+  justify-content: space-between;
+
+  margin-top: 3px;
+
+  font-size: 10px;
+
+  color: #333333;
+}
+
+.legend-units {
+  margin-top: 2px;
+
+  text-align: center;
+
+  font-size: 10px;
+
+  color: #555555;
+}
+
+
+/* ==========================================================
    MAPLIBRE CONTROLS
-========================================================= */
+   ========================================================== */
 
 .maplibregl-ctrl-group {
-    border-radius: 3px;
+  border-radius: 3px;
 }
 
 
-/* =========================================================
-   MOBILE
-========================================================= */
+/* ==========================================================
+   MOBILE / SMALL SCREEN
+   ========================================================== */
 
 @media (max-width: 750px) {
 
-    .site-header {
-        height: 62px;
+  .site-header {
+    height: 62px;
 
-        padding: 0 14px;
-    }
+    padding: 0 14px;
+  }
 
+  .header-text h1 {
+    font-size: 18px;
+  }
 
-    .header-text h1 {
-        font-size: 18px;
-    }
+  .header-text p {
+    display: none;
+  }
 
+  .app {
+    height: calc(100vh - 62px);
 
-    .header-text p {
-        display: none;
-    }
+    flex-direction: column;
+  }
 
+  .sidebar {
+    width: 100%;
+    min-width: 100%;
 
-    .app {
-        height: calc(100vh - 62px);
+    height: auto;
+    max-height: 240px;
 
-        flex-direction: column;
-    }
+    border-right: none;
+    border-bottom: 1px solid #cccccc;
+  }
 
+  .map-wrapper {
+    flex: 1;
+  }
 
-    .sidebar {
-        width: 100%;
-        min-width: 100%;
+  .weather-legend {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
 
-        height: auto;
-
-        max-height: 240px;
-
-        border-right: none;
-
-        border-bottom: 1px solid #cccccc;
-    }
-
-
-    .map-wrapper {
-        flex: 1;
-    }
-
+    width: auto;
+  }
 }
