@@ -8,7 +8,8 @@
 //   - White background
 //   - County boundaries
 //   - State boundaries
-//   - City labels using LOCAL / SYSTEM fonts
+//   - Hierarchical city labels
+//   - Expanded geographic sectors
 //
 // Disabled / deferred:
 //   - Highways
@@ -19,19 +20,32 @@
 //
 // IMPORTANT:
 //
-// There is intentionally NO "glyphs" property in the map style.
+// There is intentionally NO "glyphs" property.
 //
-// Beginning with MapLibre GL JS 5.11.0, when "glyphs" is
-// omitted, text-font is interpreted as a cascading list of
-// local/system fonts.
+// MapLibre GL JS 5.11+ uses local/system fonts when
+// the style does not define a glyphs URL.
 // ============================================================
 
 
 // ============================================================
 // SECTORS
+//
+// Bounds format:
+//
+// [
+//     [west longitude, south latitude],
+//     [east longitude, north latitude]
+// ]
+//
+// These are DISPLAY sectors only.
+// They do not control which meteorological data are downloaded.
 // ============================================================
 
 const sectors = {
+
+    // --------------------------------------------------------
+    // LBF CWA
+    // --------------------------------------------------------
 
     lbf: {
 
@@ -49,6 +63,10 @@ const sectors = {
     },
 
 
+    // --------------------------------------------------------
+    // LBF REGIONAL
+    // --------------------------------------------------------
+
     regional: {
 
         name:
@@ -65,6 +83,53 @@ const sectors = {
     },
 
 
+    // --------------------------------------------------------
+    // NEBRASKA
+    //
+    // Includes a little surrounding territory so Nebraska
+    // is not pressed directly against the map edges.
+    // --------------------------------------------------------
+
+    nebraska: {
+
+        name:
+            "Nebraska",
+
+        bounds: [
+
+            [-104.7, 39.4],
+
+            [-95.0, 43.6]
+
+        ]
+
+    },
+
+
+    // --------------------------------------------------------
+    // NORTHERN PLAINS
+    // --------------------------------------------------------
+
+    northern_plains: {
+
+        name:
+            "Northern Plains",
+
+        bounds: [
+
+            [-107.5, 39.5],
+
+            [-94.0, 49.5]
+
+        ]
+
+    },
+
+
+    // --------------------------------------------------------
+    // CENTRAL PLAINS
+    // --------------------------------------------------------
+
     central_plains: {
 
         name:
@@ -80,6 +145,93 @@ const sectors = {
 
     },
 
+
+    // --------------------------------------------------------
+    // SOUTHERN PLAINS
+    // --------------------------------------------------------
+
+    southern_plains: {
+
+        name:
+            "Southern Plains",
+
+        bounds: [
+
+            [-106.5, 25.0],
+
+            [-93.0, 38.5]
+
+        ]
+
+    },
+
+
+    // --------------------------------------------------------
+    // HIGH PLAINS
+    //
+    // Useful for severe weather, fire weather, and lee
+    // cyclogenesis setups from the Dakotas through Texas.
+    // --------------------------------------------------------
+
+    high_plains: {
+
+        name:
+            "High Plains",
+
+        bounds: [
+
+            [-108.5, 28.0],
+
+            [-97.0, 49.5]
+
+        ]
+
+    },
+
+
+    // --------------------------------------------------------
+    // MIDWEST
+    // --------------------------------------------------------
+
+    midwest: {
+
+        name:
+            "Midwest",
+
+        bounds: [
+
+            [-104.0, 35.0],
+
+            [-80.0, 49.5]
+
+        ]
+
+    },
+
+
+    // --------------------------------------------------------
+    // ROCKIES
+    // --------------------------------------------------------
+
+    rockies: {
+
+        name:
+            "Rockies",
+
+        bounds: [
+
+            [-116.0, 30.0],
+
+            [-101.0, 49.5]
+
+        ]
+
+    },
+
+
+    // --------------------------------------------------------
+    // CONUS
+    // --------------------------------------------------------
 
     conus: {
 
@@ -102,9 +254,12 @@ const sectors = {
 // ============================================================
 // MAP STYLE
 //
-// NO GLYPH SERVER.
+// No basemap.
+// No terrain.
+// No glyph server.
 //
-// MapLibre 5.11+ will use local/system fonts.
+// Meteorological fields will eventually sit between the
+// geographic boundary layers and city labels.
 // ============================================================
 
 const mapStyle = {
@@ -510,8 +665,7 @@ map.on(
             //
             // Intentionally disabled.
             //
-            // We are not downloading primary-roads.geojson
-            // while this feature is disabled.
+            // primary-roads.geojson is NOT downloaded.
             // =================================================
 
             console.log(
@@ -583,14 +737,7 @@ map.on(
             // =================================================
             // CITY FONT STACK
             //
-            // Because the style does NOT contain "glyphs",
-            // MapLibre 5.11+ treats this as a cascading list
-            // of local/system fonts.
-            //
-            // Arial is available on Windows, which is ideal
-            // for your primary development environment.
-            //
-            // Helvetica and sans-serif provide fallbacks.
+            // Local/system fonts.
             // =================================================
 
             const cityFont = [
@@ -608,6 +755,8 @@ map.on(
             // MAJOR CITIES
             //
             // city_class 1 + 2
+            //
+            // These remain visible at the widest zoom levels.
             // =================================================
 
             map.addLayer({
@@ -661,15 +810,15 @@ map.on(
 
                         ["zoom"],
 
-                        2, 9,
+                        2, 10,
 
-                        4, 10,
+                        4, 11,
 
-                        6, 11,
+                        6, 12,
 
-                        8, 12,
+                        8, 13,
 
-                        10, 13
+                        10, 14
 
                     ],
 
@@ -690,16 +839,16 @@ map.on(
                 paint: {
 
                     "text-color":
-                        "#202020",
+                        "#111111",
 
                     "text-halo-color":
                         "#ffffff",
 
                     "text-halo-width":
-                        1.5,
+                        1.8,
 
                     "text-halo-blur":
-                        0.3
+                        0.2
 
                 }
 
@@ -710,6 +859,15 @@ map.on(
             // REGIONAL CITIES
             //
             // city_class 3
+            //
+            // NORTH PLATTE:
+            //
+            // North Platte is stored as class 4 in the current
+            // cities.geojson, but this is an LBF-focused
+            // meteorological viewer.
+            //
+            // We therefore promote North Platte into this
+            // cartographic tier without modifying the GeoJSON.
             // =================================================
 
             map.addLayer({
@@ -728,14 +886,33 @@ map.on(
 
                 filter: [
 
-                    "==",
+                    "any",
 
                     [
-                        "get",
-                        "city_class"
+
+                        "==",
+
+                        [
+                            "get",
+                            "city_class"
+                        ],
+
+                        3
+
                     ],
 
-                    3
+                    [
+
+                        "==",
+
+                        [
+                            "get",
+                            "name"
+                        ],
+
+                        "North Platte"
+
+                    ]
 
                 ],
 
@@ -763,13 +940,15 @@ map.on(
 
                         ["zoom"],
 
-                        4, 9,
+                        4, 10,
 
-                        5, 10,
+                        5, 11,
 
-                        7, 11,
+                        7, 12,
 
-                        9, 12
+                        9, 13,
+
+                        11, 14
 
                     ],
 
@@ -790,16 +969,16 @@ map.on(
                 paint: {
 
                     "text-color":
-                        "#252525",
+                        "#111111",
 
                     "text-halo-color":
                         "#ffffff",
 
                     "text-halo-width":
-                        1.5,
+                        1.8,
 
                     "text-halo-blur":
-                        0.3
+                        0.2
 
                 }
 
@@ -810,6 +989,9 @@ map.on(
             // IMPORTANT LOCAL CITIES
             //
             // city_class 4
+            //
+            // North Platte is excluded because it is displayed
+            // in the regional layer above.
             // =================================================
 
             map.addLayer({
@@ -828,14 +1010,33 @@ map.on(
 
                 filter: [
 
-                    "==",
+                    "all",
 
                     [
-                        "get",
-                        "city_class"
+
+                        "==",
+
+                        [
+                            "get",
+                            "city_class"
+                        ],
+
+                        4
+
                     ],
 
-                    4
+                    [
+
+                        "!=",
+
+                        [
+                            "get",
+                            "name"
+                        ],
+
+                        "North Platte"
+
+                    ]
 
                 ],
 
@@ -863,13 +1064,13 @@ map.on(
 
                         ["zoom"],
 
-                        5, 9,
+                        5, 10,
 
-                        6, 10,
+                        6, 10.5,
 
-                        8, 11,
+                        8, 11.5,
 
-                        10, 12
+                        10, 12.5
 
                     ],
 
@@ -883,23 +1084,23 @@ map.on(
                         false,
 
                     "text-padding":
-                        2
+                        2.5
 
                 },
 
                 paint: {
 
                     "text-color":
-                        "#303030",
+                        "#202020",
 
                     "text-halo-color":
                         "#ffffff",
 
                     "text-halo-width":
-                        1.4,
+                        1.6,
 
                     "text-halo-blur":
-                        0.3
+                        0.2
 
                 }
 
@@ -963,13 +1164,13 @@ map.on(
 
                         ["zoom"],
 
-                        6, 8,
+                        6, 9,
 
-                        7, 9,
+                        7, 9.5,
 
-                        9, 10,
+                        9, 10.5,
 
-                        11, 11
+                        11, 11.5
 
                     ],
 
@@ -990,16 +1191,16 @@ map.on(
                 paint: {
 
                     "text-color":
-                        "#3a3a3a",
+                        "#202020",
 
                     "text-halo-color":
                         "#ffffff",
 
                     "text-halo-width":
-                        1.3,
+                        1.6,
 
                     "text-halo-blur":
-                        0.3
+                        0.2
 
                 }
 
@@ -1014,7 +1215,18 @@ map.on(
             // =================================================
             // FINAL LAYER ORDER
             //
+            // Current:
+            //
             // background
+            // counties
+            // states
+            // cities
+            //
+            // Eventually:
+            //
+            // background
+            // meteorological shading
+            // meteorological contours
             // counties
             // states
             // cities
@@ -1369,3 +1581,8 @@ if (citiesToggle) {
     );
 
 }
+
+
+// ============================================================
+// END
+// ============================================================
