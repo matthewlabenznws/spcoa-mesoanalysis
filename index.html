@@ -14,11 +14,13 @@
 
 
     <!-- ===================================================
-         MAPLIBRE
+         MAPLIBRE GL JS
+         
+         Version 6.10.0
     ==================================================== -->
 
     <link
-        href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css"
+        href="https://unpkg.com/maplibre-gl@6.10.0/dist/maplibre-gl.css"
         rel="stylesheet"
     >
 
@@ -118,6 +120,8 @@
                 </h2>
 
 
+                <!-- STATES -->
+
                 <label class="checkbox-row">
 
                     <input
@@ -132,6 +136,8 @@
 
                 </label>
 
+
+                <!-- COUNTIES -->
 
                 <label class="checkbox-row">
 
@@ -148,8 +154,9 @@
                 </label>
 
 
-                <!--
-                    These will become functional later.
+                <!-- CWA BOUNDARIES
+                     
+                     We are leaving these disabled for now.
                 -->
 
                 <label class="checkbox-row">
@@ -167,6 +174,8 @@
                 </label>
 
 
+                <!-- CITIES -->
+
                 <label class="checkbox-row">
 
                     <input
@@ -182,12 +191,14 @@
                 </label>
 
 
+                <!-- HIGHWAYS / PRIMARY ROADS -->
+
                 <label class="checkbox-row">
 
                     <input
                         id="highways-toggle"
                         type="checkbox"
-                        disabled
+                        checked
                     >
 
                     <span>
@@ -201,6 +212,8 @@
 
             <!-- ===========================================
                  CWA
+                 
+                 Leaving this alone for now.
             ============================================ -->
 
             <section class="sidebar-section">
@@ -216,7 +229,7 @@
                 >
 
                     <option>
-                        Coming in Step 4
+                        Coming Later
                     </option>
 
                 </select>
@@ -225,8 +238,7 @@
                 <p class="help-text">
 
                     CWA boundaries and office selection
-                    will be added after the base geography
-                    is complete.
+                    will be added later.
 
                 </p>
 
@@ -234,7 +246,7 @@
 
 
             <!-- ===========================================
-                 SPCOA
+                 SPCOA FIELDS
             ============================================ -->
 
             <section
@@ -274,18 +286,21 @@
 
 
     <!-- ===================================================
-         MAPLIBRE JAVASCRIPT
+         MAPLIBRE GL JS
+         
+         Version 6.10.0
     ==================================================== -->
 
     <script
-        src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js">
+        src="https://unpkg.com/maplibre-gl@6.10.0/dist/maplibre-gl.js">
     </script>
 
 
     <!-- ===================================================
          TOPOJSON CLIENT
          
-         Converts our local TopoJSON geography into GeoJSON.
+         Converts our local counties-10m.json TopoJSON
+         geography into GeoJSON that MapLibre can render.
     ==================================================== -->
 
     <script
