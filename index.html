@@ -138,23 +138,39 @@
         </label>
 
         <select id="field-select">
-          <option value="none">None</option>
+
+          <option value="none">
+            None
+          </option>
+
           <option value="sbcape">
             Surface-Based CAPE
           </option>
+
+          <option value="mlcape">
+            Mixed-Layer CAPE
+          </option>
+
+          <option value="mucape">
+            Most-Unstable CAPE
+          </option>
+
         </select>
 
+
+        <!-- FIELD INFORMATION -->
         <div
           id="field-info"
           class="field-info"
           style="display:none;"
         >
-          <div id="field-name">
-            Surface-Based CAPE
-          </div>
+
+          <div id="field-name"></div>
 
           <div id="field-time"></div>
+
         </div>
+
       </section>
 
     </aside>
@@ -167,7 +183,10 @@
 
       <div id="map"></div>
 
-      <!-- WEATHER LEGEND -->
+
+      <!-- =================================================
+           WEATHER LEGEND
+           ================================================= -->
       <div
         id="weather-legend"
         class="weather-legend"
@@ -178,7 +197,7 @@
           id="legend-title"
           class="legend-title"
         >
-          Surface-Based CAPE
+          CAPE
         </div>
 
         <canvas
@@ -187,6 +206,12 @@
           height="18"
         ></canvas>
 
+        <!--
+          These are initial fallback labels.
+
+          app.js replaces these with precisely positioned
+          numerical labels when a field is selected.
+        -->
         <div class="legend-labels">
           <span>0</span>
           <span>1000</span>
@@ -226,7 +251,9 @@
   ></script>
 
   <!-- Main application -->
-<script src="app.js?v=20260921-sbcape9"></script>
-  
+  <script
+    src="app.js?v=20260921-multifield1"
+  ></script>
+
 </body>
 </html>
