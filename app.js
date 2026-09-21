@@ -3,24 +3,25 @@
 /* ==========================================================
    SPCOA MESOANALYSIS
    app.js
-   Version: sbcape4
+   Version: sbcape5
 
    Current field:
    - Surface-Based CAPE
 
-   Weather tiles:
+   Weather data:
    - AWS S3
-   - Web Mercator XYZ
+   - Numerical Web Mercator XYZ tiles
    - 256 x 256
    - uint16
    - little-endian
    - uncompressed .bin
    - nodata = 65535
 
-   SBCAPE4 changes:
-   1. Values < 100 J/kg are transparent.
-   2. Numerical tile diagnostics are printed to console.
-   3. Canvas handling is hardened to prevent black weather tiles.
+   SBCAPE5:
+   - Values < 100 J/kg transparent
+   - Numerical diagnostics retained
+   - Numerical tile -> RGBA canvas -> PNG data URL
+   - MapLibre IMAGE sources instead of CANVAS sources
    ========================================================== */
 
 
@@ -302,28 +303,28 @@ let weatherRenderGeneration = 0;
 
 
 /*
- * MapLibre weather layers currently displayed.
+ * Active MapLibre image layers.
  */
 const activeWeatherTiles =
   new Map();
 
 
 /*
- * Decoded numerical tile cache.
+ * Numerical tile cache.
  */
 const weatherTileCache =
   new Map();
 
 
 /*
- * Diagnostics cache.
+ * Numerical diagnostics.
  */
 const weatherTileDiagnostics =
   new Map();
 
 
 /* ==========================================================
-   BASE MAP STYLE
+   MAP STYLE
    ========================================================== */
 
 const mapStyle = {
@@ -567,7 +568,7 @@ const SBCAPE_RGB =
 function getSbcapeRgba(value) {
 
   /*
-   * Missing data and values below 100 J/kg are transparent.
+   * Missing values and CAPE below 100 J/kg are transparent.
    */
   if (
     !Number.isFinite(value) ||
@@ -589,6 +590,9 @@ function getSbcapeRgba(value) {
     SBCAPE_COLORS.length - 1;
 
 
+  /*
+   * Start at index 1 because 0-100 is transparent.
+   */
   for (
     let i = 1;
     i < SBCAPE_BOUNDS.length - 1;
@@ -600,7 +604,8 @@ function getSbcapeRgba(value) {
       value < SBCAPE_BOUNDS[i + 1]
     ) {
 
-      colorIndex = i;
+      colorIndex =
+        i;
 
       break;
 
@@ -610,7 +615,9 @@ function getSbcapeRgba(value) {
 
 
   const rgb =
-    SBCAPE_RGB[colorIndex];
+    SBCAPE_RGB[
+      colorIndex
+    ];
 
 
   return [
@@ -684,13 +691,12 @@ function drawSbcapeLegend() {
       legendMax;
 
 
-    /*
-     * For the legend only, display the first bin as white
-     * instead of transparent.
-     */
     let rgba;
 
 
+    /*
+     * Keep the legend visually complete.
+     */
     if (
       value <
       SBCAPE_TRANSPARENT_BELOW
@@ -703,7 +709,9 @@ function drawSbcapeLegend() {
         255
       ];
 
-    } else {
+    }
+
+    else {
 
       rgba =
         getSbcapeRgba(
@@ -886,7 +894,7 @@ function getLatestRunId() {
 
 
 /* ==========================================================
-   LOAD SBCAPE METADATA
+   LOAD METADATA
    ========================================================== */
 
 async function loadSbcapeMetadata() {
@@ -932,7 +940,9 @@ async function loadSbcapeMetadata() {
       url =
         metadataPath;
 
-    } else {
+    }
+
+    else {
 
       url =
         `${S3_BASE_URL}/${metadataPath}`;
@@ -995,7 +1005,7 @@ async function loadSbcapeMetadata() {
 
 
 /* ==========================================================
-   NUMERICAL DIAGNOSTICS
+   TILE DIAGNOSTICS
    ========================================================== */
 
 function calculateTileDiagnostics(
@@ -1029,7 +1039,7 @@ function calculateTileDiagnostics(
     0;
 
 
-  let positiveCount =
+  let coloredCount =
     0;
 
 
@@ -1042,10 +1052,13 @@ function calculateTileDiagnostics(
 
   const sampleStep =
     Math.max(
+
       1,
+
       Math.floor(
         values.length / 16
       )
+
     );
 
 
@@ -1118,13 +1131,9 @@ function calculateTileDiagnostics(
 
     }
 
+    else {
 
-    if (
-      value >=
-      SBCAPE_TRANSPARENT_BELOW
-    ) {
-
-      positiveCount++;
+      coloredCount++;
 
     }
 
@@ -1156,12 +1165,6 @@ function calculateTileDiagnostics(
   }
 
 
-  const meanValue =
-    validCount > 0
-      ? sum / validCount
-      : null;
-
-
   return {
 
     tile:
@@ -1174,7 +1177,9 @@ function calculateTileDiagnostics(
       maxValue,
 
     mean:
-      meanValue,
+      validCount > 0
+        ? sum / validCount
+        : null,
 
     validCount:
       validCount,
@@ -1189,7 +1194,7 @@ function calculateTileDiagnostics(
       below100Count,
 
     coloredCount:
-      positiveCount,
+      coloredCount,
 
     sampleValues:
       sampleValues
@@ -1200,7 +1205,7 @@ function calculateTileDiagnostics(
 
 
 /* ==========================================================
-   LOAD NUMERICAL TILE
+   LOAD NUMERICAL WEATHER TILE
    ========================================================== */
 
 async function loadWeatherTile(
@@ -1238,7 +1243,7 @@ async function loadWeatherTile(
 
 
   /*
-   * Missing edge tiles are normal.
+   * Missing edge tile.
    */
   if (
     response.status === 403 ||
@@ -1262,9 +1267,6 @@ async function loadWeatherTile(
   }
 
 
-  /*
-   * The S3 objects are already raw uncompressed binary.
-   */
   const tileBuffer =
     await response.arrayBuffer();
 
@@ -1292,7 +1294,7 @@ async function loadWeatherTile(
 
 
   /*
-   * Decode explicitly as little-endian uint16.
+   * Explicit little-endian uint16 decode.
    */
   const view =
     new DataView(
@@ -1324,9 +1326,6 @@ async function loadWeatherTile(
   }
 
 
-  /*
-   * Calculate numerical diagnostics.
-   */
   const diagnostics =
     calculateTileDiagnostics(
 
@@ -1348,8 +1347,11 @@ async function loadWeatherTile(
 
 
   console.log(
+
     `[SBCAPE TILE] ${diagnostics.tile}`,
+
     {
+
       min:
         diagnostics.min,
 
@@ -1377,7 +1379,9 @@ async function loadWeatherTile(
 
       samples:
         diagnostics.sampleValues
+
     }
+
   );
 
 
@@ -1406,9 +1410,6 @@ function createSbcapeTileCanvas(
     );
 
 
-  /*
-   * Explicitly set the intrinsic dimensions.
-   */
   canvas.width =
     WEATHER_TILE_SIZE;
 
@@ -1423,9 +1424,7 @@ function createSbcapeTileCanvas(
       "2d",
 
       {
-        alpha: true,
-
-        willReadFrequently: false
+        alpha: true
       }
 
     );
@@ -1434,21 +1433,10 @@ function createSbcapeTileCanvas(
   if (!ctx) {
 
     throw new Error(
-      "Unable to create 2D canvas context."
+      "Unable to create SBCAPE canvas context."
     );
 
   }
-
-
-  /*
-   * Ensure no stale pixels exist.
-   */
-  ctx.clearRect(
-    0,
-    0,
-    WEATHER_TILE_SIZE,
-    WEATHER_TILE_SIZE
-  );
 
 
   const imageData =
@@ -1465,69 +1453,40 @@ function createSbcapeTileCanvas(
     imageData.data;
 
 
-  let transparentPixels =
-    0;
-
-
-  let coloredPixels =
-    0;
-
-
   for (
     let i = 0;
     i < values.length;
     i++
   ) {
 
-    const value =
-      values[i];
-
-
-    const pixelIndex =
-      i * 4;
-
-
     const rgba =
       getSbcapeRgba(
-        value
+        values[i]
       );
 
 
-    pixels[pixelIndex] =
+    const p =
+      i * 4;
+
+
+    pixels[p] =
       rgba[0];
 
 
-    pixels[pixelIndex + 1] =
+    pixels[p + 1] =
       rgba[1];
 
 
-    pixels[pixelIndex + 2] =
+    pixels[p + 2] =
       rgba[2];
 
 
-    pixels[pixelIndex + 3] =
+    pixels[p + 3] =
       rgba[3];
-
-
-    if (
-      rgba[3] === 0
-    ) {
-
-      transparentPixels++;
-
-    } else {
-
-      coloredPixels++;
-
-    }
 
   }
 
 
-  /*
-   * Write completed RGBA image to canvas BEFORE
-   * MapLibre is given the canvas.
-   */
   ctx.putImageData(
     imageData,
     0,
@@ -1535,19 +1494,40 @@ function createSbcapeTileCanvas(
   );
 
 
-  canvas.dataset.transparentPixels =
-    String(
-      transparentPixels
-    );
-
-
-  canvas.dataset.coloredPixels =
-    String(
-      coloredPixels
-    );
-
-
   return canvas;
+
+}
+
+
+/* ==========================================================
+   CANVAS -> PNG DATA URL
+   ========================================================== */
+
+function canvasToPngDataUrl(
+  canvas
+) {
+
+  const dataUrl =
+    canvas.toDataURL(
+      "image/png"
+    );
+
+
+  if (
+    !dataUrl ||
+    !dataUrl.startsWith(
+      "data:image/png"
+    )
+  ) {
+
+    throw new Error(
+      "Unable to convert SBCAPE canvas to PNG data URL."
+    );
+
+  }
+
+
+  return dataUrl;
 
 }
 
@@ -1852,7 +1832,7 @@ function getVisibleWeatherTiles(
 
 
   /*
-   * One-tile buffer around current viewport.
+   * One tile outside current viewport.
    */
   minX =
     Math.max(
@@ -1918,7 +1898,7 @@ function getVisibleWeatherTiles(
 
 
 /* ==========================================================
-   TILE GEOGRAPHIC COORDINATES
+   TILE COORDINATES
    ========================================================== */
 
 function getTileCoordinates(
@@ -1955,6 +1935,14 @@ function getTileCoordinates(
     );
 
 
+  /*
+   * MapLibre image source order:
+   *
+   * top-left
+   * top-right
+   * bottom-right
+   * bottom-left
+   */
   return [
 
     [
@@ -1983,7 +1971,7 @@ function getTileCoordinates(
 
 
 /* ==========================================================
-   CLEAR WEATHER LAYERS
+   CLEAR WEATHER
    ========================================================== */
 
 function clearWeatherTiles() {
@@ -2018,18 +2006,6 @@ function clearWeatherTiles() {
 
     }
 
-
-    if (
-      entry.canvas &&
-      entry.canvas.parentNode
-    ) {
-
-      entry.canvas.parentNode.removeChild(
-        entry.canvas
-      );
-
-    }
-
   }
 
 
@@ -2039,7 +2015,7 @@ function clearWeatherTiles() {
 
 
 /* ==========================================================
-   REFERENCE LAYER ORDER
+   KEEP GEOGRAPHY ABOVE WEATHER
    ========================================================== */
 
 function moveReferenceLayersToTop() {
@@ -2083,13 +2059,13 @@ function moveReferenceLayersToTop() {
 
 
 /* ==========================================================
-   ADD WEATHER CANVAS TO MAP
+   ADD STATIC IMAGE TILE TO MAPLIBRE
    ========================================================== */
 
-function addWeatherTileToMap(
+function addWeatherImageToMap(
   runId,
   tile,
-  canvas
+  imageUrl
 ) {
 
   const safeRun =
@@ -2116,56 +2092,6 @@ function addWeatherTileToMap(
     `weather-layer-${key}`;
 
 
-  const canvasId =
-    `weather-canvas-${key}`;
-
-
-  canvas.id =
-    canvasId;
-
-
-  /*
-   * IMPORTANT:
-   *
-   * Do not use display:none.
-   *
-   * MapLibre needs a real renderable HTMLCanvasElement.
-   * Instead, keep it in the DOM and position it far
-   * outside the visible page.
-   */
-  canvas.style.position =
-    "fixed";
-
-  canvas.style.left =
-    "-10000px";
-
-  canvas.style.top =
-    "-10000px";
-
-  canvas.style.width =
-    `${WEATHER_TILE_SIZE}px`;
-
-  canvas.style.height =
-    `${WEATHER_TILE_SIZE}px`;
-
-  canvas.style.opacity =
-    "1";
-
-  canvas.style.visibility =
-    "visible";
-
-  canvas.style.pointerEvents =
-    "none";
-
-  canvas.style.zIndex =
-    "-9999";
-
-
-  document.body.appendChild(
-    canvas
-  );
-
-
   const coordinates =
     getTileCoordinates(
 
@@ -2178,20 +2104,23 @@ function addWeatherTileToMap(
     );
 
 
+  /*
+   * Static MapLibre image source.
+   *
+   * This avoids the live HTML canvas source entirely.
+   */
   map.addSource(
 
     sourceId,
 
     {
 
-      type: "canvas",
+      type: "image",
 
-      canvas: canvasId,
+      url: imageUrl,
 
       coordinates:
-        coordinates,
-
-      animate: false
+        coordinates
 
     }
 
@@ -2211,7 +2140,7 @@ function addWeatherTileToMap(
       paint: {
 
         "raster-opacity":
-          1,
+          1.0,
 
         "raster-resampling":
           "nearest",
@@ -2226,45 +2155,6 @@ function addWeatherTileToMap(
   );
 
 
-  /*
-   * Force MapLibre to re-read the finished canvas.
-   */
-  const source =
-    map.getSource(
-      sourceId
-    );
-
-
-  if (
-    source &&
-    typeof source.play === "function"
-  ) {
-
-    source.play();
-
-
-    requestAnimationFrame(
-      () => {
-
-        try {
-
-          source.pause();
-
-        }
-
-        catch (error) {
-
-          /*
-           * Nothing needs to be done here.
-           */
-        }
-
-      }
-    );
-
-  }
-
-
   activeWeatherTiles.set(
 
     key,
@@ -2275,10 +2165,7 @@ function addWeatherTileToMap(
         sourceId,
 
       layerId:
-        layerId,
-
-      canvas:
-        canvas
+        layerId
 
     }
 
@@ -2340,9 +2227,23 @@ async function renderSingleWeatherTile(
     }
 
 
+    /*
+     * Numerical field -> RGBA canvas.
+     */
     const canvas =
       createSbcapeTileCanvas(
         values
+      );
+
+
+    /*
+     * RGBA canvas -> actual PNG.
+     *
+     * PNG preserves the alpha channel.
+     */
+    const imageUrl =
+      canvasToPngDataUrl(
+        canvas
       );
 
 
@@ -2356,13 +2257,16 @@ async function renderSingleWeatherTile(
     }
 
 
-    addWeatherTileToMap(
+    /*
+     * PNG -> MapLibre static image source.
+     */
+    addWeatherImageToMap(
 
       runId,
 
       tile,
 
-      canvas
+      imageUrl
 
     );
 
@@ -2392,7 +2296,7 @@ async function renderSingleWeatherTile(
 
 
 /* ==========================================================
-   OVERALL RENDER DIAGNOSTICS
+   OVERALL DIAGNOSTICS
    ========================================================== */
 
 function printRenderDiagnostics(
@@ -2487,19 +2391,6 @@ function printRenderDiagnostics(
 
     totalColored +=
       diagnostics.coloredCount;
-
-  }
-
-
-  if (
-    diagnosticTiles === 0
-  ) {
-
-    console.warn(
-      "[SBCAPE DIAGNOSTICS] No numerical tile diagnostics available."
-    );
-
-    return;
 
   }
 
@@ -2677,6 +2568,10 @@ async function renderSbcape() {
       ).length;
 
 
+    /*
+     * Make sure county/state/city lines remain above
+     * the SBCAPE raster images.
+     */
     moveReferenceLayersToTop();
 
 
@@ -2693,8 +2588,8 @@ async function renderSbcape() {
 
     console.log(
 
-      `SBCAPE render complete. ` +
-      `${renderedCount} tiles rendered.`
+      `SBCAPE5 render complete. ` +
+      `${renderedCount} image tiles rendered.`
 
     );
 
@@ -2747,9 +2642,6 @@ function updateSbcapeFieldInfo() {
     null;
 
 
-  /*
-   * Derive analysis time from YYYYMMDD_HH if needed.
-   */
   if (
     !analysisTime &&
     runId &&
@@ -2878,7 +2770,7 @@ async function enableSbcape() {
 
 
 /* ==========================================================
-   DISABLE WEATHER
+   DISABLE WEATHER FIELD
    ========================================================== */
 
 function disableWeatherField() {
@@ -3567,9 +3459,6 @@ map.on(
       drawSbcapeLegend();
 
 
-      /*
-       * Preload latest analysis.
-       */
       try {
 
         await loadLatestData();
