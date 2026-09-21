@@ -15,8 +15,9 @@
 
     <!-- ===================================================
          MAPLIBRE GL JS
-         
-         5.11.0 adds local/system font rendering when the
+
+         Version 5.11.0
+         Supports local/system font rendering when the
          style does not contain a "glyphs" property.
     ==================================================== -->
 
@@ -97,8 +98,32 @@
                         LBF Regional
                     </option>
 
+                    <option value="nebraska">
+                        Nebraska
+                    </option>
+
+                    <option value="northern_plains">
+                        Northern Plains
+                    </option>
+
                     <option value="central_plains">
                         Central Plains
+                    </option>
+
+                    <option value="southern_plains">
+                        Southern Plains
+                    </option>
+
+                    <option value="high_plains">
+                        High Plains
+                    </option>
+
+                    <option value="midwest">
+                        Midwest
+                    </option>
+
+                    <option value="rockies">
+                        Rockies
                     </option>
 
                     <option value="conus">
@@ -155,7 +180,10 @@
                 </label>
 
 
-                <!-- CWA BOUNDARIES -->
+                <!-- CWA BOUNDARIES
+                     
+                     Deferred for now.
+                -->
 
                 <label class="checkbox-row">
 
@@ -189,7 +217,10 @@
                 </label>
 
 
-                <!-- HIGHWAYS -->
+                <!-- HIGHWAYS
+                     
+                     Disabled for now.
+                -->
 
                 <label class="checkbox-row">
 
@@ -282,9 +313,10 @@
 
 
     <!-- ===================================================
-         MAPLIBRE GL JS 5.11.0
-         
-         Must load BEFORE app.js.
+         MAPLIBRE GL JS
+
+         IMPORTANT:
+         MapLibre must load before app.js.
     ==================================================== -->
 
     <script
@@ -294,6 +326,9 @@
 
     <!-- ===================================================
          TOPOJSON CLIENT
+
+         Converts counties-10m.json from TopoJSON to GeoJSON
+         for MapLibre.
     ==================================================== -->
 
     <script
@@ -303,12 +338,14 @@
 
     <!-- ===================================================
          APPLICATION JAVASCRIPT
-         
-         Cache-busting query so GitHub Pages/browser does
-         not accidentally use one of our older app.js files.
+
+         Cache-busting query:
+         Change this value whenever we make a substantial
+         app.js update if the browser/GitHub Pages appears
+         to be serving an older copy.
     ==================================================== -->
 
-    <script src="app.js?v=20260920-511"></script>
+    <script src="app.js?v=20260920-sectors1"></script>
 
 
 </body>
