@@ -15,18 +15,17 @@
 
     <!-- ===================================================
          MAPLIBRE GL JS
-         
-         Version 6.10.0
+         Known-working version: 5.7.1
     ==================================================== -->
 
     <link
-        href="https://unpkg.com/maplibre-gl@6.10.0/dist/maplibre-gl.css"
+        href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css"
         rel="stylesheet"
     >
 
 
     <!-- ===================================================
-         OUR CSS
+         SITE CSS
     ==================================================== -->
 
     <link
@@ -154,10 +153,7 @@
                 </label>
 
 
-                <!-- CWA BOUNDARIES
-                     
-                     We are leaving these disabled for now.
-                -->
+                <!-- CWA BOUNDARIES -->
 
                 <label class="checkbox-row">
 
@@ -191,14 +187,17 @@
                 </label>
 
 
-                <!-- HIGHWAYS / PRIMARY ROADS -->
+                <!-- HIGHWAYS
+                     
+                     Disabled for now.
+                -->
 
                 <label class="checkbox-row">
 
                     <input
                         id="highways-toggle"
                         type="checkbox"
-                        checked
+                        disabled
                     >
 
                     <span>
@@ -212,8 +211,6 @@
 
             <!-- ===========================================
                  CWA
-                 
-                 Leaving this alone for now.
             ============================================ -->
 
             <section class="sidebar-section">
@@ -288,19 +285,17 @@
     <!-- ===================================================
          MAPLIBRE GL JS
          
-         Version 6.10.0
+         IMPORTANT:
+         MapLibre must load BEFORE app.js.
     ==================================================== -->
 
     <script
-        src="https://unpkg.com/maplibre-gl@6.10.0/dist/maplibre-gl.js">
+        src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js">
     </script>
 
 
     <!-- ===================================================
          TOPOJSON CLIENT
-         
-         Converts our local counties-10m.json TopoJSON
-         geography into GeoJSON that MapLibre can render.
     ==================================================== -->
 
     <script
@@ -309,10 +304,13 @@
 
 
     <!-- ===================================================
-         OUR JAVASCRIPT
+         APPLICATION JAVASCRIPT
+         
+         Cache-busting query added so GitHub Pages/browser
+         does not keep using an older app.js.
     ==================================================== -->
 
-    <script src="app.js"></script>
+    <script src="app.js?v=20260920-1"></script>
 
 
 </body>
