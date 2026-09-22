@@ -476,8 +476,49 @@ const legend =
 const legendTitle =
     document.getElementById("legend-title");
 
-const legendCanvas =
+let legendCanvas =
     document.getElementById("legend-canvas");
+
+if (!legendCanvas) {
+
+    legendCanvas =
+        document.createElement("canvas");
+
+    legendCanvas.id =
+        "legend-canvas";
+
+    legendCanvas.style.display =
+        "block";
+
+    legendCanvas.style.width =
+        "100%";
+
+    legendCanvas.style.height =
+        "17px";
+
+    legendCanvas.style.marginTop =
+        "5px";
+
+    const legendLabelsElement =
+        document.getElementById("legend-labels");
+
+    if (legendLabelsElement) {
+
+        legend.insertBefore(
+            legendCanvas,
+            legendLabelsElement
+        );
+
+    }
+    else {
+
+        legend.appendChild(
+            legendCanvas
+        );
+
+    }
+
+}
 
 const legendCtx =
     legendCanvas.getContext("2d");
