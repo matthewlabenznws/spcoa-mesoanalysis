@@ -290,7 +290,7 @@ const CONTOUR_FIELDS = {
         shortName: "DCAPE",
         units: "J/kg",
         interval: 100,
-        minimum: 500,
+        minimum: 100,
         color: null,
         colorScheme: "cape"
     }
@@ -4963,7 +4963,7 @@ function getContourSettings(
             100;
 
         minimum =
-            500;
+            100;
     }
 
     return {
