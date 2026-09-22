@@ -8,6 +8,7 @@
      - SBCAPE
      - MLCAPE
      - MUCAPE
+     - 0–3 km MLCAPE
      - Surface Dewpoint
 
    INDEPENDENT VECTOR OVERLAYS
@@ -16,6 +17,7 @@
 
    INDEPENDENT CONTOUR OVERLAYS
      - Surface MSLP
+     - DCAPE
 
    RENDERING
      - Full-resolution scalar canvas
@@ -23,7 +25,8 @@
      - Numerical canvas follows camera during pan/zoom
      - Fresh numerical redraw after movement ends
      - MSLP numerical contours every 2 hPa
-     - MSLP labels rendered separately above geography
+     - DCAPE numerical contours every 100 J/kg beginning at 500 J/kg
+     - MSLP/DCAPE labels rendered separately above geography
 
    CANVAS STACK
      contour-label-canvas   z = 6
@@ -234,6 +237,13 @@ const WEATHER_FIELDS = {
         type: "cape"
     },
 
+    mlcape_0_3km: {
+        name: "0–3 km Mixed-Layer CAPE",
+        shortName: "0–3 km MLCAPE",
+        units: "J/kg",
+        type: "cape"
+    },
+
     sfc_dewpoint: {
         name: "Surface Dewpoint",
         shortName: "Surface Dewpoint",
@@ -269,7 +279,20 @@ const CONTOUR_FIELDS = {
         name: "Surface MSLP",
         shortName: "MSLP",
         units: "hPa",
-        interval: 2
+        interval: 2,
+        minimum: null,
+        colorScheme: "fixed",
+        color: "#000000"
+    },
+
+    dcape: {
+        name: "Downdraft CAPE",
+        shortName: "DCAPE",
+        units: "J/kg",
+        interval: 100,
+        minimum: 500,
+        colorScheme: "cape",
+        color: null
     }
 
 };
@@ -288,7 +311,8 @@ let activeField = "sbcape";
 const activeOverlays = {
     surfaceWind: false,
     srWind46: false,
-    mslp: false
+    mslp: false,
+    dcape: false
 };
 
 let fieldMetadata = {};
@@ -594,6 +618,16 @@ if (!mslpToggle) {
     }
 
 }
+
+
+/* =========================================================================================
+   DCAPE TOGGLE
+   ========================================================================================= */
+
+let dcapeToggle =
+    document.getElementById(
+        "dcape-toggle"
+    );
 
 
 /* =========================================================================================
@@ -1933,7 +1967,8 @@ async function loadVectorTile(
 
                 /*
                  * Vector tiles contain interleaved int16 U/V:
-                 *
+                 
+  *
                  *   U0, V0, U1, V1, ...
                  *
                  * 256 × 256 × 2 components × 2 bytes
@@ -3900,78 +3935,45 @@ async function renderWeather() {
         height
 
     );
-
-
     weatherCtx.drawImage(
-
         offscreen,
-
         0,
-
         0,
-
         width,
-
         height
-
     );
-
 }
 /* =========================================================================================
    WIND BARB SPACING
    ========================================================================================= */
-
 function getBarbSpacing() {
-
     const zoom =
         map.getZoom();
-
-
     if (
         zoom < 4.5
     ) {
-
         return 60;
-
     }
-
-
     if (
         zoom < 5.5
     ) {
-
         return 54;
-
     }
-
-
     if (
         zoom < 6.5
     ) {
-
         return 48;
-
     }
-
-
     if (
         zoom < 7.5
     ) {
-
         return 42;
-
     }
-
-
     return 38;
-
 }
-
-
 /* =========================================================================================
    DRAW WIND BARB
    ========================================================================================= */
-
 function drawWindBarb(
     ctx,
     x,
@@ -3979,73 +3981,40 @@ function drawWindBarb(
     u,
     v
 ) {
-
     const speed =
         Math.hypot(
             u,
             v
         );
-
-
     ctx.save();
-
-
     ctx.strokeStyle =
         "#000000";
-
-
     ctx.fillStyle =
         "#000000";
-
-
     ctx.lineWidth =
         1.2;
-
-
     ctx.lineCap =
         "round";
-
-
     ctx.lineJoin =
         "round";
-
-
     /*
      * Calm wind.
      */
     if (
         speed < 2.5
     ) {
-
         ctx.beginPath();
-
-
         ctx.arc(
-
             x,
-
             y,
-
             3,
-
             0,
-
             Math.PI * 2
-
         );
-
-
         ctx.stroke();
-
-
         ctx.restore();
-
-
         return;
-
     }
-
-
     /*
      * Meteorological wind barbs point toward the direction
      * FROM which the wind is coming.
@@ -4063,58 +4032,36 @@ function drawWindBarb(
     const shaftX =
         -u /
         speed;
-
-
     const shaftY =
         v /
         speed;
-
-
     const normalX =
         -shaftY;
-
-
     const normalY =
         shaftX;
-
-
     const staffLength =
         23;
-
-
     const tipX =
         x +
         shaftX *
         staffLength;
-
-
     const tipY =
         y +
         shaftY *
         staffLength;
-
-
     /*
      * Main staff.
      */
     ctx.beginPath();
-
-
     ctx.moveTo(
         x,
         y
     );
-
-
     ctx.lineTo(
         tipX,
         tipY
     );
-
-
     ctx.stroke();
-
-
     /*
      * Round to nearest 5 kt for standard barb notation.
      */
@@ -4124,262 +4071,160 @@ function drawWindBarb(
             5
         ) *
         5;
-
-
     let position =
         staffLength;
-
-
     const featherLength =
         8;
-
-
     const featherSpacing =
         4;
-
-
     /*
      * 50-kt flags.
      */
     while (
         remaining >= 50
     ) {
-
         const baseX =
             x +
             shaftX *
             position;
-
-
         const baseY =
             y +
             shaftY *
             position;
-
-
         const nextPosition =
             position -
             featherSpacing;
-
-
         const nextX =
             x +
             shaftX *
             nextPosition;
-
-
         const nextY =
             y +
             shaftY *
             nextPosition;
-
-
         const flagX =
             nextX +
             normalX *
             featherLength;
-
-
         const flagY =
             nextY +
             normalY *
             featherLength;
-
-
         ctx.beginPath();
-
-
         ctx.moveTo(
             baseX,
             baseY
         );
-
-
         ctx.lineTo(
             flagX,
             flagY
         );
-
-
         ctx.lineTo(
             nextX,
             nextY
         );
-
-
         ctx.closePath();
-
-
         ctx.fill();
-
-
         remaining -=
             50;
-
-
         position -=
             featherSpacing +
             1;
-
     }
-
-
     /*
      * 10-kt full barbs.
      */
     while (
         remaining >= 10
     ) {
-
         const baseX =
             x +
             shaftX *
             position;
-
-
         const baseY =
             y +
             shaftY *
             position;
-
-
         ctx.beginPath();
-
-
         ctx.moveTo(
             baseX,
             baseY
         );
-
-
         ctx.lineTo(
-
             baseX +
             normalX *
             featherLength,
-
             baseY +
             normalY *
             featherLength
-
         );
-
-
         ctx.stroke();
-
-
         remaining -=
             10;
-
-
         position -=
             featherSpacing;
-
     }
-
-
     /*
      * 5-kt half barb.
      */
     if (
         remaining >= 5
     ) {
-
         const baseX =
             x +
             shaftX *
             position;
-
-
         const baseY =
             y +
             shaftY *
             position;
-
-
         ctx.beginPath();
-
-
         ctx.moveTo(
             baseX,
             baseY
         );
-
-
         ctx.lineTo(
-
             baseX +
             normalX *
             featherLength *
             0.5,
-
             baseY +
             normalY *
             featherLength *
             0.5
-
         );
-
-
         ctx.stroke();
-
     }
-
-
     ctx.restore();
-
 }
-
-
 /* =========================================================================================
    RENDER ONE VECTOR FIELD
    ========================================================================================= */
-
 async function renderVectorField(
     field,
     generation,
     gridOffset = 0
 ) {
-
     const z =
         getDataZoom();
-
-
     await preloadVectorTiles(
-
         field,
-
         z
-
     );
-
-
     if (
         generation !==
         vectorRenderGeneration
     ) {
-
         return;
-
     }
-
-
     const rect =
         mapWrapper.getBoundingClientRect();
-
-
     const width =
         rect.width;
-
-
     const height =
         rect.height;
-
-
     const spacing =
         getBarbSpacing();
-
-
     /*
      * When both wind fields are enabled, the two grids are shifted
      * slightly so the barbs do not lie exactly on top of one another.
@@ -4388,187 +4233,110 @@ async function renderVectorField(
         let y =
             spacing / 2 +
             gridOffset;
-
         y <
             height;
-
         y +=
             spacing
     ) {
-
         for (
             let x =
                 spacing / 2 +
                 gridOffset;
-
             x <
                 width;
-
             x +=
                 spacing
         ) {
-
             const lngLat =
                 map.unproject([
-
                     x,
-
                     y
-
                 ]);
-
-
             const vector =
                 sampleVector(
-
                     field,
-
                     lngLat.lng,
-
                     lngLat.lat,
-
                     z
-
                 );
-
-
             if (!vector) {
-
                 continue;
-
             }
-
-
             if (
                 !Number.isFinite(
                     vector.u
                 ) ||
-
                 !Number.isFinite(
                     vector.v
                 )
             ) {
-
                 continue;
-
             }
-
-
             drawWindBarb(
-
                 vectorCtx,
-
                 x,
-
                 y,
-
                 vector.u,
-
                 vector.v
-
             );
-
         }
-
     }
-
 }
-
-
 /* =========================================================================================
    VECTOR RENDERER
    ========================================================================================= */
-
 async function renderVectors() {
-
     const generation =
         ++vectorRenderGeneration;
-
-
     prepareContext(
-
         vectorCanvas,
-
         vectorCtx
-
     );
-
-
     vectorCanvas.style.transform =
         "none";
-
-
     const jobs = [];
-
-
     const bothEnabled =
         activeOverlays.surfaceWind &&
         activeOverlays.srWind46;
-
-
     /*
      * Surface wind.
      */
     if (
         activeOverlays.surfaceWind
     ) {
-
         jobs.push(
-
             renderVectorField(
-
                 "sfc_wind",
-
                 generation,
-
                 bothEnabled
                     ? -7
                     : 0
-
             )
-
         );
-
     }
-
-
     /*
      * 4–6 km storm-relative wind.
      */
     if (
         activeOverlays.srWind46
     ) {
-
         jobs.push(
-
             renderVectorField(
-
                 "srwind_4_6km",
-
                 generation,
-
                 bothEnabled
                     ? 7
                     : 0
-
             )
-
         );
-
     }
-
-
     await Promise.all(
         jobs
     );
-
 }
-
-
 /* =========================================================================================
    MARCHING-SQUARES INTERPOLATION
    ========================================================================================= */
-
 function interpolateContourPoint(
     x1,
     y1,
@@ -4578,24 +4346,18 @@ function interpolateContourPoint(
     value2,
     level
 ) {
-
     let fraction =
         0.5;
-
-
     if (
         Number.isFinite(
             value1
         ) &&
-
         Number.isFinite(
             value2
         ) &&
-
         value2 !==
             value1
     ) {
-
         fraction =
             (
                 level -
@@ -4605,28 +4367,16 @@ function interpolateContourPoint(
                 value2 -
                 value1
             );
-
     }
-
-
     fraction =
         Math.max(
-
             0,
-
             Math.min(
-
                 1,
-
                 fraction
-
             )
-
         );
-
-
     return {
-
         x:
             x1 +
             (
@@ -4634,7 +4384,6 @@ function interpolateContourPoint(
                 x1
             ) *
             fraction,
-
         y:
             y1 +
             (
@@ -4642,16 +4391,11 @@ function interpolateContourPoint(
                 y1
             ) *
             fraction
-
     };
-
 }
-
-
 /* =========================================================================================
    MARCHING-SQUARES CELL
    ========================================================================================= */
-
 function getMarchingSegments(
     x,
     y,
@@ -4662,7 +4406,6 @@ function getMarchingSegments(
     valueBottomLeft,
     level
 ) {
-
     /*
      * A missing corner invalidates this cell.
      */
@@ -4670,105 +4413,58 @@ function getMarchingSegments(
         !Number.isFinite(
             valueTopLeft
         ) ||
-
         !Number.isFinite(
             valueTopRight
         ) ||
-
         !Number.isFinite(
             valueBottomRight
         ) ||
-
         !Number.isFinite(
             valueBottomLeft
         )
     ) {
-
         return [];
-
     }
-
-
     const top =
         interpolateContourPoint(
-
             x,
-
             y,
-
             valueTopLeft,
-
             x + step,
-
             y,
-
             valueTopRight,
-
             level
-
         );
-
-
     const right =
         interpolateContourPoint(
-
             x + step,
-
             y,
-
             valueTopRight,
-
             x + step,
-
             y + step,
-
             valueBottomRight,
-
             level
-
         );
-
-
     const bottom =
         interpolateContourPoint(
-
             x,
-
             y + step,
-
             valueBottomLeft,
-
             x + step,
-
             y + step,
-
             valueBottomRight,
-
             level
-
         );
-
-
     const left =
         interpolateContourPoint(
-
             x,
-
             y,
-
             valueTopLeft,
-
             x,
-
             y + step,
-
             valueBottomLeft,
-
             level
-
         );
-
-
     /*
      * Standard marching-squares bit mask:
      *
@@ -4784,115 +4480,80 @@ function getMarchingSegments(
                 ? 8
                 : 0
         ) |
-
         (
             valueTopRight >=
                 level
                 ? 4
                 : 0
         ) |
-
         (
             valueBottomRight >=
                 level
                 ? 2
                 : 0
         ) |
-
         (
             valueBottomLeft >=
                 level
                 ? 1
                 : 0
         );
-
-
     switch (mask) {
-
         case 0:
-
         case 15:
-
             return [];
-
-
         case 1:
-
         case 14:
-
             return [
                 [
                     left,
                     bottom
                 ]
             ];
-
-
         case 2:
-
         case 13:
-
             return [
                 [
                     bottom,
                     right
                 ]
             ];
-
-
         case 3:
-
         case 12:
-
             return [
                 [
                     left,
                     right
                 ]
             ];
-
-
         case 4:
-
         case 11:
-
             return [
                 [
                     top,
                     right
                 ]
             ];
-
-
         case 6:
-
         case 9:
-
             return [
                 [
                     top,
                     bottom
                 ]
             ];
-
-
         case 7:
-
         case 8:
-
             return [
                 [
                     left,
                     top
                 ]
             ];
-
-
         /*
          * Ambiguous saddle-point case.
          */
         case 5: {
-
             const center =
                 (
                     valueTopLeft +
@@ -4901,52 +4562,36 @@ function getMarchingSegments(
                     valueBottomLeft
                 ) /
                 4;
-
-
             if (
                 center >=
                 level
             ) {
-
                 return [
-
                     [
                         top,
                         left
                     ],
-
                     [
                         right,
                         bottom
                     ]
-
                 ];
-
             }
-
-
             return [
-
                 [
                     top,
                     right
                 ],
-
                 [
                     left,
                     bottom
                 ]
-
             ];
-
         }
-
-
         /*
          * Other ambiguous saddle-point case.
          */
         case 10: {
-
             const center =
                 (
                     valueTopLeft +
@@ -4955,921 +4600,604 @@ function getMarchingSegments(
                     valueBottomLeft
                 ) /
                 4;
-
-
             if (
                 center >=
                 level
             ) {
-
                 return [
-
                     [
                         top,
                         right
                     ],
-
                     [
                         left,
                         bottom
                     ]
-
                 ];
-
             }
-
-
             return [
-
                 [
                     top,
                     left
                 ],
-
                 [
                     right,
                     bottom
                 ]
-
             ];
-
         }
-
-
         default:
-
             return [];
-
     }
-
 }
-
-
 /* =========================================================================================
-   MSLP LABEL
+   CONTOUR SAMPLING GRID
    ========================================================================================= */
-
-function drawMslpLabel(
-    ctx,
-    x,
-    y,
-    angle,
-    level
+function getContourGridStep() {
+    const zoom =
+        map.getZoom();
+    if (zoom < 4.5) {
+        return 8;
+    }
+    if (zoom < 5.5) {
+        return 7;
+    }
+    if (zoom < 6.5) {
+        return 6;
+    }
+    if (zoom < 7.5) {
+        return 5;
+    }
+    return 4;
+}
+/* =========================================================================================
+   BUILD CONTOUR GRID
+   ========================================================================================= */
+function buildContourGrid(
+    field,
+    z,
+    step
 ) {
-
-    /*
-     * Keep text from becoming upside down when the local contour
-     * direction points leftward.
-     */
-    if (
-        angle >
-        Math.PI / 2
-    ) {
-
-        angle -=
-            Math.PI;
-
-    }
-
-
-    if (
-        angle <
-        -Math.PI / 2
-    ) {
-
-        angle +=
-            Math.PI;
-
-    }
-
-
-    ctx.save();
-
-
-    ctx.translate(
-        x,
-        y
-    );
-
-
-    ctx.rotate(
-        angle
-    );
-
-
-    ctx.font =
-        "bold 11px Arial, Helvetica, sans-serif";
-
-
-    ctx.textAlign =
-        "center";
-
-
-    ctx.textBaseline =
-        "middle";
-
-
-    /*
-     * Thin white halo.
-     *
-     * This is intentionally much lighter than the earlier version so
-     * the labels remain readable without looking overly bold.
-     */
-    ctx.lineWidth =
-        1.5;
-
-
-    ctx.lineJoin =
-        "round";
-
-
-    ctx.strokeStyle =
-        "rgba(255,255,255,0.88)";
-
-
-    ctx.strokeText(
-
-        String(
-            Math.round(
-                level
-            )
-        ),
-
-        0,
-
-        0
-
-    );
-
-
-    ctx.fillStyle =
-        "#000000";
-
-
-    ctx.fillText(
-
-        String(
-            Math.round(
-                level
-            )
-        ),
-
-        0,
-
-        0
-
-    );
-
-
-    ctx.restore();
-
-}
-
-
-/* =========================================================================================
-   DISTANCE BETWEEN LABELS
-   ========================================================================================= */
-
-function labelTooClose(
-    x,
-    y,
-    existingLabels,
-    minimumDistance
-) {
-
-    for (
-        const label
-        of
-        existingLabels
-    ) {
-
-        const dx =
-            x -
-            label.x;
-
-
-        const dy =
-            y -
-            label.y;
-
-
-        if (
-            Math.hypot(
-                dx,
-                dy
-            ) <
-            minimumDistance
-        ) {
-
-            return true;
-
-        }
-
-    }
-
-
-    return false;
-
-}
-
-
-/* =========================================================================================
-   MSLP CONTOUR RENDERER
-   ========================================================================================= */
-
-async function renderContours() {
-
-    const generation =
-        ++contourRenderGeneration;
-
-
-    /*
-     * Lines and labels use separate canvases.
-     */
-    prepareContext(
-
-        contourCanvas,
-
-        contourCtx
-
-    );
-
-
-    prepareContext(
-
-        contourLabelCanvas,
-
-        contourLabelCtx
-
-    );
-
-
-    contourCanvas.style.transform =
-        "none";
-
-
-    contourLabelCanvas.style.transform =
-        "none";
-
-
-    /*
-     * MSLP is an independent overlay.
-     */
-    if (
-        !activeOverlays.mslp
-    ) {
-
-        return;
-
-    }
-
-
-    const field =
-        "sfc_mslp";
-
-
-    const metadata =
-        contourMetadata[
-            field
-        ];
-
-
-    if (!metadata) {
-
-        console.warn(
-            "Surface MSLP metadata is not available."
-        );
-
-
-        return;
-
-    }
-
-
-    const z =
-        getDataZoom();
-
-
-    /*
-     * Make sure every numerical tile needed by the visible viewport
-     * has finished loading before contour generation begins.
-     */
-    await preloadContourTiles(
-
-        field,
-
-        z
-
-    );
-
-
-    if (
-        generation !==
-        contourRenderGeneration
-    ) {
-
-        return;
-
-    }
-
-
     const rect =
         mapWrapper.getBoundingClientRect();
-
-
     const width =
-        Math.max(
-
-            1,
-
-            Math.round(
-                rect.width
-            )
-
-        );
-
-
+        rect.width;
     const height =
-        Math.max(
-
-            1,
-
-            Math.round(
-                rect.height
-            )
-
-        );
-
-
-    /*
-     * Sample MSLP every four screen pixels.
-     *
-     * The source field itself is still sampled with numerical bilinear
-     * interpolation from the underlying tiles.
-     */
-    const step =
-        4;
-
-
+        rect.height;
     const columns =
         Math.ceil(
             width /
             step
         ) +
         1;
-
-
     const rows =
         Math.ceil(
             height /
             step
         ) +
         1;
-
-
     const values =
         new Float32Array(
-
             columns *
             rows
-
         );
-
-
     values.fill(
         NaN
     );
-
-
-    let minimumPressure =
-        Infinity;
-
-
-    let maximumPressure =
-        -Infinity;
-
-
-    /*
-     * Build a screen-space pressure grid.
-     */
     for (
         let row = 0;
         row < rows;
         row++
     ) {
-
-        const screenY =
+        const y =
             Math.min(
-
-                height,
-
-                row *
-                step
-
+                row * step,
+                height
             );
-
-
         for (
             let column = 0;
             column < columns;
             column++
         ) {
-
-            const screenX =
+            const x =
                 Math.min(
-
-                    width,
-
-                    column *
-                    step
-
+                    column * step,
+                    width
                 );
-
-
             const lngLat =
                 map.unproject([
-
-                    screenX,
-
-                    screenY
-
+                    x,
+                    y
                 ]);
-
-
-            const pressure =
-                sampleScalar(
-
+            const value =
+                sampleContour(
                     field,
-
                     lngLat.lng,
-
                     lngLat.lat,
-
-                    z,
-
-                    true
-
+                    z
                 );
-
-
-            if (
-                pressure === null ||
-                !Number.isFinite(
-                    pressure
-                )
-            ) {
-
-                continue;
-
-            }
-
-
             values[
-                row *
-                columns +
+                row * columns +
                 column
             ] =
-                pressure;
-
-
-            minimumPressure =
-                Math.min(
-
-                    minimumPressure,
-
-                    pressure
-
-                );
-
-
-            maximumPressure =
-                Math.max(
-
-                    maximumPressure,
-
-                    pressure
-
-                );
-
+                Number.isFinite(value)
+                    ? value
+                    : NaN;
         }
-
     }
-
-
+    return {
+        values,
+        columns,
+        rows,
+        width,
+        height
+    };
+}
+/* =========================================================================================
+   CONTOUR LABEL COLLISION
+   ========================================================================================= */
+function labelTooClose(
+    x,
+    y,
+    acceptedLabels,
+    minimumDistance
+) {
+    const minimumDistanceSquared =
+        minimumDistance *
+        minimumDistance;
+    for (
+        const label
+        of
+        acceptedLabels
+    ) {
+        const dx =
+            x -
+            label.x;
+        const dy =
+            y -
+            label.y;
+        if (
+            dx * dx +
+            dy * dy <
+            minimumDistanceSquared
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+/* =========================================================================================
+   DRAW CONTOUR LABEL
+   ========================================================================================= */
+function drawMslpLabel(
+    ctx,
+    x,
+    y,
+    angle,
+    level,
+    color = "#000000"
+) {
+    /*
+     * Keep labels generally upright.
+     */
+    let textAngle =
+        angle;
+    if (
+        textAngle >
+        Math.PI / 2
+    ) {
+        textAngle -=
+            Math.PI;
+    }
+    if (
+        textAngle <
+        -Math.PI / 2
+    ) {
+        textAngle +=
+            Math.PI;
+    }
+    ctx.save();
+    ctx.translate(
+        x,
+        y
+    );
+    ctx.rotate(
+        textAngle
+    );
+    ctx.font =
+        "bold 11px Arial, Helvetica, sans-serif";
+    ctx.textAlign =
+        "center";
+    ctx.textBaseline =
+        "middle";
+    const text =
+        Number.isInteger(level)
+            ? String(level)
+            : level.toFixed(1);
+    /*
+     * White halo keeps labels readable over geography and shading.
+     */
+    ctx.lineWidth =
+        4;
+    ctx.lineJoin =
+        "round";
+    ctx.strokeStyle =
+        "rgba(255,255,255,0.96)";
+    ctx.strokeText(
+        text,
+        0,
+        0
+    );
+    ctx.fillStyle =
+        color;
+    ctx.fillText(
+        text,
+        0,
+        0
+    );
+    ctx.restore();
+}
+/* =========================================================================================
+   RENDER ONE CONTOUR FIELD
+   ========================================================================================= */
+async function renderContourField(
+    field,
+    generation,
+    acceptedLabels
+) {
+    const metadata =
+        contourMetadata[field];
+    const definition =
+        CONTOUR_FIELDS[field];
+    if (
+        !metadata ||
+        !definition
+    ) {
+        return;
+    }
+    const z =
+        getDataZoom();
+    await preloadContourTiles(
+        field,
+        z
+    );
+    if (
+        generation !==
+        contourRenderGeneration
+    ) {
+        return;
+    }
+    const step =
+        getContourGridStep();
+    const grid =
+        buildContourGrid(
+            field,
+            z,
+            step
+        );
+    const {
+        values,
+        columns,
+        rows,
+        width,
+        height
+    } = grid;
+    let minimumValue =
+        Infinity;
+    let maximumValue =
+        -Infinity;
+    for (
+        let i = 0;
+        i < values.length;
+        i++
+    ) {
+        const value =
+            values[i];
+        if (
+            !Number.isFinite(value)
+        ) {
+            continue;
+        }
+        if (
+            value <
+            minimumValue
+        ) {
+            minimumValue =
+                value;
+        }
+        if (
+            value >
+            maximumValue
+        ) {
+            maximumValue =
+                value;
+        }
+    }
     if (
         !Number.isFinite(
-            minimumPressure
+            minimumValue
         ) ||
-
         !Number.isFinite(
-            maximumPressure
+            maximumValue
         )
     ) {
-
         return;
-
     }
-
-
-    /*
-     * Metadata currently specifies 2 hPa.
-     *
-     * Fall back to the SPC-style 2-hPa interval if display.interval is
-     * ever missing.
-     */
     const interval =
         Number(
-
-            metadata.display &&
-            metadata.display.interval
-
-        ) ||
-        2;
-
-
-    const firstLevel =
+            (
+                metadata.display &&
+                metadata.display.interval
+            ) ||
+            definition.interval
+        );
+    if (
+        !Number.isFinite(interval) ||
+        interval <= 0
+    ) {
+        return;
+    }
+    const configuredMinimum =
+        metadata.display &&
+        metadata.display.minimum !== undefined &&
+        metadata.display.minimum !== null
+            ? Number(metadata.display.minimum)
+            : (
+                definition.minimum !== undefined &&
+                definition.minimum !== null
+                    ? Number(definition.minimum)
+                    : null
+            );
+    let firstLevel =
         Math.ceil(
-
-            minimumPressure /
-            interval
-
-        ) *
-        interval;
-
-
+            minimumValue / interval
+        ) * interval;
+    if (
+        Number.isFinite(configuredMinimum)
+    ) {
+        firstLevel =
+            Math.max(
+                firstLevel,
+                Math.ceil(
+                    configuredMinimum / interval
+                ) * interval
+            );
+    }
     const lastLevel =
         Math.floor(
-
-            maximumPressure /
-            interval
-
-        ) *
-        interval;
-
-
-    /*
-     * Labels are collected while the contour segments are generated,
-     * then drawn later on contourLabelCanvas.
-     */
-    const labelCandidates =
-        [];
-
-
-    contourCtx.save();
-
-
-    contourCtx.strokeStyle =
+            maximumValue / interval
+        ) * interval;
+    if (firstLevel > lastLevel) {
+        return;
+    }
+    const metadataColorScheme =
+        metadata.display &&
+        metadata.display.color_scheme
+            ? metadata.display.color_scheme
+            : null;
+    const colorScheme =
+        metadataColorScheme ||
+        definition.colorScheme ||
+        "fixed";
+    const fixedColor =
+        (
+            metadata.display &&
+            metadata.display.color
+        ) ||
+        definition.color ||
         "#000000";
-
-
+    const labelsEnabled =
+        !metadata.display ||
+        metadata.display.labels !== false;
+    const labelCandidates = [];
+    contourCtx.save();
     contourCtx.lineWidth =
-        1.15;
-
-
-    contourCtx.lineJoin =
-        "round";
-
-
-    contourCtx.lineCap =
-        "round";
-
-
-    /*
-     * Build every 2-hPa contour.
-     */
+        field === "dcape"
+            ? 1.25
+            : 1.15;
+    contourCtx.lineJoin = "round";
+    contourCtx.lineCap = "round";
     for (
-        let level =
-            firstLevel;
-
-        level <=
-            lastLevel;
-
-        level +=
-            interval
+        let level = firstLevel;
+        level <= lastLevel;
+        level += interval
     ) {
-
+        const contourColor =
+            colorScheme === "cape"
+                ? getCapeColor(level)
+                : fixedColor;
+        contourCtx.strokeStyle =
+            contourColor;
         contourCtx.beginPath();
-
-
-        let segmentCounter =
-            0;
-
-
+        let segmentCounter = 0;
         for (
             let row = 0;
             row < rows - 1;
             row++
         ) {
-
-            const y =
-                row *
-                step;
-
-
+            const y = row * step;
             for (
                 let column = 0;
                 column < columns - 1;
                 column++
             ) {
-
-                const x =
-                    column *
-                    step;
-
-
+                const x = column * step;
                 const valueTopLeft =
                     values[
-
-                        row *
-                        columns +
-                        column
-
+                        row * columns + column
                     ];
-
-
                 const valueTopRight =
                     values[
-
-                        row *
-                        columns +
-                        column +
-                        1
-
+                        row * columns + column + 1
                     ];
-
-
                 const valueBottomLeft =
                     values[
-
-                        (
-                            row + 1
-                        ) *
-                        columns +
-                        column
-
+                        (row + 1) * columns + column
                     ];
-
-
                 const valueBottomRight =
                     values[
-
-                        (
-                            row + 1
-                        ) *
-                        columns +
-                        column +
-                        1
-
+                        (row + 1) * columns + column + 1
                     ];
-
-
                 const segments =
                     getMarchingSegments(
-
                         x,
-
                         y,
-
                         step,
-
                         valueTopLeft,
-
                         valueTopRight,
-
                         valueBottomRight,
-
                         valueBottomLeft,
-
                         level
-
                     );
-
-
                 for (
                     const segment
                     of
                     segments
                 ) {
-
-                    const pointA =
-                        segment[0];
-
-
-                    const pointB =
-                        segment[1];
-
-
+                    const pointA = segment[0];
+                    const pointB = segment[1];
                     contourCtx.moveTo(
-
                         pointA.x,
-
                         pointA.y
-
                     );
-
-
                     contourCtx.lineTo(
-
                         pointB.x,
-
                         pointB.y
-
                     );
-
-
                     segmentCounter++;
-
-
-                    /*
-                     * Periodically select a segment as a potential label
-                     * location.
-                     *
-                     * Labels near the edges are rejected so they are not
-                     * clipped by the map container.
-                     */
                     if (
-                        segmentCounter %
-                        180 ===
-                        0
+                        labelsEnabled &&
+                        segmentCounter % 180 === 0
                     ) {
-
                         const labelX =
-                            (
-                                pointA.x +
-                                pointB.x
-                            ) /
-                            2;
-
-
+                            (pointA.x + pointB.x) / 2;
                         const labelY =
-                            (
-                                pointA.y +
-                                pointB.y
-                            ) /
-                            2;
-
-
+                            (pointA.y + pointB.y) / 2;
                         if (
                             labelX > 35 &&
-                            labelX <
-                                width - 35 &&
-
+                            labelX < width - 35 &&
                             labelY > 20 &&
-                            labelY <
-                                height - 20
+                            labelY < height - 20
                         ) {
-
                             const angle =
                                 Math.atan2(
-
-                                    pointB.y -
-                                    pointA.y,
-
-                                    pointB.x -
-                                    pointA.x
-
+                                    pointB.y - pointA.y,
+                                    pointB.x - pointA.x
                                 );
-
-
                             labelCandidates.push({
-
-                                x:
-                                    labelX,
-
-                                y:
-                                    labelY,
-
+                                x: labelX,
+                                y: labelY,
                                 angle,
-
-                                level
-
+                                level,
+                                color: contourColor
                             });
-
                         }
-
                     }
-
                 }
-
             }
-
         }
-
-
         contourCtx.stroke();
-
     }
-
-
     contourCtx.restore();
-
-
     if (
         generation !==
         contourRenderGeneration
     ) {
-
         return;
-
     }
-
-
-    /* =====================================================================================
-       DRAW MSLP LABELS
-       =====================================================================================
-
-       IMPORTANT:
-
-       These are NOT drawn on contourCanvas.
-
-       They are drawn on contourLabelCanvas, whose z-index is 6.
-
-       That places the pressure labels above:
-
-         - filled CAPE/dewpoint shading
-         - wind barbs
-         - MSLP contour lines
-         - county boundaries
-         - state boundaries
-         - city labels
-       ===================================================================================== */
-
+    if (!labelsEnabled) {
+        return;
+    }
     contourLabelCtx.save();
-
-
-    const acceptedLabels =
-        [];
-
-
-    /*
-     * Keep labels separated enough that the map does not become crowded.
-     */
     const minimumLabelDistance =
-        95;
-
-
+        field === "dcape"
+            ? 80
+            : 95;
     for (
         const candidate
         of
         labelCandidates
     ) {
-
         if (
             labelTooClose(
-
                 candidate.x,
-
                 candidate.y,
-
                 acceptedLabels,
-
                 minimumLabelDistance
-
             )
         ) {
-
             continue;
-
         }
-
-
         drawMslpLabel(
-
             contourLabelCtx,
-
             candidate.x,
-
             candidate.y,
-
             candidate.angle,
-
-            candidate.level
-
+            candidate.level,
+            candidate.color
         );
-
-
         acceptedLabels.push({
-
-            x:
-                candidate.x,
-
-            y:
-                candidate.y
-
+            x: candidate.x,
+            y: candidate.y
         });
-
     }
-
-
     contourLabelCtx.restore();
-
+}
+/* =========================================================================================
+   CONTOUR RENDERER
+   ========================================================================================= */
+async function renderContours() {
+    const generation =
+        ++contourRenderGeneration;
+    prepareContext(
+        contourCanvas,
+        contourCtx
+    );
+    prepareContext(
+        contourLabelCanvas,
+        contourLabelCtx
+    );
+    contourCanvas.style.transform =
+        "none";
+    contourLabelCanvas.style.transform =
+        "none";
+    const fields = [];
+    if (activeOverlays.mslp) {
+        fields.push("sfc_mslp");
+    }
+    if (activeOverlays.dcape) {
+        fields.push("dcape");
+    }
+    if (fields.length === 0) {
+        return;
+    }
+    const acceptedLabels = [];
+    /*
+     * Render MSLP first and DCAPE second. Both remain independent
+     * and may be displayed simultaneously.
+     */
+    for (
+        const field
+        of
+        fields
+    ) {
+        await renderContourField(
+            field,
+            generation,
+            acceptedLabels
+        );
+        if (
+            generation !==
+            contourRenderGeneration
+        ) {
+            return;
+        }
+    }
 }
 /* =========================================================================================
    LOAD GEOGRAPHY
    ========================================================================================= */
-
 async function loadGeography() {
-
     /*
      * counties-10m.json contains both counties and states.
      */
@@ -5877,21 +5205,13 @@ async function loadGeography() {
         await fetch(
             "data/counties-10m.json"
         );
-
-
     if (!response.ok) {
-
         throw new Error(
             "Unable to load data/counties-10m.json"
         );
-
     }
-
-
     const topology =
         await response.json();
-
-
     /*
      * Counties.
      */
@@ -5899,23 +5219,14 @@ async function loadGeography() {
         topology.objects &&
         topology.objects.counties
     ) {
-
         const counties =
             topojson.feature(
-
                 topology,
-
                 topology.objects.counties
-
             );
-
-
         countyFeatures =
             counties.features || [];
-
     }
-
-
     /*
      * States.
      */
@@ -5923,23 +5234,14 @@ async function loadGeography() {
         topology.objects &&
         topology.objects.states
     ) {
-
         const states =
             topojson.feature(
-
                 topology,
-
                 topology.objects.states
-
             );
-
-
         stateFeatures =
             states.features || [];
-
     }
-
-
     /*
      * Cities are stored separately as GeoJSON.
      *
@@ -5947,233 +5249,145 @@ async function loadGeography() {
      * from working.
      */
     try {
-
         const cityResponse =
             await fetch(
                 "data/cities.geojson"
             );
-
-
         if (
             cityResponse.ok
         ) {
-
             const cities =
                 await cityResponse.json();
-
-
             cityFeatures =
                 cities.features || [];
-
         }
         else {
-
             console.warn(
                 "Unable to load data/cities.geojson"
             );
-
         }
-
     }
     catch (error) {
-
         console.warn(
             "Cities could not be loaded:",
             error
         );
-
     }
-
 }
-
-
 /* =========================================================================================
    DRAW GEOJSON LINE GEOMETRY
    ========================================================================================= */
-
 function drawGeoJSONLine(
     geometry,
     ctx
 ) {
-
     if (!geometry) {
-
         return;
-
     }
-
-
     /*
      * Draw one coordinate sequence.
      */
     const drawLine =
         coordinates => {
-
             if (
                 !coordinates ||
                 coordinates.length === 0
             ) {
-
                 return;
-
             }
-
-
             let started =
                 false;
-
-
             for (
                 const coordinate
                 of
                 coordinates
             ) {
-
                 if (
                     !Array.isArray(
                         coordinate
                     ) ||
-
                     coordinate.length < 2
                 ) {
-
                     continue;
-
                 }
-
-
                 const point =
-                    map.project(
-                        coordinate
-                    );
-
-
+                    map.project([
+                        coordinate[0],
+                        coordinate[1]
+                    ]);
                 if (!started) {
-
                     ctx.moveTo(
-
                         point.x,
-
                         point.y
-
                     );
-
-
                     started =
                         true;
-
                 }
                 else {
-
                     ctx.lineTo(
-
                         point.x,
-
                         point.y
-
                     );
-
                 }
-
             }
-
         };
-
-
-    /*
-     * LineString
-     */
     if (
         geometry.type ===
         "LineString"
     ) {
-
         drawLine(
             geometry.coordinates
         );
-
     }
-
-
-    /*
-     * MultiLineString
-     */
     else if (
         geometry.type ===
         "MultiLineString"
     ) {
-
         for (
             const line
             of
             geometry.coordinates
         ) {
-
             drawLine(
                 line
             );
-
         }
-
     }
-
-
-    /*
-     * Polygon
-     */
     else if (
         geometry.type ===
         "Polygon"
     ) {
-
         for (
             const ring
             of
             geometry.coordinates
         ) {
-
             drawLine(
                 ring
             );
-
         }
-
     }
-
-
-    /*
-     * MultiPolygon
-     */
     else if (
         geometry.type ===
         "MultiPolygon"
     ) {
-
         for (
             const polygon
             of
             geometry.coordinates
         ) {
-
             for (
                 const ring
                 of
                 polygon
             ) {
-
                 drawLine(
                     ring
                 );
-
             }
-
         }
-
     }
-
 }
-
-
 /* =========================================================================================
    CITY PROPERTY HELPERS
    ========================================================================================= */
@@ -6181,10 +5395,8 @@ function drawGeoJSONLine(
 function getCityName(
     feature
 ) {
-
     const properties =
         feature.properties || {};
-
 
     return (
         properties.name ||
@@ -6193,17 +5405,13 @@ function getCityName(
         properties.CITY ||
         ""
     );
-
 }
-
 
 function getCityClass(
     feature
 ) {
-
     const properties =
         feature.properties || {};
-
 
     const value =
         properties.city_class ??
@@ -6212,19 +5420,16 @@ function getCityClass(
         properties.scalerank ??
         5;
 
-
     const numeric =
         Number(
             value
         );
-
 
     return Number.isFinite(
         numeric
     )
         ? numeric
         : 5;
-
 }
 
 
@@ -6236,18 +5441,15 @@ function cityVisibleAtZoom(
     feature,
     zoom
 ) {
-
     const name =
         getCityName(
             feature
         );
 
-
     const cityClass =
         getCityClass(
             feature
         );
-
 
     /*
      * North Platte is promoted so it appears with the regional-class
@@ -6257,13 +5459,10 @@ function cityVisibleAtZoom(
         name.toLowerCase() ===
         "north platte"
     ) {
-
         return (
             zoom >= 4
         );
-
     }
-
 
     /*
      * Major cities.
@@ -6271,13 +5470,10 @@ function cityVisibleAtZoom(
     if (
         cityClass <= 2
     ) {
-
         return (
             zoom >= 2
         );
-
     }
-
 
     /*
      * Regional cities.
@@ -6285,13 +5481,10 @@ function cityVisibleAtZoom(
     if (
         cityClass === 3
     ) {
-
         return (
             zoom >= 4
         );
-
     }
-
 
     /*
      * Local cities.
@@ -6299,13 +5492,10 @@ function cityVisibleAtZoom(
     if (
         cityClass === 4
     ) {
-
         return (
             zoom >= 5
         );
-
     }
-
 
     /*
      * Small cities.
@@ -6313,7 +5503,6 @@ function cityVisibleAtZoom(
     return (
         zoom >= 6
     );
-
 }
 
 
@@ -6324,18 +5513,15 @@ function cityVisibleAtZoom(
 function getCityFont(
     feature
 ) {
-
     const name =
         getCityName(
             feature
         );
 
-
     const cityClass =
         getCityClass(
             feature
         );
-
 
     /*
      * North Platte receives the regional-city treatment.
@@ -6344,40 +5530,30 @@ function getCityFont(
         name.toLowerCase() ===
         "north platte"
     ) {
-
         return (
             "12px Arial, Helvetica, sans-serif"
         );
-
     }
-
 
     if (
         cityClass <= 2
     ) {
-
         return (
             "12px Arial, Helvetica, sans-serif"
         );
-
     }
-
 
     if (
         cityClass === 3
     ) {
-
         return (
             "11px Arial, Helvetica, sans-serif"
         );
-
     }
-
 
     return (
         "10px Arial, Helvetica, sans-serif"
     );
-
 }
 
 
@@ -6386,38 +5562,28 @@ function getCityFont(
    ========================================================================================= */
 
 function renderCities() {
-
     if (
         !citiesEnabled
     ) {
-
         return;
-
     }
-
 
     const zoom =
         map.getZoom();
 
-
     const rect =
         mapWrapper.getBoundingClientRect();
 
-
     geographyCtx.save();
-
 
     geographyCtx.textAlign =
         "center";
 
-
     geographyCtx.textBaseline =
         "middle";
 
-
     geographyCtx.lineJoin =
         "round";
-
 
     /*
      * There are intentionally NO city dots.
@@ -6429,17 +5595,13 @@ function renderCities() {
         of
         cityFeatures
     ) {
-
         if (
             !feature.geometry ||
             feature.geometry.type !==
                 "Point"
         ) {
-
             continue;
-
         }
-
 
         if (
             !cityVisibleAtZoom(
@@ -6447,47 +5609,34 @@ function renderCities() {
                 zoom
             )
         ) {
-
             continue;
-
         }
-
 
         const name =
             getCityName(
                 feature
             );
 
-
         if (!name) {
-
             continue;
-
         }
-
 
         const coordinates =
             feature.geometry.coordinates;
-
 
         if (
             !Array.isArray(
                 coordinates
             ) ||
-
             coordinates.length < 2
         ) {
-
             continue;
-
         }
-
 
         const point =
             map.project(
                 coordinates
             );
-
 
         /*
          * Skip labels well outside the visible map.
@@ -6496,22 +5645,17 @@ function renderCities() {
             point.x < -100 ||
             point.x >
                 rect.width + 100 ||
-
             point.y < -50 ||
             point.y >
                 rect.height + 50
         ) {
-
             continue;
-
         }
-
 
         geographyCtx.font =
             getCityFont(
                 feature
             );
-
 
         /*
          * Small white halo to preserve readability over weather fields.
@@ -6519,41 +5663,26 @@ function renderCities() {
         geographyCtx.strokeStyle =
             "rgba(255,255,255,0.95)";
 
-
         geographyCtx.lineWidth =
             3;
 
-
         geographyCtx.strokeText(
-
             name,
-
             point.x,
-
             point.y
-
         );
-
 
         geographyCtx.fillStyle =
             "#333333";
 
-
         geographyCtx.fillText(
-
             name,
-
             point.x,
-
             point.y
-
         );
-
     }
 
-
     geographyCtx.restore();
-
 }
 
 
@@ -6562,18 +5691,12 @@ function renderCities() {
    ========================================================================================= */
 
 function renderGeography() {
-
     prepareContext(
-
         geographyCanvas,
-
         geographyCtx
-
     );
 
-
     geographyCtx.save();
-
 
     /* -------------------------------------------------------------------------------------
        COUNTIES
@@ -6581,34 +5704,24 @@ function renderGeography() {
 
     geographyCtx.beginPath();
 
-
     geographyCtx.strokeStyle =
         "rgba(145,145,145,0.58)";
 
-
     geographyCtx.lineWidth =
         0.55;
-
 
     for (
         const feature
         of
         countyFeatures
     ) {
-
         drawGeoJSONLine(
-
             feature.geometry,
-
             geographyCtx
-
         );
-
     }
 
-
     geographyCtx.stroke();
-
 
     /* -------------------------------------------------------------------------------------
        STATES
@@ -6616,47 +5729,35 @@ function renderGeography() {
 
     geographyCtx.beginPath();
 
-
     geographyCtx.strokeStyle =
         "rgba(65,65,65,0.92)";
 
-
     geographyCtx.lineWidth =
         1.25;
-
 
     for (
         const feature
         of
         stateFeatures
     ) {
-
         drawGeoJSONLine(
-
             feature.geometry,
-
             geographyCtx
-
         );
-
     }
-
 
     geographyCtx.stroke();
 
-
     geographyCtx.restore();
-
 
     /*
      * Cities are drawn last on geographyCanvas so they appear above
      * county and state boundaries.
      *
-     * MSLP pressure labels remain above cities because those labels use
+     * Contour labels remain above cities because those labels use
      * contourLabelCanvas at z-index 6.
      */
     renderCities();
-
 }
 
 
@@ -6667,7 +5768,6 @@ function renderGeography() {
 function drawColorLegend(
     colors
 ) {
-
     /*
      * Your existing HTML uses #legend-bar.
      *
@@ -6677,15 +5777,11 @@ function drawColorLegend(
         !legendCanvas ||
         !legendCtx
     ) {
-
         return;
-
     }
-
 
     const rect =
         legendCanvas.getBoundingClientRect();
-
 
     /*
      * Use a fallback width/height in case the element has not yet
@@ -6693,39 +5789,26 @@ function drawColorLegend(
      */
     const width =
         Math.max(
-
             1,
-
             Math.round(
-
                 rect.width ||
                 legendCanvas.clientWidth ||
                 240
-
             )
-
         );
-
 
     const height =
         Math.max(
-
             1,
-
             Math.round(
-
                 rect.height ||
                 legendCanvas.clientHeight ||
                 18
-
             )
-
         );
-
 
     const dpr =
         window.devicePixelRatio || 1;
-
 
     legendCanvas.width =
         Math.round(
@@ -6733,79 +5816,53 @@ function drawColorLegend(
             dpr
         );
 
-
     legendCanvas.height =
         Math.round(
             height *
             dpr
         );
 
-
     legendCtx.setTransform(
-
         dpr,
-
         0,
-
         0,
-
         dpr,
-
         0,
-
         0
-
     );
-
 
     legendCtx.clearRect(
-
         0,
-
         0,
-
         width,
-
         height
-
     );
-
 
     const colorWidth =
         width /
         colors.length;
-
 
     for (
         let index = 0;
         index < colors.length;
         index++
     ) {
-
         legendCtx.fillStyle =
             colors[
                 index
             ];
 
-
         legendCtx.fillRect(
-
             index *
             colorWidth,
-
             0,
-
             Math.ceil(
                 colorWidth +
                 0.5
             ),
-
             height
-
         );
-
     }
-
 }
 
 
@@ -6814,75 +5871,64 @@ function drawColorLegend(
    ========================================================================================= */
 
 function updateLegend() {
-
     if (
         !legend ||
         !legendTitle ||
         !legendLabels
     ) {
-
         return;
-
     }
-
 
     /*
      * No filled field = no filled-field color legend.
      *
-     * MSLP remains independent and does not require a color bar.
+     * Contour overlays remain independent.
      */
     if (
         !activeField ||
         activeField ===
             "none"
     ) {
-
         legend.style.display =
             "none";
 
-
         return;
-
     }
-
 
     const field =
         WEATHER_FIELDS[
             activeField
         ];
 
-
     if (!field) {
-
         legend.style.display =
             "none";
 
-
         return;
-
     }
-
 
     legend.style.display =
         "";
 
-
     legendTitle.textContent =
         `${field.name} (${field.units})`;
 
-
     /*
      * CAPE family.
+     *
+     * This includes:
+     *   SBCAPE
+     *   MLCAPE
+     *   MUCAPE
+     *   0–3 km MLCAPE
      */
     if (
         field.type ===
         "cape"
     ) {
-
         drawColorLegend(
             CAPE_COLORS
         );
-
 
         legendLabels.innerHTML =
             "<span>100</span>" +
@@ -6892,9 +5938,7 @@ function updateLegend() {
             "<span>4000</span>" +
             "<span>5000</span>" +
             "<span>6000+</span>";
-
     }
-
 
     /*
      * Surface dewpoint.
@@ -6903,11 +5947,9 @@ function updateLegend() {
         field.type ===
         "dewpoint"
     ) {
-
         drawColorLegend(
             DEWPOINT_COLORS
         );
-
 
         legendLabels.innerHTML =
             "<span>-40</span>" +
@@ -6918,9 +5960,7 @@ function updateLegend() {
             "<span>60</span>" +
             "<span>80</span>" +
             "<span>90</span>";
-
     }
-
 }
 
 
@@ -6931,48 +5971,37 @@ function updateLegend() {
 let lastCursorUpdate =
     0;
 
-
 async function updateCursor(
     event
 ) {
-
     /*
      * Limit cursor sampling frequency.
      */
     const now =
         performance.now();
 
-
     if (
         now -
         lastCursorUpdate <
         35
     ) {
-
         return;
-
     }
-
 
     lastCursorUpdate =
         now;
 
-
     const generation =
         ++cursorGeneration;
-
 
     /*
      * Always show the cursor location.
      */
     if (cursorLocation) {
-
         cursorLocation.textContent =
             `${event.lngLat.lat.toFixed(3)}, ` +
             `${event.lngLat.lng.toFixed(3)}`;
-
     }
-
 
     /*
      * If there is no filled field, there is no scalar cursor value.
@@ -6985,59 +6014,37 @@ async function updateCursor(
             activeField
         ]
     ) {
-
         if (cursorField) {
-
             cursorField.textContent =
                 "No filled field";
-
         }
-
 
         if (cursorValue) {
-
             cursorValue.textContent =
                 "--";
-
         }
 
-
         return;
-
     }
-
 
     const z =
         getDataZoom();
 
-
     const tileX =
         Math.floor(
-
             lonToTileX(
-
                 event.lngLat.lng,
-
                 z
-
             )
-
         );
-
 
     const tileY =
         Math.floor(
-
             latToTileY(
-
                 event.lngLat.lat,
-
                 z
-
             )
-
         );
-
 
     /*
      * Load a small neighborhood around the cursor.
@@ -7048,44 +6055,30 @@ async function updateCursor(
     const cursorTileJobs =
         [];
 
-
     for (
         let dx = -1;
         dx <= 1;
         dx++
     ) {
-
         for (
             let dy = -1;
             dy <= 1;
             dy++
         ) {
-
             cursorTileJobs.push(
-
                 loadScalarTile(
-
                     activeField,
-
                     z,
-
                     tileX + dx,
-
                     tileY + dy
-
                 )
-
             );
-
         }
-
     }
-
 
     await Promise.all(
         cursorTileJobs
     );
-
 
     /*
      * Ignore an old cursor request if the mouse has already moved and
@@ -7095,48 +6088,31 @@ async function updateCursor(
         generation !==
         cursorGeneration
     ) {
-
         return;
-
     }
-
 
     const value =
         sampleScalar(
-
             activeField,
-
             event.lngLat.lng,
-
             event.lngLat.lat,
-
             z,
-
             false
-
         );
-
 
     const field =
         WEATHER_FIELDS[
             activeField
         ];
 
-
     if (cursorField) {
-
         cursorField.textContent =
             field.name;
-
     }
-
 
     if (!cursorValue) {
-
         return;
-
     }
-
 
     if (
         value === null ||
@@ -7144,45 +6120,32 @@ async function updateCursor(
             value
         )
     ) {
-
         cursorValue.textContent =
             "N/A";
 
-
         return;
-
     }
-
 
     if (
         field.type ===
         "cape"
     ) {
-
         cursorValue.textContent =
             `${Math.round(value)} J/kg`;
-
     }
-
 
     else if (
         field.type ===
         "dewpoint"
     ) {
-
         cursorValue.textContent =
             `${value.toFixed(1)} °F`;
-
     }
-
 
     else {
-
         cursorValue.textContent =
             value.toFixed(1);
-
     }
-
 }
 
 
@@ -7191,33 +6154,22 @@ async function updateCursor(
    ========================================================================================= */
 
 function clearCursor() {
-
     cursorGeneration++;
 
-
     if (cursorField) {
-
         cursorField.textContent =
             "--";
-
     }
-
 
     if (cursorValue) {
-
         cursorValue.textContent =
             "--";
-
     }
-
 
     if (cursorLocation) {
-
         cursorLocation.textContent =
             "--";
-
     }
-
 }
 
 
@@ -7229,51 +6181,36 @@ function fitSector(
     sectorKey,
     options = {}
 ) {
-
     const sector =
         sectors[
             sectorKey
         ];
 
-
     if (!sector) {
-
         console.warn(
             `Unknown sector: ${sectorKey}`
         );
 
-
         return;
-
     }
-
 
     const duration =
         options.duration !== undefined
             ? options.duration
             : 700;
 
-
     const padding =
         options.padding !== undefined
             ? options.padding
             : 20;
 
-
     map.fitBounds(
-
         sector.bounds,
-
         {
-
             padding,
-
             duration
-
         }
-
     );
-
 }
 
 
@@ -7282,7 +6219,6 @@ function fitSector(
    ========================================================================================= */
 
 function invalidateNumericalRenders() {
-
     scalarRenderGeneration++;
 
     vectorRenderGeneration++;
@@ -7290,7 +6226,6 @@ function invalidateNumericalRenders() {
     contourRenderGeneration++;
 
     cursorGeneration++;
-
 }
 
 
@@ -7299,13 +6234,11 @@ function invalidateNumericalRenders() {
    ========================================================================================= */
 
 async function renderAll() {
-
     /*
      * Any camera CSS transform from an active pan/zoom must be removed
      * before producing a fresh numerical render.
      */
     resetNumericalCanvasTransforms();
-
 
     /*
      * Draw geography immediately so the map never looks empty while
@@ -7313,24 +6246,18 @@ async function renderAll() {
      */
     renderGeography();
 
-
     /*
      * The three numerical systems are independent:
      *
      *   filled scalar field
      *   wind barbs
-     *   MSLP contours
+     *   contour overlays (MSLP / DCAPE)
      */
     await Promise.all([
-
         renderWeather(),
-
         renderVectors(),
-
         renderContours()
-
     ]);
-
 
     /*
      * Redraw geography after the numerical fields.
@@ -7338,14 +6265,12 @@ async function renderAll() {
      * geographyCanvas has z-index 5, so this remains above the filled
      * fields, barbs, and contour lines.
      *
-     * contourLabelCanvas is z-index 6, so MSLP numbers remain above
+     * contourLabelCanvas is z-index 6, so contour labels remain above
      * geography even after this redraw.
      */
     renderGeography();
 
-
     captureCanvasCamera();
-
 }
 
 
@@ -7354,20 +6279,15 @@ async function renderAll() {
    ========================================================================================= */
 
 map.on(
-
     "movestart",
-
     () => {
-
         /*
          * Capture the exact camera represented by the existing numerical
          * canvases. During movement those canvases will be transformed to
          * follow the live MapLibre camera.
          */
         captureCanvasCamera();
-
     }
-
 );
 
 
@@ -7376,25 +6296,19 @@ map.on(
    ========================================================================================= */
 
 map.on(
-
     "move",
-
     () => {
-
         /*
          * Keep the already-rendered numerical layers visually attached
          * to the map while the user pans or zooms.
          */
         transformNumericalCanvases();
 
-
         /*
          * Geography is inexpensive enough to redraw live.
          */
         renderGeography();
-
     }
-
 );
 
 
@@ -7403,15 +6317,11 @@ map.on(
    ========================================================================================= */
 
 map.on(
-
     "moveend",
-
     () => {
-
         clearTimeout(
             moveEndTimer
         );
-
 
         /*
          * Small debounce prevents multiple expensive full-resolution
@@ -7419,43 +6329,28 @@ map.on(
          */
         moveEndTimer =
             setTimeout(
-
                 async () => {
-
                     /*
                      * Cancel any render that may still be associated with
                      * the previous camera.
                      */
                     invalidateNumericalRenders();
 
-
                     resetNumericalCanvasTransforms();
 
-
                     await Promise.all([
-
                         renderWeather(),
-
                         renderVectors(),
-
                         renderContours()
-
                     ]);
-
 
                     renderGeography();
 
-
                     captureCanvasCamera();
-
                 },
-
                 100
-
             );
-
     }
-
 );
 
 
@@ -7464,30 +6359,19 @@ map.on(
    ========================================================================================= */
 
 map.on(
-
     "mousemove",
-
     event => {
-
         updateCursor(
             event
         );
-
     }
-
 );
 
-
 map.on(
-
     "mouseout",
-
     () => {
-
         clearCursor();
-
     }
-
 );
 
 
@@ -7496,24 +6380,16 @@ map.on(
    ========================================================================================= */
 
 map.on(
-
     "resize",
-
     () => {
-
         invalidateNumericalRenders();
-
 
         resetNumericalCanvasTransforms();
 
-
         resizeAllCanvases();
 
-
         renderAll();
-
     }
-
 );
 
 
@@ -7522,63 +6398,46 @@ map.on(
    ========================================================================================= */
 
 if (fieldSelect) {
-
     fieldSelect.addEventListener(
-
         "change",
-
         async event => {
-
             activeField =
                 event.target.value;
-
 
             scalarRenderGeneration++;
 
             cursorGeneration++;
 
-
             if (cursorValue) {
-
                 cursorValue.textContent =
                     "--";
-
             }
-
 
             updateLegend();
 
-
             resetNumericalCanvasTransforms();
-
 
             await renderWeather();
 
-
             /*
-             * Changing the filled field does not disable or alter MSLP.
+             * Changing the filled field does not disable or alter
+             * either contour overlay.
              *
-             * Redrawing it here ensures the contour layer remains aligned
-             * with the freshly rendered scalar layer.
+             * Redrawing ensures the contour layers remain aligned with
+             * the freshly rendered scalar layer.
              */
             if (
-                activeOverlays.mslp
+                activeOverlays.mslp ||
+                activeOverlays.dcape
             ) {
-
                 await renderContours();
-
             }
-
 
             renderGeography();
 
-
             captureCanvasCamera();
-
         }
-
     );
-
 }
 
 
@@ -7587,24 +6446,17 @@ if (fieldSelect) {
    ========================================================================================= */
 
 if (sectorSelect) {
-
     sectorSelect.addEventListener(
-
         "change",
-
         event => {
-
             /*
              * move/moveend handle the numerical redraw automatically.
              */
             fitSector(
                 event.target.value
             );
-
         }
-
     );
-
 }
 
 
@@ -7613,23 +6465,15 @@ if (sectorSelect) {
    ========================================================================================= */
 
 if (citiesToggle) {
-
     citiesToggle.addEventListener(
-
         "change",
-
         event => {
-
             citiesEnabled =
                 event.target.checked;
 
-
             renderGeography();
-
         }
-
     );
-
 }
 
 
@@ -7638,32 +6482,21 @@ if (citiesToggle) {
    ========================================================================================= */
 
 if (surfaceWindToggle) {
-
     surfaceWindToggle.addEventListener(
-
         "change",
-
         async event => {
-
             activeOverlays.surfaceWind =
                 event.target.checked;
 
-
             vectorRenderGeneration++;
-
 
             resetNumericalCanvasTransforms();
 
-
             await renderVectors();
 
-
             captureCanvasCamera();
-
         }
-
     );
-
 }
 
 
@@ -7672,32 +6505,21 @@ if (surfaceWindToggle) {
    ========================================================================================= */
 
 if (srWind46Toggle) {
-
     srWind46Toggle.addEventListener(
-
         "change",
-
         async event => {
-
             activeOverlays.srWind46 =
                 event.target.checked;
 
-
             vectorRenderGeneration++;
-
 
             resetNumericalCanvasTransforms();
 
-
             await renderVectors();
 
-
             captureCanvasCamera();
-
         }
-
     );
-
 }
 
 
@@ -7706,41 +6528,63 @@ if (srWind46Toggle) {
    ========================================================================================= */
 
 if (mslpToggle) {
-
     mslpToggle.addEventListener(
-
         "change",
-
         async event => {
-
             activeOverlays.mslp =
                 event.target.checked;
 
-
             contourRenderGeneration++;
-
 
             resetNumericalCanvasTransforms();
 
-
             /*
-             * renderContours clears both the line canvas and the label
-             * canvas before checking whether MSLP is enabled.
+             * renderContours clears both the line canvas and label canvas
+             * before redrawing whichever contour overlays are enabled.
              *
-             * Therefore unchecking MSLP immediately removes both.
+             * Therefore disabling MSLP removes MSLP while still allowing
+             * DCAPE to remain visible if DCAPE is enabled.
              */
             await renderContours();
 
+            renderGeography();
+
+            captureCanvasCamera();
+        }
+    );
+}
+
+
+/* =========================================================================================
+   DCAPE TOGGLE
+   ========================================================================================= */
+
+if (dcapeToggle) {
+    dcapeToggle.addEventListener(
+        "change",
+        async event => {
+            activeOverlays.dcape =
+                event.target.checked;
+
+            contourRenderGeneration++;
+
+            resetNumericalCanvasTransforms();
+
+            /*
+             * DCAPE is fully independent of:
+             *
+             *   - the selected filled field
+             *   - MSLP
+             *   - surface wind barbs
+             *   - 4–6 km SR wind barbs
+             */
+            await renderContours();
 
             renderGeography();
 
-
             captureCanvasCamera();
-
         }
-
     );
-
 }
 
 
@@ -7749,25 +6593,18 @@ if (mslpToggle) {
    ========================================================================================= */
 
 window.addEventListener(
-
     "resize",
-
     () => {
-
         invalidateNumericalRenders();
 
-
         resetNumericalCanvasTransforms();
-
 
         /*
          * Let MapLibre recalculate its viewport first.
          */
         map.resize();
 
-
         resizeAllCanvases();
-
 
         /*
          * map.resize() may also emit a map resize event, but render
@@ -7775,9 +6612,7 @@ window.addEventListener(
          * newer ones.
          */
         renderAll();
-
     }
-
 );
 
 
@@ -7786,28 +6621,19 @@ window.addEventListener(
    ========================================================================================= */
 
 async function initialize() {
-
     try {
-
         if (statusElement) {
-
             statusElement.textContent =
                 "Initializing...";
-
         }
-
 
         /*
          * Run metadata and static geography can load simultaneously.
          */
         await Promise.all([
-
             loadLatestRun(),
-
             loadGeography()
-
         ]);
-
 
         /*
          * The latest run may have changed since the previous page load.
@@ -7819,62 +6645,48 @@ async function initialize() {
 
         contourTileCache.clear();
 
-
         /*
          * Read initial UI state.
          */
         if (fieldSelect) {
-
             activeField =
                 fieldSelect.value ||
                 "sbcape";
-
         }
-
 
         if (citiesToggle) {
-
             citiesEnabled =
                 citiesToggle.checked;
-
         }
-
 
         if (surfaceWindToggle) {
-
             activeOverlays.surfaceWind =
                 surfaceWindToggle.checked;
-
         }
-
 
         if (srWind46Toggle) {
-
             activeOverlays.srWind46 =
                 srWind46Toggle.checked;
-
         }
-
 
         if (mslpToggle) {
-
             activeOverlays.mslp =
                 mslpToggle.checked;
-
         }
 
+        if (dcapeToggle) {
+            activeOverlays.dcape =
+                dcapeToggle.checked;
+        }
 
         updateLegend();
 
-
         resizeAllCanvases();
-
 
         /*
          * Initial geography can be shown immediately.
          */
         renderGeography();
-
 
         /*
          * Start with the selected sector.
@@ -7889,60 +6701,40 @@ async function initialize() {
                 ? sectorSelect.value
                 : "lbf";
 
-
         fitSector(
-
             initialSector,
-
             {
-
                 duration: 0
-
             }
-
         );
-
 
         /*
          * With duration 0, schedule one explicit render after MapLibre
          * has processed the camera update.
          */
         requestAnimationFrame(
-
             async () => {
-
                 await renderAll();
 
-
                 if (statusElement) {
-
                     statusElement.textContent =
                         `Loaded ${currentRun}`;
-
                 }
-
             }
-
         );
-
     }
-    catch (error) {
 
+    catch (error) {
         console.error(
             "Initialization failed:",
             error
         );
 
-
         if (statusElement) {
-
             statusElement.textContent =
                 "Initialization failed";
-
         }
-
     }
-
 }
 
 
@@ -7951,13 +6743,8 @@ async function initialize() {
    ========================================================================================= */
 
 map.on(
-
     "load",
-
     async () => {
-
         await initialize();
-
     }
-
 );
