@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
     <meta charset="UTF-8">
 
     <meta
@@ -10,23 +12,33 @@
 
     <title>SPCOA Mesoanalysis</title>
 
-    <!-- MapLibre -->
+
+    <!-- =====================================================================================
+         MAPLIBRE
+         ===================================================================================== -->
+
     <link
         href="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.css"
         rel="stylesheet"
     >
 
+
     <style>
+
         * {
             box-sizing: border-box;
         }
 
+
         html,
         body {
+
             margin: 0;
             padding: 0;
+
             width: 100%;
             height: 100%;
+
             overflow: hidden;
 
             font-family:
@@ -37,19 +49,25 @@
             background: #ffffff;
         }
 
+
         #app {
+
             display: flex;
+
             width: 100%;
             height: 100%;
         }
 
-        /* =========================================================
+
+        /* =================================================================================
            SIDEBAR
-           ========================================================= */
+           ================================================================================= */
 
         #sidebar {
+
             width: 285px;
             min-width: 285px;
+
             height: 100%;
 
             overflow-y: auto;
@@ -63,7 +81,9 @@
             z-index: 20;
         }
 
+
         #sidebar h1 {
+
             margin: 0 0 4px 0;
 
             font-size: 21px;
@@ -72,7 +92,9 @@
             color: #1f1f1f;
         }
 
+
         .subtitle {
+
             margin-bottom: 18px;
 
             font-size: 12px;
@@ -80,11 +102,15 @@
             color: #666666;
         }
 
+
         .control-section {
+
             margin-bottom: 20px;
         }
 
+
         .control-section h2 {
+
             margin: 0 0 8px 0;
 
             font-size: 13px;
@@ -96,7 +122,9 @@
             letter-spacing: 0.4px;
         }
 
+
         label {
+
             display: block;
 
             margin-bottom: 5px;
@@ -107,7 +135,9 @@
             color: #333333;
         }
 
+
         select {
+
             width: 100%;
 
             padding: 8px 9px;
@@ -122,7 +152,9 @@
             font-size: 13px;
         }
 
+
         .checkbox-row {
+
             display: flex;
             align-items: center;
 
@@ -136,14 +168,18 @@
             font-weight: 400;
         }
 
+
         .checkbox-row input {
+
             width: 15px;
             height: 15px;
 
             margin: 0;
         }
 
+
         .divider {
+
             height: 1px;
 
             margin: 17px 0;
@@ -151,7 +187,9 @@
             background: #d2d2d2;
         }
 
+
         #run-info {
+
             padding: 10px;
 
             background: #ffffff;
@@ -165,11 +203,15 @@
             color: #333333;
         }
 
+
         #run-info .run-label {
+
             font-weight: 700;
         }
 
+
         #status {
+
             margin-top: 10px;
 
             min-height: 18px;
@@ -179,11 +221,13 @@
             color: #555555;
         }
 
-        /* =========================================================
+
+        /* =================================================================================
            MAP
-           ========================================================= */
+           ================================================================================= */
 
         #map-wrapper {
+
             position: relative;
 
             flex: 1;
@@ -195,7 +239,9 @@
             background: #ffffff;
         }
 
+
         #map {
+
             position: absolute;
 
             inset: 0;
@@ -203,17 +249,33 @@
             background: #ffffff;
         }
 
+
         /*
          * Canvas stack:
          *
-         * 2 = scalar weather shading
-         * 3 = wind barbs
-         * 4 = geography
+         * MapLibre               base
+         * weather-canvas         z = 2
+         * vector-canvas          z = 3
+         * contour-canvas         z = 4
+         * geography-canvas       z = 5
+         * contour-label-canvas   z = 6
+         *
+         * This allows:
+         *
+         *   - filled CAPE/dewpoint shading beneath everything
+         *   - wind barbs above the filled field
+         *   - MSLP/DCAPE contour lines above wind barbs
+         *   - geography above contour lines
+         *   - contour labels above geography
          */
+
 
         #weather-canvas,
         #vector-canvas,
-        #geography-canvas {
+        #contour-canvas,
+        #geography-canvas,
+        #contour-label-canvas {
+
             position: absolute;
 
             top: 0;
@@ -225,23 +287,43 @@
             pointer-events: none;
         }
 
+
         #weather-canvas {
+
             z-index: 2;
         }
 
+
         #vector-canvas {
+
             z-index: 3;
         }
 
-        #geography-canvas {
+
+        #contour-canvas {
+
             z-index: 4;
         }
 
-        /* =========================================================
+
+        #geography-canvas {
+
+            z-index: 5;
+        }
+
+
+        #contour-label-canvas {
+
+            z-index: 6;
+        }
+
+
+        /* =================================================================================
            LEGEND
-           ========================================================= */
+           ================================================================================= */
 
         #legend {
+
             position: absolute;
 
             left: 18px;
@@ -262,7 +344,9 @@
                 0 1px 4px rgba(0, 0, 0, 0.16);
         }
 
+
         #legend-title {
+
             margin-bottom: 6px;
 
             font-size: 12px;
@@ -271,14 +355,18 @@
             color: #222222;
         }
 
+
         #legend-bar {
+
             width: 100%;
             height: 17px;
 
             border: 1px solid #666666;
         }
 
+
         #legend-labels {
+
             position: relative;
 
             width: 100%;
@@ -291,7 +379,9 @@
             color: #333333;
         }
 
+
         .legend-label {
+
             position: absolute;
 
             top: 1px;
@@ -301,11 +391,13 @@
             white-space: nowrap;
         }
 
-        /* =========================================================
+
+        /* =================================================================================
            CURSOR VALUE
-           ========================================================= */
+           ================================================================================= */
 
         #cursor-panel {
+
             position: absolute;
 
             right: 16px;
@@ -330,18 +422,24 @@
             color: #222222;
         }
 
+
         #cursor-field {
+
             font-weight: 700;
 
             margin-bottom: 2px;
         }
 
+
         #cursor-value {
+
             font-size: 15px;
             font-weight: 700;
         }
 
+
         #cursor-location {
+
             margin-top: 2px;
 
             font-size: 10px;
@@ -349,187 +447,335 @@
             color: #666666;
         }
 
-        /* =========================================================
+
+        /* =================================================================================
            MAPLIBRE
-           ========================================================= */
+           ================================================================================= */
 
         .maplibregl-ctrl-top-right {
+
             z-index: 15;
         }
 
+
         .maplibregl-ctrl-attrib {
+
             font-size: 9px;
         }
 
-        /* =========================================================
+
+        /* =================================================================================
            MOBILE
-           ========================================================= */
+           ================================================================================= */
 
         @media (max-width: 800px) {
 
             #sidebar {
+
                 width: 225px;
                 min-width: 225px;
 
                 padding: 12px;
             }
 
+
             #legend {
+
                 min-width: 290px;
             }
         }
+
     </style>
+
 </head>
+
 
 <body>
 
+
 <div id="app">
 
-    <!-- =========================================================
+
+    <!-- =================================================================================
          SIDEBAR
-         ========================================================= -->
+         ================================================================================= -->
 
     <aside id="sidebar">
 
-        <h1>SPCOA Mesoanalysis</h1>
+
+        <h1>
+            SPCOA Mesoanalysis
+        </h1>
+
 
         <div class="subtitle">
             SFCOA-HRRR First Guess
         </div>
 
 
+        <!-- =============================================================================
+             SECTOR
+             ============================================================================= -->
+
         <div class="control-section">
 
-            <h2>Sector</h2>
+
+            <h2>
+                Sector
+            </h2>
+
 
             <select id="sector-select">
+
 
                 <option value="lbf">
                     LBF CWA
                 </option>
 
+
                 <option value="regional">
                     LBF Regional
                 </option>
+
 
                 <option value="nebraska">
                     Nebraska
                 </option>
 
+
                 <option value="northern_plains">
                     Northern Plains
                 </option>
+
 
                 <option value="central_plains">
                     Central Plains
                 </option>
 
+
                 <option value="southern_plains">
                     Southern Plains
                 </option>
+
 
                 <option value="high_plains">
                     High Plains
                 </option>
 
+
                 <option value="midwest">
                     Midwest
                 </option>
+
 
                 <option value="rockies">
                     Rockies
                 </option>
 
+
                 <option value="conus">
                     CONUS
                 </option>
 
+
             </select>
+
 
         </div>
 
 
+        <!-- =============================================================================
+             FILLED FIELD
+             ============================================================================= -->
+
         <div class="control-section">
 
-            <h2>Filled Field</h2>
+
+            <h2>
+                Filled Field
+            </h2>
+
 
             <select id="field-select">
+
 
                 <option value="none">
                     None
                 </option>
 
-                <option value="sbcape" selected>
+
+                <option
+                    value="sbcape"
+                    selected
+                >
                     Surface-Based CAPE
                 </option>
+
 
                 <option value="mlcape">
                     Mixed-Layer CAPE
                 </option>
 
+
                 <option value="mucape">
                     Most-Unstable CAPE
                 </option>
+
+
+                <!-- =============================================================
+                     NEW: 0-3 KM MIXED-LAYER CAPE
+                     ============================================================= -->
+
+                <option value="mlcape_0_3km">
+                    0–3 km Mixed-Layer CAPE
+                </option>
+
 
                 <option value="sfc_dewpoint">
                     Surface Dewpoint
                 </option>
 
+
             </select>
+
 
         </div>
 
 
+        <!-- =============================================================================
+             VECTOR OVERLAYS
+             ============================================================================= -->
+
         <div class="control-section">
 
-            <h2>Vector Overlays</h2>
+
+            <h2>
+                Vector Overlays
+            </h2>
+
 
             <label class="checkbox-row">
+
 
                 <input
                     id="sfc-wind-toggle"
                     type="checkbox"
                 >
 
+
                 <span>
                     Surface Wind Barbs
                 </span>
+
 
             </label>
 
 
             <label class="checkbox-row">
+
 
                 <input
                     id="srwind-46-toggle"
                     type="checkbox"
                 >
 
+
                 <span>
                     4–6 km SR Wind Barbs
                 </span>
 
+
             </label>
+
 
         </div>
 
 
+        <!-- =============================================================================
+             CONTOUR OVERLAYS
+             ============================================================================= -->
+
         <div class="control-section">
 
-            <h2>Map Layers</h2>
+
+            <h2>
+                Contour Overlays
+            </h2>
+
+
+            <!-- =============================================================
+                 MSLP
+                 ============================================================= -->
 
             <label class="checkbox-row">
+
+
+                <input
+                    id="mslp-toggle"
+                    type="checkbox"
+                >
+
+
+                <span>
+                    Surface MSLP
+                </span>
+
+
+            </label>
+
+
+            <!-- =============================================================
+                 NEW: DCAPE
+                 ============================================================= -->
+
+            <label class="checkbox-row">
+
+
+                <input
+                    id="dcape-toggle"
+                    type="checkbox"
+                >
+
+
+                <span>
+                    DCAPE
+                </span>
+
+
+            </label>
+
+
+        </div>
+
+
+        <!-- =============================================================================
+             MAP LAYERS
+             ============================================================================= -->
+
+        <div class="control-section">
+
+
+            <h2>
+                Map Layers
+            </h2>
+
+
+            <label class="checkbox-row">
+
 
                 <input
                     id="cities-toggle"
                     type="checkbox"
                 >
 
+
                 <span>
                     Cities
                 </span>
 
+
             </label>
+
 
         </div>
 
@@ -537,27 +783,40 @@
         <div class="divider"></div>
 
 
+        <!-- =============================================================================
+             RUN INFORMATION
+             ============================================================================= -->
+
         <div id="run-info">
 
+
             <div>
+
                 <span class="run-label">
                     Run:
                 </span>
 
+
                 <span id="run-id">
                     Loading...
                 </span>
+
             </div>
 
+
             <div>
+
                 <span class="run-label">
                     Analysis:
                 </span>
 
+
                 <span id="analysis-time">
                     Loading...
                 </span>
+
             </div>
+
 
         </div>
 
@@ -566,70 +825,157 @@
             Initializing...
         </div>
 
+
     </aside>
 
 
-    <!-- =========================================================
+    <!-- =================================================================================
          MAP
-         ========================================================= -->
+         ================================================================================= -->
 
     <main id="map-wrapper">
 
+
+        <!-- =============================================================================
+             MAPLIBRE BASE MAP
+             ============================================================================= -->
+
         <div id="map"></div>
 
-        <canvas id="weather-canvas"></canvas>
 
-        <canvas id="vector-canvas"></canvas>
+        <!-- =============================================================================
+             FILLED NUMERICAL WEATHER FIELD
+             ============================================================================= -->
 
-        <canvas id="geography-canvas"></canvas>
+        <canvas
+            id="weather-canvas"
+            aria-hidden="true"
+        ></canvas>
 
+
+        <!-- =============================================================================
+             VECTOR OVERLAYS
+             ============================================================================= -->
+
+        <canvas
+            id="vector-canvas"
+            aria-hidden="true"
+        ></canvas>
+
+
+        <!-- =============================================================================
+             CONTOUR LINES
+             
+             Both MSLP and DCAPE are rendered here.
+             ============================================================================= -->
+
+        <canvas
+            id="contour-canvas"
+            aria-hidden="true"
+        ></canvas>
+
+
+        <!-- =============================================================================
+             GEOGRAPHY
+             
+             State boundaries, county boundaries, cities, etc.
+             ============================================================================= -->
+
+        <canvas
+            id="geography-canvas"
+            aria-hidden="true"
+        ></canvas>
+
+
+        <!-- =============================================================================
+             CONTOUR LABELS
+             
+             Kept above geography so MSLP/DCAPE labels remain readable.
+             ============================================================================= -->
+
+        <canvas
+            id="contour-label-canvas"
+            aria-hidden="true"
+        ></canvas>
+
+
+        <!-- =============================================================================
+             FILLED-FIELD LEGEND
+             ============================================================================= -->
 
         <div id="legend">
+
 
             <div id="legend-title">
                 Surface-Based CAPE (J/kg)
             </div>
 
+
             <canvas id="legend-bar"></canvas>
 
+
             <div id="legend-labels"></div>
+
 
         </div>
 
 
+        <!-- =============================================================================
+             CURSOR VALUE
+             ============================================================================= -->
+
         <div id="cursor-panel">
+
 
             <div id="cursor-field">
                 SBCAPE
             </div>
 
+
             <div id="cursor-value">
                 --
             </div>
+
 
             <div id="cursor-location">
                 Move cursor over map
             </div>
 
+
         </div>
 
+
     </main>
+
 
 </div>
 
 
-<!-- MapLibre -->
+<!-- =====================================================================================
+     MAPLIBRE
+     ===================================================================================== -->
+
 <script
     src="https://unpkg.com/maplibre-gl@5.11.0/dist/maplibre-gl.js">
 </script>
 
-<!-- TopoJSON -->
+
+<!-- =====================================================================================
+     TOPOJSON
+     ===================================================================================== -->
+
 <script
     src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js">
 </script>
 
-<!-- Main application -->
+
+<!-- =====================================================================================
+     MAIN APPLICATION
+     ===================================================================================== -->
+
 <script src="app.js"></script>
 
+
 </body>
+
 </html>
