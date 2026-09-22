@@ -189,28 +189,23 @@ const CAPE_03KM_COLORS =
     CAPE_COLORS.slice(0, 61);
 
 const DCAPE_BOUNDS = [
-    100, 200, 300, 400, 500, 600, 700,
-    800, 900, 1000, 1100, 1200, 1300,
-    1400, 1500, 1600
+    100, 300, 500, 700,
+    900, 1100, 1300,
+    1500, 1700, 1900, 2100
 ];
 
 const DCAPE_COLORS = [
-    "#f5a623",
-    "#f5a623",
-    "#f39a1e",
-    "#f28c18",
-    "#ef7d16",
-    "#ed6d18",
-    "#ea5b1b",
-    "#e6461e",
-    "#df3024",
-    "#d51f26",
-    "#c41624",
-    "#ae111f",
-    "#950e19",
-    "#7f0b15",
-    "#680912",
-    "#52070e"
+    "#f5a623",  // 100
+    "#f39a1e",  // 300
+    "#ef7d16",  // 500
+    "#ea5b1b",  // 700
+    "#df3024",  // 900
+    "#c41624",  // 1100
+    "#ae111f",  // 1300
+    "#950e19",  // 1500
+    "#7f0b15",  // 1700
+    "#680912",  // 1900
+    "#52070e"   // 2100+
 ];
 
 
@@ -323,8 +318,8 @@ const CONTOUR_FIELDS = {
         name: "Downdraft CAPE",
         shortName: "DCAPE",
         units: "J/kg",
-        interval: 100,
-        minimum: 200,
+        interval: 200,
+        minimum: 100,
         colorScheme: "dcape",
         color: null
     }
@@ -597,7 +592,42 @@ let mslpToggle =
     );
 
 if (!mslpToggle) {
-           mslpToggle.checked =
+
+    const overlayAnchor =
+        srWind46Toggle
+            ? srWind46Toggle.closest("label")
+            : null;
+
+    const overlayContainer =
+        overlayAnchor
+            ? overlayAnchor.parentElement
+            : null;
+
+    if (overlayContainer) {
+
+        const label =
+            document.createElement(
+                "label"
+            );
+
+        label.style.display =
+            "block";
+
+        label.style.marginTop =
+            "6px";
+
+        mslpToggle =
+            document.createElement(
+                "input"
+            );
+
+        mslpToggle.type =
+            "checkbox";
+
+        mslpToggle.id =
+            "mslp-toggle";
+
+        mslpToggle.checked =
             false;
 
         label.appendChild(
@@ -1596,7 +1626,8 @@ function getVisibleTileRange(
     return {
 
         x0,
-               x1,
+
+        x1,
 
         y0,
 
@@ -2796,87 +2827,59 @@ function getRawScalarPixel(
 
 function sampleScalar(
     field,
-        lon,
+    lon,
     lat,
     z,
     contour = false
 ) {
 
-    const n =
-        2 ** z;
-
-
-    const tileXFloat =
+    const tileXF =
         lonToTileX(
             lon,
             z
         );
 
 
-    const tileYFloat =
+    const tileYF =
         latToTileY(
             lat,
             z
         );
 
 
-    const globalPixelX =
-        tileXFloat *
+    const gx =
+        tileXF *
         TILE_SIZE;
 
 
-    const globalPixelY =
-        tileYFloat *
+    const gy =
+        tileYF *
         TILE_SIZE;
-
-
-    /*
-     * Pixel centers are located at integer + 0.5.
-     *
-     * Shift by 0.5 before determining the four neighboring
-     * numerical pixels.
-     */
-    const sampleX =
-        globalPixelX -
-        0.5;
-
-
-    const sampleY =
-        globalPixelY -
-        0.5;
 
 
     const x0 =
         Math.floor(
-            sampleX
+            gx
         );
 
 
     const y0 =
         Math.floor(
-            sampleY
+            gy
         );
 
 
-    const x1 =
-        x0 + 1;
-
-
-    const y1 =
-        y0 + 1;
-
-
-    const tx =
-        sampleX -
+    const fx =
+        gx -
         x0;
 
 
-    const ty =
-        sampleY -
+    const fy =
+        gy -
         y0;
 
 
-    const v00 =
+    const q00 =
         getRawScalarPixel(
 
             field,
@@ -2892,14 +2895,14 @@ function sampleScalar(
         );
 
 
-    const v10 =
+    const q10 =
         getRawScalarPixel(
 
             field,
 
             z,
 
-            x1,
+            x0 + 1,
 
             y0,
 
@@ -2908,7 +2911,7 @@ function sampleScalar(
         );
 
 
-    const v01 =
+    const q01 =
         getRawScalarPixel(
 
             field,
@@ -2917,192 +2920,71 @@ function sampleScalar(
 
             x0,
 
-            y1,
+            y0 + 1,
 
             contour
 
         );
 
 
-    const v11 =
+    const q11 =
         getRawScalarPixel(
 
             field,
 
             z,
 
-            x1,
+            x0 + 1,
 
-            y1,
+            y0 + 1,
 
             contour
 
         );
-
-
-    const values = [
-
-        v00,
-
-        v10,
-
-        v01,
-
-        v11
-
-    ];
 
 
     /*
-     * If all four values are available, use full bilinear
-     * interpolation.
+     * Require all four neighboring points for true numerical
+     * bilinear interpolation.
      */
     if (
-        values.every(
-            Number.isFinite
-        )
+        q00 === null ||
+        q10 === null ||
+        q01 === null ||
+        q11 === null
     ) {
 
-        const top =
-            v00 *
-            (
-                1 -
-                tx
-            ) +
-            v10 *
-            tx;
-
-
-        const bottom =
-            v01 *
-            (
-                1 -
-                tx
-            ) +
-            v11 *
-            tx;
-
-
-        return (
-            top *
-            (
-                1 -
-                    ty
-            ) +
-            bottom *
-            ty
-        );
+        return null;
 
     }
 
 
-    /*
-     * Near a nodata edge, fall back to the nearest available
-     * numerical value instead of creating a hard rendering hole.
-     */
-    const candidates = [
-
-        {
-            value:
-                v00,
-
-            distance:
-                tx *
-                tx +
-                ty *
-                ty
-        },
-
-        {
-            value:
-                v10,
-
-            distance:
-                (
-                    1 -
-                    tx
-                ) *
-                (
-                    1 -
-                    tx
-                ) +
-                ty *
-                ty
-        },
-
-        {
-            value:
-                v01,
-
-            distance:
-                tx *
-                tx +
-                (
-                    1 -
-                    ty
-                ) *
-                (
-                    1 -
-                    ty
-                )
-        },
-
-        {
-            value:
-                v11,
-
-            distance:
-                (
-                    1 -
-                    tx
-                ) *
-                (
-                    1 -
-                    tx
-                ) +
-                (
-                    1 -
-                    ty
-                ) *
-                (
-                    1 -
-                    ty
-                )
-        }
-
-    ];
-
-
-    candidates.sort(
+    const top =
+        q00 *
         (
-            a,
-            b
-        ) =>
-            a.distance -
-            b.distance
+            1 - fx
+        ) +
+        q10 *
+        fx;
+
+
+    const bottom =
+        q01 *
+        (
+            1 - fx
+        ) +
+        q11 *
+        fx;
+
+
+    return (
+        top *
+        (
+            1 - fy
+        ) +
+        bottom *
+        fy
     );
-
-
-    for (
-        const candidate
-        of
-        candidates
-    ) {
-
-        if (
-            Number.isFinite(
-                candidate.value
-            )
-        ) {
-
-            return candidate.value;
-
-        }
-
-    }
-
-
-    return null;
 
 }
 
@@ -3202,33 +3084,30 @@ function getRawVectorPixel(
     }
 
 
-    const pixelIndex =
-        pixelY *
-        TILE_SIZE +
-        pixelX;
-
-
-    const componentIndex =
-        pixelIndex *
+    /*
+     * Vector data are interleaved:
+     *
+     *   U0,V0,U1,V1,...
+     */
+    const index =
+        (
+            pixelY *
+            TILE_SIZE +
+            pixelX
+        ) *
         2;
 
 
     const rawU =
-        tile[
-            componentIndex
-        ];
+        tile[index];
 
 
     const rawV =
-        tile[
-            componentIndex + 1
-        ];
+        tile[index + 1];
 
 
     const metadata =
-        vectorMetadata[
-            field
-        ];
+        vectorMetadata[field];
 
 
     const encoding =
@@ -3292,71 +3171,53 @@ function sampleVector(
     z
 ) {
 
-    const tileXFloat =
+    const tileXF =
         lonToTileX(
             lon,
             z
         );
 
 
-    const tileYFloat =
+    const tileYF =
         latToTileY(
             lat,
             z
         );
 
 
-    const globalPixelX =
-        tileXFloat *
+    const gx =
+        tileXF *
         TILE_SIZE;
 
 
-    const globalPixelY =
-        tileYFloat *
+    const gy =
+        tileYF *
         TILE_SIZE;
-
-
-    const sampleX =
-        globalPixelX -
-        0.5;
-
-
-    const sampleY =
-        globalPixelY -
-        0.5;
 
 
     const x0 =
         Math.floor(
-            sampleX
+            gx
         );
 
 
     const y0 =
         Math.floor(
-            sampleY
+            gy
         );
 
 
-    const x1 =
-        x0 + 1;
-
-
-    const y1 =
-        y0 + 1;
-
-
-    const tx =
-        sampleX -
+    const fx =
+        gx -
         x0;
 
 
-    const ty =
-        sampleY -
+    const fy =
+        gy -
         y0;
 
 
-    const p00 =
+    const q00 =
         getRawVectorPixel(
 
             field,
@@ -3370,21 +3231,21 @@ function sampleVector(
         );
 
 
-    const p10 =
+    const q10 =
         getRawVectorPixel(
 
             field,
 
             z,
 
-            x1,
+            x0 + 1,
 
             y0
 
         );
 
 
-    const p01 =
+    const q01 =
         getRawVectorPixel(
 
             field,
@@ -3393,244 +3254,132 @@ function sampleVector(
 
             x0,
 
-            y1
+            y0 + 1
 
         );
 
 
-    const p11 =
+    const q11 =
         getRawVectorPixel(
 
             field,
 
             z,
 
-            x1,
+            x0 + 1,
 
-            y1
+            y0 + 1
 
         );
 
 
     if (
-        p00 &&
-        p10 &&
-        p01 &&
-        p11
+        !q00 ||
+        !q10 ||
+        !q01 ||
+        !q11
     ) {
 
-        const topU =
-            p00.u *
-            (
-                1 -
-                tx
-            ) +
-            p10.u *
-            tx;
+        return null;
+
+    }
 
 
-        const bottomU =
-            p01.u *
-            (
-                1 -
-                tx
-            ) +
-            p11.u *
-            tx;
+    const interpolateComponent =
+        component => {
 
-
-        const topV =
-            p00.v *
-            (
-                1 -
-                tx
-            ) +
-            p10.v *
-            tx;
-
-
-        const bottomV =
-            p01.v *
-            (
-                1 -
-                tx
-            ) +
-            p11.v *
-            tx;
-
-
-        return {
-
-            u:
-                topU *
+            const top =
+                q00[component] *
                 (
-                    1 -
-                    ty
+                    1 - fx
                 ) +
-                bottomU *
-                ty,
+                q10[component] *
+                fx;
 
-            v:
-                topV *
+
+            const bottom =
+                q01[component] *
                 (
-                    1 -
-                    ty
+                    1 - fx
                 ) +
-                bottomV *
-                ty
+                q11[component] *
+                fx;
+
+
+            return (
+                top *
+                (
+                    1 - fy
+                ) +
+                bottom *
+                fy
+            );
 
         };
 
-    }
 
+    return {
 
-    const candidates = [
+        u:
+            interpolateComponent(
+                "u"
+            ),
 
-        {
-            value:
-                p00,
+        v:
+            interpolateComponent(
+                "v"
+            )
 
-            distance:
-                tx *
-                tx +
-                ty *
-                ty
-        },
-
-        {
-            value:
-                p10,
-
-            distance:
-                (
-                    1 -
-                    tx
-                ) *
-                (
-                    1 -
-                    tx
-                ) +
-                ty *
-                ty
-        },
-
-        {
-            value:
-                p01,
-
-            distance:
-                tx *
-                tx +
-                (
-                    1 -
-                    ty
-                ) *
-                (
-                    1 -
-                    ty
-                )
-        },
-
-        {
-            value:
-                p11,
-
-            distance:
-                (
-                    1 -
-                    tx
-                ) *
-                (
-                    1 -
-                    tx
-                ) +
-                (
-                    1 -
-                    ty
-                ) *
-                (
-                    1 -
-                    ty
-                )
-        }
-
-    ];
-
-
-    candidates.sort(
-        (
-            a,
-            b
-        ) =>
-            a.distance -
-            b.distance
-    );
-
-
-    for (
-        const candidate
-        of
-        candidates
-    ) {
-
-        if (
-            candidate.value
-        ) {
-
-            return candidate.value;
-
-        }
-
-    }
-
-
-    return null;
+    };
 
 }
 
 
 /* =========================================================================================
-   COLOR HELPERS
+   COLOR UTILITIES
    ========================================================================================= */
 
 function hexToRgb(
     hex
 ) {
 
-    const normalized =
+    const clean =
         hex.replace(
             "#",
             ""
         );
 
 
-    return [
+    return {
 
-        parseInt(
-            normalized.slice(
-                0,
-                2
+        r:
+            parseInt(
+                clean.substring(
+                    0,
+                    2
+                ),
+                16
             ),
-            16
-        ),
 
-        parseInt(
-            normalized.slice(
-                2,
-                4
+        g:
+            parseInt(
+                clean.substring(
+                    2,
+                    4
+                ),
+                16
             ),
-            16
-        ),
 
-        parseInt(
-            normalized.slice(
-                4,
-                6
-            ),
-            16
-        )
+        b:
+            parseInt(
+                clean.substring(
+                    4,
+                    6
+                ),
+                16
+            )
 
-    ];
+    };
 
 }
 
@@ -3653,14 +3402,23 @@ const DEWPOINT_RGB =
     );
 
 
+/* =========================================================================================
+   CAPE COLOR LOOKUP
+   ========================================================================================= */
+
 function getCapeColor(
     value
 ) {
 
+    /*
+     * SPC-style behavior:
+     * CAPE below 100 J/kg is transparent.
+     */
     if (
         !Number.isFinite(
             value
-        )
+        ) ||
+        value < 100
     ) {
 
         return null;
@@ -3668,20 +3426,14 @@ function getCapeColor(
     }
 
 
-    if (
-        value <=
-        CAPE_BOUNDS[0]
-    ) {
-
-        return CAPE_RGB[0];
-
-    }
+    let index =
+        CAPE_COLORS.length - 1;
 
 
     for (
         let i = 0;
         i <
-            CAPE_BOUNDS.length - 1;
+        CAPE_BOUNDS.length - 1;
         i++
     ) {
 
@@ -3693,29 +3445,83 @@ function getCapeColor(
                 CAPE_BOUNDS[i + 1]
         ) {
 
-            return CAPE_RGB[i];
+            index =
+                i;
+
+            break;
 
         }
 
     }
 
 
+    index =
+        Math.max(
+
+            0,
+
+            Math.min(
+
+                CAPE_RGB.length - 1,
+
+                index
+
+            )
+
+        );
+
+
     return CAPE_RGB[
-        CAPE_RGB.length - 1
+        index
     ];
 
 }
 
 
-function get03kmCapeColor(
+function get03kmCapeColor(value) {
+
+    if (!Number.isFinite(value) || value < 10) {
+        return null;
+    }
+
+    const clipped =
+        Math.min(600, Math.max(0, value));
+
+    const index =
+        Math.max(
+            0,
+            Math.min(
+                CAPE_03KM_RGB.length - 1,
+                Math.floor(clipped / 10)
+            )
+        );
+
+    return CAPE_03KM_RGB[index];
+
+}
+
+
+/* =========================================================================================
+   DEWPOINT COLOR LOOKUP
+   ========================================================================================= */
+
+function getDewpointColor(
     value
 ) {
 
+    /*
+     * The source has occasionally contained obviously invalid/fill-like
+     * values. Reject anything outside a physically useful range before
+     * clipping to the color table.
+     */
     if (
         !Number.isFinite(
             value
         ) ||
-        value < 10
+
+        value < -100 ||
+
+        value > 120
     ) {
 
         return null;
@@ -3723,13 +3529,29 @@ function get03kmCapeColor(
     }
 
 
+    /*
+     * Palette bins:
+     *
+     * -41 to < -40
+     * -40 to < -39
+     * ...
+     *  89 to < 90
+     *
+     * Values colder than -41°F use the first valid palette color.
+     */
     const clipped =
-        Math.min(
-            600,
-            Math.max(
-                0,
+        Math.max(
+
+            -41,
+
+            Math.min(
+
+                89.999,
+
                 value
+
             )
+
         );
 
 
@@ -3740,81 +3562,12 @@ function get03kmCapeColor(
 
             Math.min(
 
-                CAPE_03KM_RGB.length - 1,
+                DEWPOINT_RGB.length - 1,
 
                 Math.floor(
-                    clipped / 10
+                    clipped + 41
                 )
 
-            )
-
-        );
-
-
-    return CAPE_03KM_RGB[
-        index
-    ];
-
-}
-
-
-function getDewpointColor(
-    value
-) {
-
-    if (
-        !Number.isFinite(
-            value
-        )
-    ) {
-
-        return null;
-
-    }
-
-
-    const minimum =
-        -20;
-
-
-    const maximum =
-        90;
-
-
-    const clipped =
-        Math.max(
-
-            minimum,
-
-            Math.min(
-
-                maximum,
-
-                value
-
-            )
-
-        );
-
-
-    const fraction =
-        (
-            clipped -
-            minimum
-        ) /
-        (
-            maximum -
-            minimum
-        );
-
-
-    const index =
-        Math.round(
-
-            fraction *
-            (
-                DEWPOINT_RGB.length -
-                1
             )
 
         );
@@ -3828,7 +3581,7 @@ function getDewpointColor(
 
 
 /* =========================================================================================
-   FIELD COLOR
+   FIELD COLOR LOOKUP
    ========================================================================================= */
 
 function getFieldColor(
@@ -3891,66 +3644,7 @@ function getFieldColor(
 
 
 /* =========================================================================================
-   INVALIDATE NUMERICAL RENDERS
-   ========================================================================================= */
-
-function invalidateNumericalRenders() {
-
-    scalarRenderGeneration++;
-
-    vectorRenderGeneration++;
-
-    contourRenderGeneration++;
-
-}
-
-
-/* =========================================================================================
-   CLEAR NUMERICAL CANVASES
-   ========================================================================================= */
-
-function clearNumericalCanvases() {
-
-    prepareContext(
-
-        weatherCanvas,
-
-        weatherCtx
-
-    );
-
-
-    prepareContext(
-
-        vectorCanvas,
-
-        vectorCtx
-
-    );
-
-
-    prepareContext(
-
-        contourCanvas,
-
-        contourCtx
-
-    );
-
-
-    prepareContext(
-
-        contourLabelCanvas,
-
-        contourLabelCtx
-
-    );
-
-}
-
-
-/* =========================================================================================
-   RENDER WEATHER
+   WEATHER RENDERER
    ========================================================================================= */
 
 async function renderWeather() {
@@ -3968,10 +3662,28 @@ async function renderWeather() {
     );
 
 
+    weatherCanvas.style.transform =
+        "none";
+
+
+    /*
+     * "None" means no filled weather field.
+     *
+     * Independent overlays such as MSLP and wind barbs are unaffected.
+     */
     if (
-        !currentRun ||
         !activeField ||
-        !fieldMetadata[
+        activeField ===
+            "none"
+    ) {
+
+        return;
+
+    }
+
+
+    if (
+        !WEATHER_FIELDS[
             activeField
         ]
     ) {
@@ -4010,71 +3722,135 @@ async function renderWeather() {
 
     const width =
         Math.max(
+
             1,
+
             Math.round(
                 rect.width
             )
+
         );
 
 
     const height =
         Math.max(
+
             1,
+
             Math.round(
                 rect.height
             )
+
         );
 
 
-    const imageData =
-        weatherCtx.createImageData(
+    /*
+     * Keep this at 1.0.
+     *
+     * Earlier versions used a lower render resolution and enlarged the
+     * result, which made the fields look blurry. We now calculate every
+     * CSS map pixel while retaining bilinear numerical interpolation.
+     */
+    const renderScale =
+        1.0;
 
-            width,
 
-            height
+    const renderWidth =
+        Math.max(
+
+            1,
+
+            Math.round(
+                width *
+                renderScale
+            )
+
+        );
+
+
+    const renderHeight =
+        Math.max(
+
+            1,
+
+            Math.round(
+                height *
+                renderScale
+            )
+
+        );
+
+
+    const offscreen =
+        document.createElement(
+            "canvas"
+        );
+
+
+    offscreen.width =
+        renderWidth;
+
+
+    offscreen.height =
+        renderHeight;
+
+
+    const offscreenCtx =
+        offscreen.getContext(
+            "2d"
+        );
+
+
+    const image =
+        offscreenCtx.createImageData(
+
+            renderWidth,
+
+            renderHeight
 
         );
 
 
     const pixels =
-        imageData.data;
+        image.data;
 
 
-    let pixelOffset =
+    let pixelIndex =
         0;
 
 
     for (
         let y = 0;
-        y < height;
+        y < renderHeight;
         y++
     ) {
 
-        /*
-         * Abort stale render work quickly during repeated movement.
-         */
-        if (
-            generation !==
-            scalarRenderGeneration
-        ) {
-
-            return;
-
-        }
+        const screenY =
+            (
+                y + 0.5
+            ) /
+            renderScale;
 
 
         for (
             let x = 0;
-            x < width;
+            x < renderWidth;
             x++
         ) {
+
+            const screenX =
+                (
+                    x + 0.5
+                ) /
+                renderScale;
+
 
             const lngLat =
                 map.unproject([
 
-                    x + 0.5,
+                    screenX,
 
-                    y + 0.5
+                    screenY
 
                 ]);
 
@@ -4108,40 +3884,62 @@ async function renderWeather() {
             if (color) {
 
                 pixels[
-                    pixelOffset
+                    pixelIndex
                 ] =
-                    color[0];
+                    color.r;
 
 
                 pixels[
-                    pixelOffset + 1
+                    pixelIndex + 1
                 ] =
-                    color[1];
+                    color.g;
 
 
                 pixels[
-                    pixelOffset + 2
+                    pixelIndex + 2
                 ] =
-                    color[2];
+                    color.b;
 
 
+                /*
+                 * Slight transparency keeps state/county geography
+                 * visually clean while preserving the field colors.
+                 */
                 pixels[
-                    pixelOffset + 3
+                    pixelIndex + 3
                 ] =
-                    215;
+                    235;
 
             }
             else {
 
                 pixels[
-                    pixelOffset + 3
+                    pixelIndex
+                ] =
+                    0;
+
+
+                pixels[
+                    pixelIndex + 1
+                ] =
+                    0;
+
+
+                pixels[
+                    pixelIndex + 2
+                ] =
+                    0;
+
+
+                pixels[
+                    pixelIndex + 3
                 ] =
                     0;
 
             }
 
 
-            pixelOffset +=
+            pixelIndex +=
                 4;
 
         }
@@ -4159,9 +3957,9 @@ async function renderWeather() {
     }
 
 
-    weatherCtx.putImageData(
+    offscreenCtx.putImageData(
 
-        imageData,
+        image,
 
         0,
 
@@ -4169,52 +3967,107 @@ async function renderWeather() {
 
     );
 
-}
-/* =========================================================================================
-   WIND HELPERS
-   ========================================================================================= */
 
-function windSpeedKnots(
-    u,
-    v
-) {
+    const dpr =
+        window.devicePixelRatio || 1;
 
-    return (
-        Math.hypot(
-            u,
-            v
-        ) *
-        1.943844
+
+    weatherCtx.setTransform(
+
+        dpr,
+
+        0,
+
+        0,
+
+        dpr,
+
+        0,
+
+        0
+
+    );
+
+
+    weatherCtx.imageSmoothingEnabled =
+        true;
+
+
+    weatherCtx.clearRect(
+
+        0,
+
+        0,
+
+        width,
+
+        height
+
+    );
+
+
+    weatherCtx.drawImage(
+
+        offscreen,
+
+        0,
+
+        0,
+
+        width,
+
+        height
+
     );
 
 }
+/* =========================================================================================
+   WIND BARB SPACING
+   ========================================================================================= */
 
+function getBarbSpacing() {
 
-function windDirectionDegrees(
-    u,
-    v
-) {
-
-    let direction =
-        Math.atan2(
-            -u,
-            -v
-        ) *
-        180 /
-        Math.PI;
+    const zoom =
+        map.getZoom();
 
 
     if (
-        direction < 0
+        zoom < 4.5
     ) {
 
-        direction +=
-            360;
+        return 60;
 
     }
 
 
-    return direction;
+    if (
+        zoom < 5.5
+    ) {
+
+        return 54;
+
+    }
+
+
+    if (
+        zoom < 6.5
+    ) {
+
+        return 48;
+
+    }
+
+
+    if (
+        zoom < 7.5
+    ) {
+
+        return 42;
+
+    }
+
+
+    return 38;
 
 }
 
@@ -4228,26 +4081,37 @@ function drawWindBarb(
     x,
     y,
     u,
-    v,
-    length = 28
+    v
 ) {
 
     const speed =
-        windSpeedKnots(
+        Math.hypot(
             u,
             v
         );
 
 
-    if (
-        !Number.isFinite(
-            speed
-        )
-    ) {
+    ctx.save();
 
-        return;
 
-    }
+    ctx.strokeStyle =
+        "#000000";
+
+
+    ctx.fillStyle =
+        "#000000";
+
+
+    ctx.lineWidth =
+        1.2;
+
+
+    ctx.lineCap =
+        "round";
+
+
+    ctx.lineJoin =
+        "round";
 
 
     /*
@@ -4259,13 +4123,14 @@ function drawWindBarb(
 
         ctx.beginPath();
 
+
         ctx.arc(
 
             x,
 
             y,
 
-            2.5,
+            3,
 
             0,
 
@@ -4273,429 +4138,312 @@ function drawWindBarb(
 
         );
 
+
         ctx.stroke();
+
+
+        ctx.restore();
+
 
         return;
 
     }
 
 
-    const direction =
-        windDirectionDegrees(
-            u,
-            v
-        );
+    /*
+     * Meteorological wind barbs point toward the direction
+     * FROM which the wind is coming.
+     *
+     * For map-screen coordinates:
+     *
+     *   screen x increases eastward
+     *   screen y increases southward
+     *
+     * The staff therefore uses:
+     *
+     *   shaftX = -u / speed
+     *   shaftY =  v / speed
+     */
+    const shaftX =
+        -u /
+        speed;
+
+
+    const shaftY =
+        v /
+        speed;
+
+
+    const normalX =
+        -shaftY;
+
+
+    const normalY =
+        shaftX;
+
+
+    const staffLength =
+        23;
+
+
+    const tipX =
+        x +
+        shaftX *
+        staffLength;
+
+
+    const tipY =
+        y +
+        shaftY *
+        staffLength;
 
 
     /*
-     * Meteorological direction is the direction FROM which the
-     * wind is blowing.
-     *
-     * The barb shaft extends from the station point toward the
-     * direction the wind is coming from.
+     * Main staff.
      */
-    const angle =
-        (
-            direction -
-            90
-        ) *
-        Math.PI /
-        180;
-
-
-    const dx =
-        Math.cos(
-            angle
-        );
-
-
-    const dy =
-        Math.sin(
-            angle
-        );
-
-
-    const endX =
-        x +
-        dx *
-        length;
-
-
-    const endY =
-        y +
-        dy *
-        length;
-
-
     ctx.beginPath();
+
 
     ctx.moveTo(
         x,
         y
     );
 
+
     ctx.lineTo(
-        endX,
-        endY
+        tipX,
+        tipY
     );
+
 
     ctx.stroke();
 
 
     /*
-     * Round to the nearest 5 kt for standard wind-barb symbols.
+     * Round to nearest 5 kt for standard barb notation.
      */
     let remaining =
         Math.round(
-            speed / 5
+            speed /
+            5
         ) *
         5;
 
 
-    const flags =
-        Math.floor(
-            remaining / 50
-        );
-
-
-    remaining -=
-        flags * 50;
-
-
-    const fullBarbs =
-        Math.floor(
-            remaining / 10
-        );
-
-
-    remaining -=
-        fullBarbs * 10;
-
-
-    const halfBarb =
-        remaining >= 5;
-
-
-    /*
-     * Perpendicular direction for feathers.
-     */
-    const featherAngle =
-        angle +
-        Math.PI / 3;
-
-
-    const featherDx =
-        Math.cos(
-            featherAngle
-        );
-
-
-    const featherDy =
-        Math.sin(
-            featherAngle
-        );
-
-
     let position =
-        length;
+        staffLength;
 
 
-    const spacing =
-        5;
+    const featherLength =
+        8;
 
 
-    const fullLength =
-        10;
+    const featherSpacing =
+        4;
 
 
     /*
-     * 50 kt flags.
+     * 50-kt flags.
      */
-    for (
-        let i = 0;
-        i < flags;
-        i++
+    while (
+        remaining >= 50
     ) {
 
         const baseX =
             x +
-            dx *
+            shaftX *
             position;
 
 
         const baseY =
             y +
-            dy *
+            shaftY *
             position;
 
 
         const nextPosition =
             position -
-            spacing;
+            featherSpacing;
 
 
         const nextX =
             x +
-            dx *
+            shaftX *
             nextPosition;
 
 
         const nextY =
             y +
-            dy *
+            shaftY *
             nextPosition;
 
 
         const flagX =
-            baseX +
-            featherDx *
-            fullLength;
+            nextX +
+            normalX *
+            featherLength;
 
 
         const flagY =
-            baseY +
-            featherDy *
-            fullLength;
+            nextY +
+            normalY *
+            featherLength;
 
 
         ctx.beginPath();
+
 
         ctx.moveTo(
             baseX,
             baseY
         );
+
 
         ctx.lineTo(
             flagX,
             flagY
         );
 
+
         ctx.lineTo(
             nextX,
             nextY
         );
 
+
         ctx.closePath();
+
 
         ctx.fill();
 
 
+        remaining -=
+            50;
+
+
         position -=
-            spacing +
+            featherSpacing +
             1;
 
     }
 
 
     /*
-     * 10 kt full barbs.
+     * 10-kt full barbs.
      */
-    for (
-        let i = 0;
-        i < fullBarbs;
-        i++
+    while (
+        remaining >= 10
     ) {
 
         const baseX =
             x +
-            dx *
+            shaftX *
             position;
 
 
         const baseY =
             y +
-            dy *
+            shaftY *
             position;
 
 
         ctx.beginPath();
+
 
         ctx.moveTo(
             baseX,
             baseY
         );
 
+
         ctx.lineTo(
 
             baseX +
-            featherDx *
-            fullLength,
+            normalX *
+            featherLength,
 
             baseY +
-            featherDy *
-            fullLength
+            normalY *
+            featherLength
 
         );
+
 
         ctx.stroke();
 
 
+        remaining -=
+            10;
+
+
         position -=
-            spacing;
+            featherSpacing;
 
     }
 
 
     /*
-     * 5 kt half barb.
+     * 5-kt half barb.
      */
     if (
-        halfBarb
+        remaining >= 5
     ) {
 
         const baseX =
             x +
-            dx *
+            shaftX *
             position;
 
 
         const baseY =
             y +
-            dy *
+            shaftY *
             position;
 
 
         ctx.beginPath();
+
 
         ctx.moveTo(
             baseX,
             baseY
         );
 
+
         ctx.lineTo(
 
             baseX +
-            featherDx *
-            (
-                fullLength *
-                0.55
-            ),
+            normalX *
+            featherLength *
+            0.5,
 
             baseY +
-            featherDy *
-            (
-                fullLength *
-                0.55
-            )
+            normalY *
+            featherLength *
+            0.5
 
         );
+
 
         ctx.stroke();
 
     }
 
-}
 
-
-/* =========================================================================================
-   VECTOR SPACING
-   ========================================================================================= */
-
-function getVectorSpacing() {
-
-    const zoom =
-        map.getZoom();
-
-
-    if (
-        zoom >= 7.5
-    ) {
-
-        return 42;
-
-    }
-
-
-    if (
-        zoom >= 6.5
-    ) {
-
-        return 48;
-
-    }
-
-
-    if (
-        zoom >= 5.5
-    ) {
-
-        return 56;
-
-    }
-
-
-    if (
-        zoom >= 4.5
-    ) {
-
-        return 64;
-
-    }
-
-
-    return 72;
-
-}
-
-
-function getWindBarbLength() {
-
-    const zoom =
-        map.getZoom();
-
-
-    if (
-        zoom >= 7
-    ) {
-
-        return 27;
-
-    }
-
-
-    if (
-        zoom >= 6
-    ) {
-
-        return 25;
-
-    }
-
-
-    if (
-        zoom >= 5
-    ) {
-
-        return 23;
-
-    }
-
-
-    return 21;
+    ctx.restore();
 
 }
 
 
 /* =========================================================================================
-   RENDER VECTOR FIELD
+   RENDER ONE VECTOR FIELD
    ========================================================================================= */
 
 async function renderVectorField(
     field,
-    generation
+    generation,
+    gridOffset = 0
 ) {
-
-    if (
-        !currentRun ||
-        !vectorMetadata[
-            field
-        ]
-    ) {
-
-        return;
-
-    }
-
 
     const z =
         getDataZoom();
@@ -4733,67 +4481,35 @@ async function renderVectorField(
 
 
     const spacing =
-        getVectorSpacing();
-
-
-    const barbLength =
-        getWindBarbLength();
-
-
-    vectorCtx.save();
-
-
-    vectorCtx.strokeStyle =
-        "#000000";
-
-
-    vectorCtx.fillStyle =
-        "#000000";
-
-
-    vectorCtx.lineWidth =
-        1.15;
-
-
-    vectorCtx.lineCap =
-        "round";
-
-
-    vectorCtx.lineJoin =
-        "round";
+        getBarbSpacing();
 
 
     /*
-     * Offset the starting position slightly so the first row/column
-     * does not sit directly against the map edge.
+     * When both wind fields are enabled, the two grids are shifted
+     * slightly so the barbs do not lie exactly on top of one another.
      */
-    const start =
-        spacing /
-        2;
-
-
     for (
-        let y = start;
-        y < height;
-        y += spacing
+        let y =
+            spacing / 2 +
+            gridOffset;
+
+        y <
+            height;
+
+        y +=
+            spacing
     ) {
 
-        if (
-            generation !==
-            vectorRenderGeneration
-        ) {
-
-            vectorCtx.restore();
-
-            return;
-
-        }
-
-
         for (
-            let x = start;
-            x < width;
-            x += spacing
+            let x =
+                spacing / 2 +
+                gridOffset;
+
+            x <
+                width;
+
+            x +=
+                spacing
         ) {
 
             const lngLat =
@@ -4806,7 +4522,7 @@ async function renderVectorField(
                 ]);
 
 
-            const wind =
+            const vector =
                 sampleVector(
 
                     field,
@@ -4820,7 +4536,22 @@ async function renderVectorField(
                 );
 
 
-            if (!wind) {
+            if (!vector) {
+
+                continue;
+
+            }
+
+
+            if (
+                !Number.isFinite(
+                    vector.u
+                ) ||
+
+                !Number.isFinite(
+                    vector.v
+                )
+            ) {
 
                 continue;
 
@@ -4835,11 +4566,9 @@ async function renderVectorField(
 
                 y,
 
-                wind.u,
+                vector.u,
 
-                wind.v,
-
-                barbLength
+                vector.v
 
             );
 
@@ -4847,14 +4576,11 @@ async function renderVectorField(
 
     }
 
-
-    vectorCtx.restore();
-
 }
 
 
 /* =========================================================================================
-   RENDER VECTORS
+   VECTOR RENDERER
    ========================================================================================= */
 
 async function renderVectors() {
@@ -4872,300 +4598,62 @@ async function renderVectors() {
     );
 
 
-    const fields = [];
+    vectorCanvas.style.transform =
+        "none";
 
 
+    const jobs = [];
+
+
+    const bothEnabled =
+        activeOverlays.surfaceWind &&
+        activeOverlays.srWind46;
+
+
+    /*
+     * Surface wind.
+     */
     if (
         activeOverlays.surfaceWind
     ) {
 
-        fields.push(
-            "sfc_wind"
+        jobs.push(
+
+            renderVectorField(
+
+                "sfc_wind",
+
+                generation,
+
+                bothEnabled
+                    ? -7
+                    : 0
+
+            )
+
         );
 
     }
 
 
+    /*
+     * 4–6 km storm-relative wind.
+     */
     if (
         activeOverlays.srWind46
     ) {
 
-        fields.push(
-            "srwind_4_6km"
-        );
+        jobs.push(
 
-    }
+            renderVectorField(
 
+                "srwind_4_6km",
 
-    for (
-        const field
-        of
-        fields
-    ) {
+                generation,
 
-        if (
-            generation !==
-            vectorRenderGeneration
-        ) {
-
-            return;
-
-        }
-
-
-        await renderVectorField(
-
-            field,
-
-            generation
-
-        );
-
-    }
-
-}
-
-
-/* =========================================================================================
-   CONTOUR COLOR HELPERS
-   ========================================================================================= */
-
-function getContourCapeColor(
-    value
-) {
-
-    if (
-        !Number.isFinite(
-            value
-        )
-    ) {
-
-        return "#000000";
-
-    }
-
-
-    if (
-        value <=
-        CAPE_BOUNDS[0]
-    ) {
-
-        return CAPE_COLORS[0];
-
-    }
-
-
-    for (
-        let i = 0;
-        i <
-            CAPE_BOUNDS.length - 1;
-        i++
-    ) {
-
-        if (
-            value >=
-                CAPE_BOUNDS[i] &&
-
-            value <
-                CAPE_BOUNDS[i + 1]
-        ) {
-
-            return CAPE_COLORS[i];
-
-        }
-
-    }
-
-
-    return CAPE_COLORS[
-        CAPE_COLORS.length - 1
-    ];
-
-}
-
-
-function getDcapeColor(
-    value
-) {
-
-    if (
-        !Number.isFinite(
-            value
-        )
-    ) {
-
-        return DCAPE_COLORS[0];
-
-    }
-
-
-    if (
-        value <=
-        DCAPE_BOUNDS[0]
-    ) {
-
-        return DCAPE_COLORS[0];
-
-    }
-
-
-    for (
-        let i = 0;
-        i <
-            DCAPE_BOUNDS.length - 1;
-        i++
-    ) {
-
-        if (
-            value >=
-                DCAPE_BOUNDS[i] &&
-
-            value <
-                DCAPE_BOUNDS[i + 1]
-        ) {
-
-            return DCAPE_COLORS[i];
-
-        }
-
-    }
-
-
-    return DCAPE_COLORS[
-        DCAPE_COLORS.length - 1
-    ];
-
-}
-
-
-/* =========================================================================================
-   CONTOUR INTERPOLATION
-   ========================================================================================= */
-
-function interpolateContourPoint(
-    x1,
-    y1,
-    value1,
-    x2,
-    y2,
-    value2,
-    level
-) {
-
-    const difference =
-        value2 -
-        value1;
-
-
-    let fraction =
-        0.5;
-
-
-    if (
-        Number.isFinite(
-            difference
-        ) &&
-        Math.abs(
-            difference
-        ) >
-            1e-12
-    ) {
-
-        fraction =
-            (
-                level -
-                value1
-            ) /
-            difference;
-
-    }
-
-
-    fraction =
-        Math.max(
-
-            0,
-
-            Math.min(
-
-                1,
-
-                fraction
-
-            )
-
-        );
-
-
-    return {
-
-        x:
-            x1 +
-            (
-                x2 -
-                x1
-            ) *
-            fraction,
-
-        y:
-            y1 +
-            (
-                y2 -
-                y1
-            ) *
-            fraction
-
-    };
-
-}
-
-
-/* =========================================================================================
-   MARCHING-SQUARE SEGMENTS
-   ========================================================================================= */
-
-function contourCellSegments(
-    x0,
-    y0,
-    x1,
-    y1,
-    v00,
-    v10,
-    v11,
-    v01,
-    level
-) {
-
-    const points = [];
-
-
-    /*
-     * Top edge.
-     */
-    if (
-        (
-            v00 < level &&
-            v10 >= level
-        ) ||
-        (
-            v00 >= level &&
-            v10 < level
-        )
-    ) {
-
-        points.push(
-
-            interpolateContourPoint(
-
-                x0,
-                y0,
-                v00,
-
-                x1,
-                y0,
-                v10,
-
-                level
+                bothEnabled
+                    ? 7
+                    : 0
 
             )
 
@@ -5174,365 +4662,13 @@ function contourCellSegments(
     }
 
 
-    /*
-     * Right edge.
-     */
-    if (
-        (
-            v10 < level &&
-            v11 >= level
-        ) ||
-        (
-            v10 >= level &&
-            v11 < level
-        )
-    ) {
-
-        points.push(
-
-            interpolateContourPoint(
-
-                x1,
-                y0,
-                v10,
-
-                x1,
-                y1,
-                v11,
-
-                level
-
-            )
-
-        );
-
-    }
-
-
-    /*
-     * Bottom edge.
-     */
-    if (
-        (
-            v01 < level &&
-            v11 >= level
-        ) ||
-        (
-            v01 >= level &&
-            v11 < level
-        )
-    ) {
-
-        points.push(
-
-            interpolateContourPoint(
-
-                x0,
-                y1,
-                v01,
-
-                x1,
-                y1,
-                v11,
-
-                level
-
-            )
-
-        );
-
-    }
-
-
-    /*
-     * Left edge.
-     */
-    if (
-        (
-            v00 < level &&
-            v01 >= level
-        ) ||
-        (
-            v00 >= level &&
-            v01 < level
-        )
-    ) {
-
-        points.push(
-
-            interpolateContourPoint(
-
-                x0,
-                y0,
-                v00,
-
-                x0,
-                y1,
-                v01,
-
-                level
-
-            )
-
-        );
-
-    }
-
-
-    if (
-        points.length === 2
-    ) {
-
-        return [
-
-            [
-                points[0],
-                points[1]
-            ]
-
-        ];
-
-    }
-
-
-    /*
-     * Ambiguous saddle cell.
-     *
-     * Use the cell-center value to choose the connection.
-     */
-    if (
-        points.length === 4
-    ) {
-
-        const center =
-            (
-                v00 +
-                v10 +
-                v11 +
-                v01
-            ) /
-            4;
-
-
-        if (
-            center >=
-            level
-        ) {
-
-            return [
-
-                [
-                    points[0],
-                    points[3]
-                ],
-
-                [
-                    points[1],
-                    points[2]
-                ]
-
-            ];
-
-        }
-
-
-        return [
-
-            [
-                points[0],
-                points[1]
-            ],
-
-            [
-                points[2],
-                points[3]
-            ]
-
-        ];
-
-    }
-
-
-    return [];
+    await Promise.all(
+        jobs
+    );
 
 }
 
 
-/* =========================================================================================
-   DCAPE DISPLAY SMOOTHING
-   ========================================================================================= */
-
-function smoothContourGrid(
-    grid,
-    columns,
-    rows,
-    passes = 1
-) {
-
-    let source =
-        new Float64Array(
-            grid
-        );
-
-
-    const weights = [
-
-        [1, 2, 1],
-
-        [2, 4, 2],
-
-        [1, 2, 1]
-
-    ];
-
-
-    for (
-        let pass = 0;
-        pass < passes;
-        pass++
-    ) {
-
-        const target =
-            new Float64Array(
-                source.length
-            );
-
-
-        target.fill(
-            NaN
-        );
-
-
-        for (
-            let row = 0;
-            row < rows;
-            row++
-        ) {
-
-            for (
-                let column = 0;
-                column < columns;
-                column++
-            ) {
-
-                let weightedSum =
-                    0;
-
-
-                let weightSum =
-                    0;
-
-
-                for (
-                    let dy = -1;
-                    dy <= 1;
-                    dy++
-                ) {
-
-                    const neighborRow =
-                        row +
-                        dy;
-
-
-                    if (
-                        neighborRow < 0 ||
-                        neighborRow >= rows
-                    ) {
-
-                        continue;
-
-                    }
-
-
-                    for (
-                        let dx = -1;
-                        dx <= 1;
-                        dx++
-                    ) {
-
-                        const neighborColumn =
-                            column +
-                            dx;
-
-
-                        if (
-                            neighborColumn < 0 ||
-                            neighborColumn >= columns
-                        ) {
-
-                            continue;
-
-                        }
-
-
-                        const value =
-                            source[
-                                neighborRow *
-                                columns +
-                                neighborColumn
-                            ];
-
-
-                        if (
-                            !Number.isFinite(
-                                value
-                            )
-                        ) {
-
-                            continue;
-
-                        }
-
-
-                        const weight =
-                            weights[
-                                dy + 1
-                            ][
-                                dx + 1
-                            ];
-
-
-                        weightedSum +=
-                            value *
-                            weight;
-
-
-                        weightSum +=
-                            weight;
-
-                    }
-
-                }
-
-
-                if (
-                    weightSum > 0
-                ) {
-
-                    target[
-                        row *
-                        columns +
-                        column
-                    ] =
-                        weightedSum /
-                        weightSum;
-
-                }
-
-            }
-
-        }
-
-
-        source =
-            target;
-
-    }
-
-
-    return source;
-
-}
 /* =========================================================================================
    MARCHING-SQUARES INTERPOLATION
    ========================================================================================= */
@@ -6131,7 +5267,8 @@ function labelTooClose(
         ) {
 
             return true;
-                   }
+
+        }
 
     }
 
@@ -6145,7 +5282,7 @@ function labelTooClose(
    MSLP CONTOUR RENDERER
    ========================================================================================= */
 
-function getCapeColor(value) {
+function getContourCapeColor(value) {
 
     if (!Number.isFinite(value)) {
         return "#000000";
@@ -6177,6 +5314,81 @@ function getCapeColor(value) {
     );
 
     return CAPE_COLORS[index];
+
+}
+
+
+function getDcapeColor(value) {
+
+    if (!Number.isFinite(value)) {
+        return DCAPE_COLORS[0];
+    }
+
+    let index = DCAPE_BOUNDS.length - 1;
+
+    for (let i = 0; i < DCAPE_BOUNDS.length - 1; i++) {
+        if (value >= DCAPE_BOUNDS[i] && value < DCAPE_BOUNDS[i + 1]) {
+            index = i;
+            break;
+        }
+    }
+
+    if (value < DCAPE_BOUNDS[0]) {
+        index = 0;
+    }
+
+    index = Math.max(0, Math.min(DCAPE_COLORS.length - 1, index));
+
+    return DCAPE_COLORS[index];
+
+}
+
+
+function smoothContourGrid(grid, columns, rows, passes = 1) {
+
+    let source = new Float32Array(grid);
+
+    for (let pass = 0; pass < passes; pass++) {
+        const destination = new Float32Array(source.length);
+        destination.fill(NaN);
+
+        for (let row = 0; row < rows; row++) {
+            for (let column = 0; column < columns; column++) {
+                let weightedSum = 0;
+                let totalWeight = 0;
+
+                for (let dy = -1; dy <= 1; dy++) {
+                    const sampleRow = row + dy;
+                    if (sampleRow < 0 || sampleRow >= rows) continue;
+
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const sampleColumn = column + dx;
+                        if (sampleColumn < 0 || sampleColumn >= columns) continue;
+
+                        const value = source[sampleRow * columns + sampleColumn];
+                        if (!Number.isFinite(value)) continue;
+
+                        const weight =
+                            dx === 0 && dy === 0
+                                ? 4
+                                : (dx === 0 || dy === 0 ? 2 : 1);
+
+                        weightedSum += value * weight;
+                        totalWeight += weight;
+                    }
+                }
+
+                if (totalWeight > 0) {
+                    destination[row * columns + column] =
+                        weightedSum / totalWeight;
+                }
+            }
+        }
+
+        source = destination;
+    }
+
+    return source;
 
 }
 
@@ -6301,7 +5513,7 @@ async function renderContourField(
                 continue;
             }
 
-            values[
+            contourValues[
                 row * columns + column
             ] = value;
 
@@ -6328,6 +5540,11 @@ async function renderContourField(
         return;
     }
 
+    const contourValues =
+        field === "dcape"
+            ? smoothContourGrid(values, columns, rows, 1)
+            : values;
+
     const interval =
         Number(
             metadata.display &&
@@ -6337,15 +5554,19 @@ async function renderContourField(
         2;
 
     const configuredMinimum =
-        metadata.display &&
-        metadata.display.minimum !== undefined &&
-        metadata.display.minimum !== null
-            ? Number(metadata.display.minimum)
+        field === "dcape"
+            ? 200
             : (
-                definition.minimum !== undefined &&
-                definition.minimum !== null
-                    ? Number(definition.minimum)
-                    : null
+                metadata.display &&
+                metadata.display.minimum !== undefined &&
+                metadata.display.minimum !== null
+                    ? Number(metadata.display.minimum)
+                    : (
+                        definition.minimum !== undefined &&
+                        definition.minimum !== null
+                            ? Number(definition.minimum)
+                            : null
+                    )
             );
 
     let firstLevel =
@@ -6383,9 +5604,13 @@ async function renderContourField(
             : null;
 
     const colorScheme =
-        metadataColorScheme ||
-        definition.colorScheme ||
-        "fixed";
+        field === "dcape"
+            ? "dcape"
+            : (
+                metadataColorScheme ||
+                definition.colorScheme ||
+                "fixed"
+            );
 
     const fixedColor =
         (
@@ -6418,9 +5643,13 @@ async function renderContourField(
     ) {
 
         const contourColor =
-            colorScheme === "cape"
-                ? getCapeColor(level)
-                : fixedColor;
+            colorScheme === "dcape"
+                ? getDcapeColor(level)
+                : (
+                    colorScheme === "cape"
+                        ? getContourCapeColor(level)
+                        : fixedColor
+                );
 
         contourCtx.strokeStyle =
             contourColor;
@@ -6446,22 +5675,22 @@ async function renderContourField(
                 const x = column * step;
 
                 const valueTopLeft =
-                    values[
+                    contourValues[
                         row * columns + column
                     ];
 
                 const valueTopRight =
-                    values[
+                    contourValues[
                         row * columns + column + 1
                     ];
 
                 const valueBottomLeft =
-                    values[
+                    contourValues[
                         (row + 1) * columns + column
                     ];
 
                 const valueBottomRight =
-                    values[
+                    contourValues[
                         (row + 1) * columns + column + 1
                     ];
 
@@ -6731,7 +5960,7 @@ async function loadGeography() {
     ) {
 
         const states =
-                       topojson.feature(
+            topojson.feature(
 
                 topology,
 
@@ -7331,7 +6560,8 @@ function renderCities() {
 
 
         geographyCtx.strokeText(
-                       name,
+
+            name,
 
             point.x,
 
@@ -7341,7 +6571,7 @@ function renderCities() {
 
 
         geographyCtx.fillStyle =
-            "#111111";
+            "#333333";
 
 
         geographyCtx.fillText(
@@ -7377,132 +6607,88 @@ function renderGeography() {
     );
 
 
-    geographyCanvas.style.transform =
-        "none";
+    geographyCtx.save();
 
 
-    const zoom =
-        map.getZoom();
+    /* -------------------------------------------------------------------------------------
+       COUNTIES
+       ------------------------------------------------------------------------------------- */
+
+    geographyCtx.beginPath();
+
+
+    geographyCtx.strokeStyle =
+        "rgba(145,145,145,0.58)";
+
+
+    geographyCtx.lineWidth =
+        0.55;
+
+
+    for (
+        const feature
+        of
+        countyFeatures
+    ) {
+
+        drawGeoJSONLine(
+
+            feature.geometry,
+
+            geographyCtx
+
+        );
+
+    }
+
+
+    geographyCtx.stroke();
+
+
+    /* -------------------------------------------------------------------------------------
+       STATES
+       ------------------------------------------------------------------------------------- */
+
+    geographyCtx.beginPath();
+
+
+    geographyCtx.strokeStyle =
+        "rgba(65,65,65,0.92)";
+
+
+    geographyCtx.lineWidth =
+        1.25;
+
+
+    for (
+        const feature
+        of
+        stateFeatures
+    ) {
+
+        drawGeoJSONLine(
+
+            feature.geometry,
+
+            geographyCtx
+
+        );
+
+    }
+
+
+    geographyCtx.stroke();
+
+
+    geographyCtx.restore();
 
 
     /*
-     * COUNTY BOUNDARIES
+     * Cities are drawn last on geographyCanvas so they appear above
+     * county and state boundaries.
      *
-     * Keep counties lighter than state borders so the map does not
-     * become visually cluttered.
-     */
-    if (
-        countiesEnabled &&
-        zoom >= 5
-    ) {
-
-        geographyCtx.save();
-
-
-        geographyCtx.beginPath();
-
-
-        geographyCtx.strokeStyle =
-            "rgba(70,70,70,0.48)";
-
-
-        geographyCtx.lineWidth =
-            zoom >= 7
-                ? 0.85
-                : 0.65;
-
-
-        geographyCtx.lineJoin =
-            "round";
-
-
-        geographyCtx.lineCap =
-            "round";
-
-
-        for (
-            const feature
-            of
-            countyFeatures
-        ) {
-
-            drawGeoJSONLine(
-
-                feature.geometry,
-
-                geographyCtx
-
-            );
-
-        }
-
-
-        geographyCtx.stroke();
-
-
-        geographyCtx.restore();
-
-    }
-
-
-    /*
-     * STATE BOUNDARIES
-     */
-    if (
-        statesEnabled
-    ) {
-
-        geographyCtx.save();
-
-
-        geographyCtx.beginPath();
-
-
-        geographyCtx.strokeStyle =
-            "rgba(0,0,0,0.88)";
-
-
-        geographyCtx.lineWidth =
-            zoom >= 6
-                ? 1.45
-                : 1.25;
-
-
-        geographyCtx.lineJoin =
-            "round";
-
-
-        geographyCtx.lineCap =
-            "round";
-
-
-        for (
-            const feature
-            of
-            stateFeatures
-        ) {
-
-            drawGeoJSONLine(
-
-                feature.geometry,
-
-                geographyCtx
-
-            );
-
-        }
-
-
-        geographyCtx.stroke();
-
-
-        geographyCtx.restore();
-
-    }
-
-
-    /*
-     * CITY LABELS
+     * MSLP pressure labels remain above cities because those labels use
+     * contourLabelCanvas at z-index 6.
      */
     renderCities();
 
@@ -7510,16 +6696,21 @@ function renderGeography() {
 
 
 /* =========================================================================================
-   LEGEND
+   DRAW COLOR LEGEND
    ========================================================================================= */
 
-function updateLegend() {
+function drawColorLegend(
+    colors
+) {
 
+    /*
+     * Your existing HTML uses #legend-bar.
+     *
+     * Do not create another legend canvas here.
+     */
     if (
-        !legend ||
         !legendCanvas ||
-        !legendCtx ||
-        !legendLabels
+        !legendCtx
     ) {
 
         return;
@@ -7527,42 +6718,25 @@ function updateLegend() {
     }
 
 
-    const definition =
-        WEATHER_FIELDS[
-            activeField
-        ];
-
-
-    if (!definition) {
-
-        legend.style.display =
-            "none";
-
-
-        return;
-
-    }
-
-
-    legend.style.display =
-        "";
-
-
-    legendTitle.textContent =
-        `${definition.shortName} (${definition.units})`;
-
-
     const rect =
         legendCanvas.getBoundingClientRect();
 
 
+    /*
+     * Use a fallback width/height in case the element has not yet
+     * received its final CSS dimensions.
+     */
     const width =
         Math.max(
 
             1,
 
             Math.round(
-                rect.width
+
+                rect.width ||
+                legendCanvas.clientWidth ||
+                240
+
             )
 
         );
@@ -7574,7 +6748,11 @@ function updateLegend() {
             1,
 
             Math.round(
-                rect.height
+
+                rect.height ||
+                legendCanvas.clientHeight ||
+                18
+
             )
 
         );
@@ -7628,464 +6806,177 @@ function updateLegend() {
     );
 
 
-    legendLabels.innerHTML =
+    const colorWidth =
+        width /
+        colors.length;
+
+
+    for (
+        let index = 0;
+        index < colors.length;
+        index++
+    ) {
+
+        legendCtx.fillStyle =
+            colors[
+                index
+            ];
+
+
+        legendCtx.fillRect(
+
+            index *
+            colorWidth,
+
+            0,
+
+            Math.ceil(
+                colorWidth +
+                0.5
+            ),
+
+            height
+
+        );
+
+    }
+
+}
+
+
+/* =========================================================================================
+   UPDATE LEGEND
+   ========================================================================================= */
+
+function updateLegend() {
+
+    if (
+        !legend ||
+        !legendTitle ||
+        !legendLabels
+    ) {
+
+        return;
+
+    }
+
+
+    /*
+     * No filled field = no filled-field color legend.
+     *
+     * MSLP remains independent and does not require a color bar.
+     */
+    if (
+        !activeField ||
+        activeField ===
+            "none"
+    ) {
+
+        legend.style.display =
+            "none";
+
+
+        return;
+
+    }
+
+
+    const field =
+        WEATHER_FIELDS[
+            activeField
+        ];
+
+
+    if (!field) {
+
+        legend.style.display =
+            "none";
+
+
+        return;
+
+    }
+
+
+    legend.style.display =
         "";
 
 
+    legendTitle.textContent =
+        `${field.name} (${field.units})`;
+
+
+    /*
+     * CAPE family.
+     */
     if (
-        definition.type ===
+        field.type ===
         "cape"
     ) {
 
-        const colors =
-            CAPE_COLORS;
+        drawColorLegend(
+            CAPE_COLORS
+        );
 
 
-        const segmentWidth =
-            width /
-            colors.length;
-
-
-        for (
-            let i = 0;
-            i < colors.length;
-            i++
-        ) {
-
-            legendCtx.fillStyle =
-                colors[i];
-
-
-            legendCtx.fillRect(
-
-                i *
-                    segmentWidth,
-
-                0,
-
-                Math.ceil(
-                    segmentWidth
-                ) +
-                    1,
-
-                height
-
-            );
-
-        }
-
-
-        const labels = [
-
-            {
-                text:
-                    "0",
-
-                position:
-                    0
-            },
-
-            {
-                text:
-                    "1000",
-
-                position:
-                    1000 /
-                    6000
-            },
-
-            {
-                text:
-                    "2000",
-
-                position:
-                    2000 /
-                    6000
-            },
-
-            {
-                text:
-                    "3000",
-
-                position:
-                    3000 /
-                    6000
-            },
-
-            {
-                text:
-                    "4000",
-
-                position:
-                    4000 /
-                    6000
-            },
-
-            {
-                text:
-                    "5000",
-
-                position:
-                    5000 /
-                    6000
-            },
-
-            {
-                text:
-                    "6000+",
-
-                position:
-                    1
-            }
-
-        ];
-
-
-        for (
-            const label
-            of
-            labels
-        ) {
-
-            const span =
-                document.createElement(
-                    "span"
-                );
-
-
-            span.textContent =
-                label.text;
-
-
-            span.style.position =
-                "absolute";
-
-
-            span.style.left =
-                `${label.position * 100}%`;
-
-
-            span.style.transform =
-                label.position === 0
-                    ? "translateX(0)"
-                    : (
-                        label.position === 1
-                            ? "translateX(-100%)"
-                            : "translateX(-50%)"
-                    );
-
-
-            legendLabels.appendChild(
-                span
-            );
-
-        }
+        legendLabels.innerHTML =
+            "<span>100</span>" +
+            "<span>1000</span>" +
+            "<span>2000</span>" +
+            "<span>3000</span>" +
+            "<span>4000</span>" +
+            "<span>5000</span>" +
+            "<span>6000+</span>";
 
     }
 
 
+    /*
+     * 0–3 km MLCAPE.
+     */
     else if (
-        definition.type ===
+        field.type ===
         "cape_0_3km"
     ) {
 
-        const colors =
-            CAPE_03KM_COLORS.slice(
-                1
-            );
+        drawColorLegend(
+            CAPE_03KM_COLORS.slice(1)
+        );
 
-
-        const segmentWidth =
-            width /
-            colors.length;
-
-
-        for (
-            let i = 0;
-            i < colors.length;
-            i++
-        ) {
-
-            legendCtx.fillStyle =
-                colors[i];
-
-
-            legendCtx.fillRect(
-
-                i *
-                    segmentWidth,
-
-                0,
-
-                Math.ceil(
-                    segmentWidth
-                ) +
-                    1,
-
-                height
-
-            );
-
-        }
-
-
-        const labels = [
-
-            {
-                text:
-                    "10",
-
-                position:
-                    0
-            },
-
-            {
-                text:
-                    "100",
-
-                position:
-                    90 /
-                    590
-            },
-
-            {
-                text:
-                    "200",
-
-                position:
-                    190 /
-                    590
-            },
-
-            {
-                text:
-                    "300",
-
-                position:
-                    290 /
-                    590
-            },
-
-            {
-                text:
-                    "400",
-
-                position:
-                    390 /
-                    590
-            },
-
-            {
-                text:
-                    "500",
-
-                position:
-                    490 /
-                    590
-            },
-
-            {
-                text:
-                    "600+",
-
-                position:
-                    1
-            }
-
-        ];
-
-
-        for (
-            const label
-            of
-            labels
-        ) {
-
-            const span =
-                document.createElement(
-                    "span"
-                );
-
-
-            span.textContent =
-                label.text;
-
-
-            span.style.position =
-                "absolute";
-
-
-            span.style.left =
-                `${label.position * 100}%`;
-
-
-            span.style.transform =
-                label.position === 0
-                    ? "translateX(0)"
-                    : (
-                        label.position === 1
-                            ? "translateX(-100%)"
-                            : "translateX(-50%)"
-                    );
-
-
-            legendLabels.appendChild(
-                span
-            );
-
-        }
+        legendLabels.innerHTML =
+            "<span>10</span>" +
+            "<span>100</span>" +
+            "<span>200</span>" +
+            "<span>300</span>" +
+            "<span>400</span>" +
+            "<span>500</span>" +
+            "<span>600+</span>";
 
     }
 
 
+    /*
+     * Surface dewpoint.
+     */
     else if (
-        definition.type ===
+        field.type ===
         "dewpoint"
     ) {
 
-        const colors =
-            DEWPOINT_COLORS;
+        drawColorLegend(
+            DEWPOINT_COLORS
+        );
 
 
-        const segmentWidth =
-            width /
-            colors.length;
-
-
-        for (
-            let i = 0;
-            i < colors.length;
-            i++
-        ) {
-
-            legendCtx.fillStyle =
-                colors[i];
-
-
-            legendCtx.fillRect(
-
-                i *
-                    segmentWidth,
-
-                0,
-
-                Math.ceil(
-                    segmentWidth
-                ) +
-                    1,
-
-                height
-
-            );
-
-        }
-
-
-        const labels = [
-
-            {
-                text:
-                    "-20",
-
-                position:
-                    0
-            },
-
-            {
-                text:
-                    "0",
-
-                position:
-                    20 /
-                    110
-            },
-
-            {
-                text:
-                    "20",
-
-                position:
-                    40 /
-                    110
-            },
-
-            {
-                text:
-                    "40",
-
-                position:
-                    60 /
-                    110
-            },
-
-            {
-                text:
-                    "60",
-
-                position:
-                    80 /
-                    110
-            },
-
-            {
-                text:
-                    "80",
-
-                position:
-                    100 /
-                    110
-            },
-
-            {
-                text:
-                    "90",
-
-                position:
-                    1
-            }
-
-        ];
-
-
-        for (
-            const label
-            of
-            labels
-        ) {
-
-            const span =
-                document.createElement(
-                    "span"
-                );
-
-
-            span.textContent =
-                label.text;
-
-
-            span.style.position =
-                "absolute";
-
-
-            span.style.left =
-                `${label.position * 100}%`;
-
-
-            span.style.transform =
-                label.position === 0
-                    ? "translateX(0)"
-                    : (
-                        label.position === 1
-                            ? "translateX(-100%)"
-                            : "translateX(-50%)"
-                    );
-
-
-            legendLabels.appendChild(
-                span
-            );
-
-        }
+        legendLabels.innerHTML =
+            "<span>-40</span>" +
+            "<span>-20</span>" +
+            "<span>0</span>" +
+            "<span>20</span>" +
+            "<span>40</span>" +
+            "<span>60</span>" +
+            "<span>80</span>" +
+            "<span>90</span>";
 
     }
 
@@ -8093,87 +6984,82 @@ function updateLegend() {
 
 
 /* =========================================================================================
-   FORMAT CURSOR VALUE
+   CURSOR READOUT
    ========================================================================================= */
 
-function formatCursorValue(
-    field,
-    value
-) {
-
-    if (
-        !Number.isFinite(
-            value
-        )
-    ) {
-
-        return "--";
-
-    }
+let lastCursorUpdate =
+    0;
 
 
-    const definition =
-        WEATHER_FIELDS[
-            field
-        ];
-
-
-    if (!definition) {
-
-        return (
-            value.toFixed(
-                1
-            )
-        );
-
-    }
-
-
-    if (
-        definition.type ===
-        "cape" ||
-        definition.type ===
-        "cape_0_3km"
-    ) {
-
-        return (
-            `${Math.round(value)} ${definition.units}`
-        );
-
-    }
-
-
-    if (
-        definition.type ===
-        "dewpoint"
-    ) {
-
-        return (
-            `${value.toFixed(1)}°F`
-        );
-
-    }
-
-
-    return (
-        `${value.toFixed(1)} ${definition.units}`
-    );
-
-}
-
-
-/* =========================================================================================
-   UPDATE CURSOR READOUT
-   ========================================================================================= */
-
-function updateCursorReadout(
+async function updateCursor(
     event
 ) {
 
+    /*
+     * Limit cursor sampling frequency.
+     */
+    const now =
+        performance.now();
+
+
     if (
-        !currentRun ||
-        !activeField
+        now -
+        lastCursorUpdate <
+        35
     ) {
+
+        return;
+
+    }
+
+
+    lastCursorUpdate =
+        now;
+
+
+    const generation =
+        ++cursorGeneration;
+
+
+    /*
+     * Always show the cursor location.
+     */
+    if (cursorLocation) {
+
+        cursorLocation.textContent =
+            `${event.lngLat.lat.toFixed(3)}, ` +
+            `${event.lngLat.lng.toFixed(3)}`;
+
+    }
+
+
+    /*
+     * If there is no filled field, there is no scalar cursor value.
+     */
+    if (
+        !activeField ||
+        activeField ===
+            "none" ||
+        !WEATHER_FIELDS[
+            activeField
+        ]
+    ) {
+
+        if (cursorField) {
+
+            cursorField.textContent =
+                "No filled field";
+
+        }
+
+
+        if (cursorValue) {
+
+            cursorValue.textContent =
+                "--";
+
+        }
+
 
         return;
 
@@ -8182,6 +7068,96 @@ function updateCursorReadout(
 
     const z =
         getDataZoom();
+
+
+    const tileX =
+        Math.floor(
+
+            lonToTileX(
+
+                event.lngLat.lng,
+
+                z
+
+            )
+
+        );
+
+
+    const tileY =
+        Math.floor(
+
+            latToTileY(
+
+                event.lngLat.lat,
+
+                z
+
+            )
+
+        );
+
+
+    /*
+     * Load a small neighborhood around the cursor.
+     *
+     * Bilinear interpolation can cross tile boundaries, so neighboring
+     * tiles may be needed even when the cursor itself is inside one tile.
+     */
+    const cursorTileJobs =
+        [];
+
+
+    for (
+        let dx = -1;
+        dx <= 1;
+        dx++
+    ) {
+
+        for (
+            let dy = -1;
+            dy <= 1;
+            dy++
+        ) {
+
+            cursorTileJobs.push(
+
+                loadScalarTile(
+
+                    activeField,
+
+                    z,
+
+                    tileX + dx,
+
+                    tileY + dy
+
+                )
+
+            );
+
+        }
+
+    }
+
+
+    await Promise.all(
+        cursorTileJobs
+    );
+
+
+    /*
+     * Ignore an old cursor request if the mouse has already moved and
+     * started a newer request.
+     */
+    if (
+        generation !==
+        cursorGeneration
+    ) {
+
+        return;
+
+    }
 
 
     const value =
@@ -8200,79 +7176,14 @@ function updateCursorReadout(
         );
 
 
-    const definition =
+    const field =
         WEATHER_FIELDS[
             activeField
         ];
 
 
-    if (
-        cursorField
-    ) {
+    if (cursorField) {
 
-        cursorField.textContent =
-            definition
-                ? definition.shortName
-                : activeField;
-
-    }
-
-
-    if (
-        cursorValue
-    ) {
-
-        cursorValue.textContent =
-            formatCursorValue(
-
-                activeField,
-
-                value
-
-            );
-
-    }
-
-
-    if (
-        cursorLocation
-    ) {
-
-        cursorLocation.textContent =
-            `${event.lngLat.lat.toFixed(3)}, ` +
-            `${event.lngLat.lng.toFixed(3)}`;
-
-    }
-
-}
-
-
-/* =========================================================================================
-   CLEAR CURSOR READOUT
-   ========================================================================================= */
-
-function clearCursorReadout() {
-
-    if (
-        cursorValue
-    ) {
-
-        cursorValue.textContent =
-            "--";
-
-    }
-
-
-    if (
-        cursorLocation
-    ) {
-
-        cursorLocation.textContent =
-            "--";
-
-    }
-
-}
         cursorField.textContent =
             field.name;
 
@@ -8873,7 +7784,7 @@ if (mslpToggle) {
 
 
             /*
-                        * renderContours clears both the line canvas and the label
+             * renderContours clears both the line canvas and the label
              * canvas before checking whether MSLP is enabled.
              *
              * Therefore unchecking MSLP immediately removes both.
