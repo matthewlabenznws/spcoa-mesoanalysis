@@ -5513,7 +5513,7 @@ async function renderContourField(
                 continue;
             }
 
-            contourValues[
+            values[
                 row * columns + column
             ] = value;
 
