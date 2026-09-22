@@ -4631,6 +4631,339 @@ function getMarchingSegments(
     }
 }
 /* =========================================================================================
+   SAMPLE CONTOUR FIELD
+   ========================================================================================= */
+
+function sampleContour(
+    field,
+    lon,
+    lat,
+    z
+) {
+    const metadata =
+        contourMetadata[field];
+
+    if (!metadata) {
+        return null;
+    }
+
+    const encoding =
+        getEncoding(
+            metadata,
+            {
+                dtype: "uint16",
+                scale: 1,
+                offset: 0,
+                nodata: SCALAR_NODATA
+            }
+        );
+
+    /*
+     * Convert longitude / latitude to fractional XYZ tile coordinates.
+     */
+    const tileXFloat =
+        lonToTileX(
+            lon,
+            z
+        );
+
+    const tileYFloat =
+        latToTileY(
+            lat,
+            z
+        );
+
+    if (
+        !Number.isFinite(tileXFloat) ||
+        !Number.isFinite(tileYFloat)
+    ) {
+        return null;
+    }
+
+    /*
+     * Convert the fractional tile coordinate into a global pixel
+     * coordinate at this zoom level.
+     */
+    const globalPixelX =
+        tileXFloat *
+        TILE_SIZE;
+
+    const globalPixelY =
+        tileYFloat *
+        TILE_SIZE;
+
+    /*
+     * Bilinear interpolation uses the four surrounding numerical
+     * pixels.
+     */
+    const x0 =
+        Math.floor(
+            globalPixelX
+        );
+
+    const y0 =
+        Math.floor(
+            globalPixelY
+        );
+
+    const x1 =
+        x0 + 1;
+
+    const y1 =
+        y0 + 1;
+
+    const fractionX =
+        globalPixelX -
+        x0;
+
+    const fractionY =
+        globalPixelY -
+        y0;
+
+    /*
+     * Read a numerical pixel from the contour tile cache.
+     *
+     * This works across XYZ tile boundaries, which is important for
+     * keeping contours continuous between adjacent tiles.
+     */
+    function readContourPixel(
+        globalX,
+        globalY
+    ) {
+        const tileX =
+            Math.floor(
+                globalX /
+                TILE_SIZE
+            );
+
+        const tileY =
+            Math.floor(
+                globalY /
+                TILE_SIZE
+            );
+
+        const pixelX =
+            (
+                (
+                    globalX %
+                    TILE_SIZE
+                ) +
+                TILE_SIZE
+            ) %
+            TILE_SIZE;
+
+        const pixelY =
+            (
+                (
+                    globalY %
+                    TILE_SIZE
+                ) +
+                TILE_SIZE
+            ) %
+            TILE_SIZE;
+
+        const n =
+            Math.pow(
+                2,
+                z
+            );
+
+        /*
+         * XYZ x wraps around the globe.
+         */
+        const wrappedTileX =
+            (
+                (
+                    tileX %
+                    n
+                ) +
+                n
+            ) %
+            n;
+
+        /*
+         * Y does not wrap.
+         */
+        if (
+            tileY < 0 ||
+            tileY >= n
+        ) {
+            return null;
+        }
+
+        const key =
+            contourTileKey(
+                field,
+                z,
+                wrappedTileX,
+                tileY
+            );
+
+        const tile =
+            contourTileCache.get(
+                key
+            );
+
+        if (!tile) {
+            return null;
+        }
+
+        const index =
+            pixelY *
+            TILE_SIZE +
+            pixelX;
+
+        if (
+            index < 0 ||
+            index >= tile.length
+        ) {
+            return null;
+        }
+
+        const rawValue =
+            tile[index];
+
+        if (
+            rawValue ===
+            encoding.nodata
+        ) {
+            return null;
+        }
+
+        return (
+            rawValue *
+            encoding.scale +
+            encoding.offset
+        );
+    }
+
+    const value00 =
+        readContourPixel(
+            x0,
+            y0
+        );
+
+    const value10 =
+        readContourPixel(
+            x1,
+            y0
+        );
+
+    const value01 =
+        readContourPixel(
+            x0,
+            y1
+        );
+
+    const value11 =
+        readContourPixel(
+            x1,
+            y1
+        );
+
+    /*
+     * Ideally all four pixels are present so we can perform proper
+     * bilinear interpolation.
+     */
+    if (
+        Number.isFinite(value00) &&
+        Number.isFinite(value10) &&
+        Number.isFinite(value01) &&
+        Number.isFinite(value11)
+    ) {
+        const top =
+            value00 *
+            (1 - fractionX) +
+            value10 *
+            fractionX;
+
+        const bottom =
+            value01 *
+            (1 - fractionX) +
+            value11 *
+            fractionX;
+
+        return (
+            top *
+            (1 - fractionY) +
+            bottom *
+            fractionY
+        );
+    }
+
+    /*
+     * Near missing-data boundaries, use the closest available pixel
+     * rather than creating an artificial gap in the contour field.
+     */
+    const candidates = [
+        {
+            value: value00,
+            distance:
+                fractionX *
+                fractionX +
+                fractionY *
+                fractionY
+        },
+        {
+            value: value10,
+            distance:
+                (1 - fractionX) *
+                (1 - fractionX) +
+                fractionY *
+                fractionY
+        },
+        {
+            value: value01,
+            distance:
+                fractionX *
+                fractionX +
+                (1 - fractionY) *
+                (1 - fractionY)
+        },
+        {
+            value: value11,
+            distance:
+                (1 - fractionX) *
+                (1 - fractionX) +
+                (1 - fractionY) *
+                (1 - fractionY)
+        }
+    ];
+
+    let nearestValue =
+        null;
+
+    let nearestDistance =
+        Infinity;
+
+    for (
+        const candidate
+        of
+        candidates
+    ) {
+        if (
+            !Number.isFinite(
+                candidate.value
+            )
+        ) {
+            continue;
+        }
+
+        if (
+            candidate.distance <
+            nearestDistance
+        ) {
+            nearestDistance =
+                candidate.distance;
+
+            nearestValue =
+                candidate.value;
+        }
+    }
+
+    return nearestValue;
+}
+/* =========================================================================================
    CONTOUR SAMPLING GRID
    ========================================================================================= */
 function getContourGridStep() {
