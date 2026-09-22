@@ -18,6 +18,11 @@
      - 9–11 km Storm-Relative Wind Barbs
      - Effective Storm-Relative Wind Barbs
      - Anvil-Level Storm-Relative Wind Barbs
+     - 0–1 km Bulk Shear Barbs
+     - 0–3 km Bulk Shear Barbs
+     - 0–6 km Bulk Shear Barbs
+     - 0–8 km Bulk Shear Barbs
+     - Effective Bulk Shear Barbs
 
    INDEPENDENT CONTOUR OVERLAYS
      - Surface MSLP
@@ -323,6 +328,36 @@ const VECTOR_FIELDS = {
         name: "Anvil-Level Storm-Relative Wind",
         shortName: "Anvil-Level SR Wind",
         defaultColor: "#000000"
+    },
+
+    shear_0_1km: {
+        name: "0–1 km Bulk Shear",
+        shortName: "0–1 km Bulk Shear",
+        defaultColor: "#000000"
+    },
+
+    shear_0_3km: {
+        name: "0–3 km Bulk Shear",
+        shortName: "0–3 km Bulk Shear",
+        defaultColor: "#000000"
+    },
+
+    shear_0_6km: {
+        name: "0–6 km Bulk Shear",
+        shortName: "0–6 km Bulk Shear",
+        defaultColor: "#000000"
+    },
+
+    shear_0_8km: {
+        name: "0–8 km Bulk Shear",
+        shortName: "0–8 km Bulk Shear",
+        defaultColor: "#000000"
+    },
+
+    effective_shear: {
+        name: "Effective Bulk Shear",
+        shortName: "Effective Bulk Shear",
+        defaultColor: "#000000"
     }
 
 };
@@ -333,7 +368,12 @@ const VECTOR_OVERLAY_CONFIG = [
     { field: "srwind_4_6km", stateKey: "srWind46", toggleId: "srwind-46-toggle" },
     { field: "srwind_9_11km", stateKey: "srWind911", toggleId: "srwind-911-toggle" },
     { field: "srwind_effective", stateKey: "srWindEffective", toggleId: "srwind-effective-toggle" },
-    { field: "srwind_anvil", stateKey: "srWindAnvil", toggleId: "srwind-anvil-toggle" }
+    { field: "srwind_anvil", stateKey: "srWindAnvil", toggleId: "srwind-anvil-toggle" },
+    { field: "shear_0_1km", stateKey: "shear01", toggleId: "shear-01-toggle" },
+    { field: "shear_0_3km", stateKey: "shear03", toggleId: "shear-03-toggle" },
+    { field: "shear_0_6km", stateKey: "shear06", toggleId: "shear-06-toggle" },
+    { field: "shear_0_8km", stateKey: "shear08", toggleId: "shear-08-toggle" },
+    { field: "effective_shear", stateKey: "effectiveShear", toggleId: "effective-shear-toggle" }
 ];
 
 const vectorColors = Object.fromEntries(
@@ -389,6 +429,11 @@ const activeOverlays = {
     srWind911: false,
     srWindEffective: false,
     srWindAnvil: false,
+    shear01: false,
+    shear03: false,
+    shear06: false,
+    shear08: false,
+    effectiveShear: false,
     mslp: false,
     dcape: false
 };
