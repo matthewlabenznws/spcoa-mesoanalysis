@@ -27,6 +27,7 @@
    INDEPENDENT CONTOUR OVERLAYS
      - Surface MSLP
      - DCAPE
+     - Warm Cloud Depth
 
    RENDERING
      - Full-resolution scalar canvas
@@ -34,8 +35,10 @@
      - Numerical canvas follows camera during pan/zoom
      - Fresh numerical redraw after movement ends
      - MSLP numerical contours every 2 hPa
-     - DCAPE numerical contours every 100 J/kg beginning at 500 J/kg
-     - MSLP/DCAPE labels rendered separately above geography
+     - DCAPE numerical contours every 200 J/kg beginning at 100 J/kg
+     - Warm Cloud Depth numerical contours every 250 m beginning at 250 m
+     - WCD uses the backend-smoothed numerical field plus light browser contour smoothing
+     - MSLP/DCAPE/WCD labels rendered separately above geography
 
    CANVAS STACK
      contour-label-canvas   z = 6
@@ -215,6 +218,37 @@ const DCAPE_COLORS = [
     "#7f0b15",  // 1700
     "#680912",  // 1900
     "#52070e"   // 2100+
+];
+
+const WCD_BOUNDS = [
+    0, 250, 500, 750, 1000,
+    1250, 1500, 1750, 2000,
+    2250, 2500, 2750, 3000,
+    3250, 3500, 3750, 4000,
+    4250, 4500, 4750, 5000
+];
+
+const WCD_COLORS = [
+    "#7a0177",
+    "#9e0168",
+    "#c51b5a",
+    "#de2d26",
+    "#ef4b2c",
+    "#f46d43",
+    "#f98e52",
+    "#fdae61",
+    "#fdd36a",
+    "#fee08b",
+    "#e6f598",
+    "#bfe57a",
+    "#8bd17c",
+    "#5abf90",
+    "#35a7a5",
+    "#3288bd",
+    "#3973b7",
+    "#4855a5",
+    "#55358f",
+    "#542788"
 ];
 
 
@@ -407,6 +441,16 @@ const CONTOUR_FIELDS = {
         minimum: 100,
         colorScheme: "dcape",
         color: null
+    },
+
+    warm_cloud_depth: {
+        name: "Warm Cloud Depth",
+        shortName: "Warm Cloud Depth",
+        units: "m",
+        interval: 250,
+        minimum: 250,
+        colorScheme: "wcd",
+        color: null
     }
 
 };
@@ -435,7 +479,8 @@ const activeOverlays = {
     shear08: false,
     effectiveShear: false,
     mslp: false,
-    dcape: false
+    dcape: false,
+    warmCloudDepth: false
 };
 
 let fieldMetadata = {};
@@ -838,6 +883,48 @@ let dcapeToggle =
     document.getElementById(
         "dcape-toggle"
     );
+
+
+/* =========================================================================================
+   WARM CLOUD DEPTH TOGGLE
+   ========================================================================================= */
+
+let warmCloudDepthToggle =
+    document.getElementById(
+        "warm-cloud-depth-toggle"
+    );
+
+if (!warmCloudDepthToggle) {
+
+    const overlayAnchor =
+        dcapeToggle
+            ? dcapeToggle.closest("label")
+            : (mslpToggle ? mslpToggle.closest("label") : null);
+
+    const overlayContainer =
+        overlayAnchor
+            ? overlayAnchor.parentElement
+            : null;
+
+    if (overlayContainer) {
+
+        const label = document.createElement("label");
+        label.style.display = "block";
+        label.style.marginTop = "6px";
+
+        warmCloudDepthToggle = document.createElement("input");
+        warmCloudDepthToggle.type = "checkbox";
+        warmCloudDepthToggle.id = "warm-cloud-depth-toggle";
+        warmCloudDepthToggle.checked = false;
+
+        label.appendChild(warmCloudDepthToggle);
+        label.appendChild(
+            document.createTextNode(" Warm Cloud Depth")
+        );
+
+        overlayContainer.appendChild(label);
+    }
+}
 
 
 /* =========================================================================================
@@ -5485,6 +5572,31 @@ function getDcapeColor(value) {
 }
 
 
+function getWcdColor(value) {
+
+    if (!Number.isFinite(value)) {
+        return WCD_COLORS[0];
+    }
+
+    let index = WCD_BOUNDS.length - 2;
+
+    for (let i = 0; i < WCD_BOUNDS.length - 1; i++) {
+        if (value >= WCD_BOUNDS[i] && value < WCD_BOUNDS[i + 1]) {
+            index = i;
+            break;
+        }
+    }
+
+    if (value < WCD_BOUNDS[0]) {
+        index = 0;
+    }
+
+    index = Math.max(0, Math.min(WCD_COLORS.length - 1, index));
+
+    return WCD_COLORS[index];
+}
+
+
 function smoothContourGrid(grid, columns, rows, passes = 1) {
 
     let source = new Float32Array(grid);
@@ -5682,7 +5794,7 @@ async function renderContourField(
     }
 
     const contourValues =
-        field === "dcape"
+        (field === "dcape" || field === "warm_cloud_depth")
             ? smoothContourGrid(values, columns, rows, 1)
             : values;
 
@@ -5748,9 +5860,13 @@ async function renderContourField(
         field === "dcape"
             ? "dcape"
             : (
-                metadataColorScheme ||
-                definition.colorScheme ||
-                "fixed"
+                field === "warm_cloud_depth"
+                    ? "wcd"
+                    : (
+                        metadataColorScheme ||
+                        definition.colorScheme ||
+                        "fixed"
+                    )
             );
 
     const fixedColor =
@@ -5770,7 +5886,7 @@ async function renderContourField(
     contourCtx.save();
 
     contourCtx.lineWidth =
-        field === "dcape"
+        (field === "dcape" || field === "warm_cloud_depth")
             ? 1.25
             : 1.15;
 
@@ -5787,9 +5903,13 @@ async function renderContourField(
             colorScheme === "dcape"
                 ? getDcapeColor(level)
                 : (
-                    colorScheme === "cape"
-                        ? getContourCapeColor(level)
-                        : fixedColor
+                    colorScheme === "wcd"
+                        ? getWcdColor(level)
+                        : (
+                            colorScheme === "cape"
+                                ? getContourCapeColor(level)
+                                : fixedColor
+                        )
                 );
 
         contourCtx.strokeStyle =
@@ -5930,7 +6050,7 @@ async function renderContourField(
     contourLabelCtx.save();
 
     const minimumLabelDistance =
-        field === "dcape"
+        (field === "dcape" || field === "warm_cloud_depth")
             ? 80
             : 95;
 
@@ -6007,6 +6127,10 @@ async function renderContours() {
         fields.push("dcape");
     }
 
+    if (activeOverlays.warmCloudDepth) {
+        fields.push("warm_cloud_depth");
+    }
+
     if (fields.length === 0) {
         return;
     }
@@ -6014,8 +6138,8 @@ async function renderContours() {
     const acceptedLabels = [];
 
     /*
-     * Render MSLP first and DCAPE second. Both remain independent
-     * and may be displayed simultaneously.
+     * Render MSLP first, DCAPE second, and Warm Cloud Depth third.
+     * All contour overlays remain independent and may be displayed simultaneously.
      */
     for (
         const field
@@ -7763,7 +7887,8 @@ if (fieldSelect) {
              */
             if (
                 activeOverlays.mslp ||
-                activeOverlays.dcape
+                activeOverlays.dcape ||
+                activeOverlays.warmCloudDepth
             ) {
 
                 await renderContours();
@@ -7961,6 +8086,38 @@ if (dcapeToggle) {
 
 
 /* =========================================================================================
+   WARM CLOUD DEPTH TOGGLE
+   ========================================================================================= */
+
+if (warmCloudDepthToggle) {
+
+    warmCloudDepthToggle.addEventListener(
+
+        "change",
+
+        async event => {
+
+            activeOverlays.warmCloudDepth =
+                event.target.checked;
+
+            contourRenderGeneration++;
+
+            resetNumericalCanvasTransforms();
+
+            await renderContours();
+
+            renderGeography();
+
+            captureCanvasCamera();
+
+        }
+
+    );
+
+}
+
+
+/* =========================================================================================
    WINDOW RESIZE
    ========================================================================================= */
 
@@ -8089,6 +8246,14 @@ async function initialize() {
 
             activeOverlays.dcape =
                 dcapeToggle.checked;
+
+        }
+
+
+        if (warmCloudDepthToggle) {
+
+            activeOverlays.warmCloudDepth =
+                warmCloudDepthToggle.checked;
 
         }
 
