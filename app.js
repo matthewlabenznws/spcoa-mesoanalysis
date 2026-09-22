@@ -13,7 +13,11 @@
 
    INDEPENDENT VECTOR OVERLAYS
      - Surface Wind Barbs
+     - 0–2 km Storm-Relative Wind Barbs
      - 4–6 km Storm-Relative Wind Barbs
+     - 9–11 km Storm-Relative Wind Barbs
+     - Effective Storm-Relative Wind Barbs
+     - Anvil-Level Storm-Relative Wind Barbs
 
    INDEPENDENT CONTOUR OVERLAYS
      - Surface MSLP
@@ -287,15 +291,56 @@ const VECTOR_FIELDS = {
 
     sfc_wind: {
         name: "Surface Wind",
-        shortName: "Surface Wind"
+        shortName: "Surface Wind",
+        defaultColor: "#000000"
+    },
+
+    srwind_0_2km: {
+        name: "0–2 km Storm-Relative Wind",
+        shortName: "0–2 km SR Wind",
+        defaultColor: "#000000"
     },
 
     srwind_4_6km: {
         name: "4–6 km Storm-Relative Wind",
-        shortName: "4–6 km SR Wind"
+        shortName: "4–6 km SR Wind",
+        defaultColor: "#000000"
+    },
+
+    srwind_9_11km: {
+        name: "9–11 km Storm-Relative Wind",
+        shortName: "9–11 km SR Wind",
+        defaultColor: "#000000"
+    },
+
+    srwind_effective: {
+        name: "Effective Storm-Relative Wind",
+        shortName: "Effective SR Wind",
+        defaultColor: "#000000"
+    },
+
+    srwind_anvil: {
+        name: "Anvil-Level Storm-Relative Wind",
+        shortName: "Anvil-Level SR Wind",
+        defaultColor: "#000000"
     }
 
 };
+
+const VECTOR_OVERLAY_CONFIG = [
+    { field: "sfc_wind", stateKey: "surfaceWind", toggleId: "sfc-wind-toggle" },
+    { field: "srwind_0_2km", stateKey: "srWind02", toggleId: "srwind-02-toggle" },
+    { field: "srwind_4_6km", stateKey: "srWind46", toggleId: "srwind-46-toggle" },
+    { field: "srwind_9_11km", stateKey: "srWind911", toggleId: "srwind-911-toggle" },
+    { field: "srwind_effective", stateKey: "srWindEffective", toggleId: "srwind-effective-toggle" },
+    { field: "srwind_anvil", stateKey: "srWindAnvil", toggleId: "srwind-anvil-toggle" }
+];
+
+const vectorColors = Object.fromEntries(
+    Object.entries(VECTOR_FIELDS).map(
+        ([field, definition]) => [field, definition.defaultColor || "#000000"]
+    )
+);
 
 
 /* =========================================================================================
@@ -339,7 +384,11 @@ let activeField = "sbcape";
 
 const activeOverlays = {
     surfaceWind: false,
+    srWind02: false,
     srWind46: false,
+    srWind911: false,
+    srWindEffective: false,
+    srWindAnvil: false,
     mslp: false,
     dcape: false
 };
@@ -573,6 +622,93 @@ const surfaceWindToggle =
 
 const srWind46Toggle =
     document.getElementById("srwind-46-toggle");
+
+/*
+ * Wind controls are completed dynamically so the existing index.html can
+ * remain unchanged. Every wind layer defaults to black, and each layer gets
+ * its own browser color picker.
+ */
+const vectorToggleElements = {};
+const vectorColorElements = {};
+
+function ensureVectorControls() {
+
+    const existingAnchor =
+        srWind46Toggle
+            ? srWind46Toggle.closest("label")
+            : (surfaceWindToggle ? surfaceWindToggle.closest("label") : null);
+
+    const container =
+        existingAnchor
+            ? existingAnchor.parentElement
+            : null;
+
+    if (!container) {
+        return;
+    }
+
+    for (const config of VECTOR_OVERLAY_CONFIG) {
+
+        let toggle = document.getElementById(config.toggleId);
+        let label = toggle ? toggle.closest("label") : null;
+
+        if (!toggle) {
+            label = document.createElement("label");
+            label.style.display = "flex";
+            label.style.alignItems = "center";
+            label.style.gap = "6px";
+            label.style.marginTop = "6px";
+
+            toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.id = config.toggleId;
+            toggle.checked = false;
+
+            label.appendChild(toggle);
+            label.appendChild(
+                document.createTextNode(` ${VECTOR_FIELDS[config.field].shortName}`)
+            );
+
+            container.appendChild(label);
+        }
+
+        vectorToggleElements[config.field] = toggle;
+
+        if (label) {
+            label.style.display = "flex";
+            label.style.alignItems = "center";
+            label.style.gap = "6px";
+
+            let colorInput = label.querySelector(
+                `input[type="color"][data-vector-field="${config.field}"]`
+            );
+
+            if (!colorInput) {
+                colorInput = document.createElement("input");
+                colorInput.type = "color";
+                colorInput.value = VECTOR_FIELDS[config.field].defaultColor;
+                colorInput.dataset.vectorField = config.field;
+                colorInput.title = `Choose ${VECTOR_FIELDS[config.field].shortName} color`;
+                colorInput.setAttribute(
+                    "aria-label",
+                    `Choose ${VECTOR_FIELDS[config.field].shortName} color`
+                );
+                colorInput.style.width = "28px";
+                colorInput.style.height = "22px";
+                colorInput.style.padding = "0";
+                colorInput.style.border = "none";
+                colorInput.style.background = "transparent";
+                colorInput.style.cursor = "pointer";
+                colorInput.style.marginLeft = "auto";
+                label.appendChild(colorInput);
+            }
+
+            vectorColorElements[config.field] = colorInput;
+        }
+    }
+}
+
+ensureVectorControls();
 
 
 /* =========================================================================================
@@ -4081,7 +4217,8 @@ function drawWindBarb(
     x,
     y,
     u,
-    v
+    v,
+    color = "#000000"
 ) {
 
     const speed =
@@ -4095,11 +4232,11 @@ function drawWindBarb(
 
 
     ctx.strokeStyle =
-        "#000000";
+        color;
 
 
     ctx.fillStyle =
-        "#000000";
+        color;
 
 
     ctx.lineWidth =
@@ -4441,8 +4578,7 @@ function drawWindBarb(
 
 async function renderVectorField(
     field,
-    generation,
-    gridOffset = 0
+    generation
 ) {
 
     const z =
@@ -4485,13 +4621,13 @@ async function renderVectorField(
 
 
     /*
-     * When both wind fields are enabled, the two grids are shifted
-     * slightly so the barbs do not lie exactly on top of one another.
+     * IMPORTANT: every wind product uses this exact same screen-space grid.
+     * Switching between surface wind and any SR-wind layer therefore keeps
+     * every barb anchored at the same map sampling location.
      */
     for (
         let y =
-            spacing / 2 +
-            gridOffset;
+            spacing / 2;
 
         y <
             height;
@@ -4502,8 +4638,7 @@ async function renderVectorField(
 
         for (
             let x =
-                spacing / 2 +
-                gridOffset;
+                spacing / 2;
 
             x <
                 width;
@@ -4568,7 +4703,9 @@ async function renderVectorField(
 
                 vector.u,
 
-                vector.v
+                vector.v,
+
+                vectorColors[field] || "#000000"
 
             );
 
@@ -4605,60 +4742,18 @@ async function renderVectors() {
     const jobs = [];
 
 
-    const bothEnabled =
-        activeOverlays.surfaceWind &&
-        activeOverlays.srWind46;
+    for (const config of VECTOR_OVERLAY_CONFIG) {
 
-
-    /*
-     * Surface wind.
-     */
-    if (
-        activeOverlays.surfaceWind
-    ) {
+        if (!activeOverlays[config.stateKey]) {
+            continue;
+        }
 
         jobs.push(
-
             renderVectorField(
-
-                "sfc_wind",
-
-                generation,
-
-                bothEnabled
-                    ? -7
-                    : 0
-
+                config.field,
+                generation
             )
-
         );
-
-    }
-
-
-    /*
-     * 4–6 km storm-relative wind.
-     */
-    if (
-        activeOverlays.srWind46
-    ) {
-
-        jobs.push(
-
-            renderVectorField(
-
-                "srwind_4_6km",
-
-                generation,
-
-                bothEnabled
-                    ? 7
-                    : 0
-
-            )
-
-        );
-
     }
 
 
@@ -4667,6 +4762,7 @@ async function renderVectors() {
     );
 
 }
+
 
 
 /* =========================================================================================
@@ -7694,70 +7790,53 @@ if (citiesToggle) {
 
 
 /* =========================================================================================
-   SURFACE WIND TOGGLE
+   WIND TOGGLES + PER-LAYER COLOR PICKERS
    ========================================================================================= */
 
-if (surfaceWindToggle) {
+for (const config of VECTOR_OVERLAY_CONFIG) {
 
-    surfaceWindToggle.addEventListener(
+    const toggle =
+        vectorToggleElements[config.field] ||
+        document.getElementById(config.toggleId);
 
-        "change",
+    if (toggle) {
 
-        async event => {
+        toggle.addEventListener(
+            "change",
+            async event => {
 
-            activeOverlays.surfaceWind =
-                event.target.checked;
+                activeOverlays[config.stateKey] =
+                    event.target.checked;
 
+                vectorRenderGeneration++;
+                resetNumericalCanvasTransforms();
+                await renderVectors();
+                captureCanvasCamera();
+            }
+        );
+    }
 
-            vectorRenderGeneration++;
+    const colorInput =
+        vectorColorElements[config.field];
 
+    if (colorInput) {
 
-            resetNumericalCanvasTransforms();
+        colorInput.addEventListener(
+            "input",
+            async event => {
 
+                vectorColors[config.field] =
+                    event.target.value || "#000000";
 
-            await renderVectors();
-
-
-            captureCanvasCamera();
-
-        }
-
-    );
-
-}
-
-
-/* =========================================================================================
-   4–6 KM STORM-RELATIVE WIND TOGGLE
-   ========================================================================================= */
-
-if (srWind46Toggle) {
-
-    srWind46Toggle.addEventListener(
-
-        "change",
-
-        async event => {
-
-            activeOverlays.srWind46 =
-                event.target.checked;
-
-
-            vectorRenderGeneration++;
-
-
-            resetNumericalCanvasTransforms();
-
-
-            await renderVectors();
-
-
-            captureCanvasCamera();
-
-        }
-
-    );
-
+                if (activeOverlays[config.stateKey]) {
+                    vectorRenderGeneration++;
+                    resetNumericalCanvasTransforms();
+                    await renderVectors();
+                    captureCanvasCamera();
+                }
+            }
+        );
+    }
 }
 
 
@@ -7932,19 +8011,24 @@ async function initialize() {
         }
 
 
-        if (surfaceWindToggle) {
+        for (const config of VECTOR_OVERLAY_CONFIG) {
 
-            activeOverlays.surfaceWind =
-                surfaceWindToggle.checked;
+            const toggle =
+                vectorToggleElements[config.field] ||
+                document.getElementById(config.toggleId);
 
-        }
+            if (toggle) {
+                activeOverlays[config.stateKey] =
+                    toggle.checked;
+            }
 
+            const colorInput =
+                vectorColorElements[config.field];
 
-        if (srWind46Toggle) {
-
-            activeOverlays.srWind46 =
-                srWind46Toggle.checked;
-
+            vectorColors[config.field] =
+                colorInput
+                    ? colorInput.value
+                    : (VECTOR_FIELDS[config.field].defaultColor || "#000000");
         }
 
 
