@@ -25,6 +25,8 @@
      - Effective Bulk Shear Barbs
      - Bunkers Right-Mover Storm Motion Barbs
      - Bunkers Left-Mover Storm Motion Barbs
+     - 0–6 km Mean Wind Barbs
+     - MU LCL–EL Mean Wind Barbs
 
    INDEPENDENT CONTOUR OVERLAYS
      - Surface MSLP
@@ -406,6 +408,18 @@ const VECTOR_FIELDS = {
         name: "Bunkers Left-Mover Storm Motion",
         shortName: "Bunkers Left",
         defaultColor: "#000000"
+    },
+
+    mean_wind_0_6km: {
+        name: "0–6 km Mean Wind",
+        shortName: "0–6 km Mean Wind",
+        defaultColor: "#000000"
+    },
+
+    mean_wind_mu_lcl_el: {
+        name: "MU LCL–EL Mean Wind",
+        shortName: "MU LCL–EL Mean Wind",
+        defaultColor: "#000000"
     }
 
 };
@@ -423,7 +437,9 @@ const VECTOR_OVERLAY_CONFIG = [
     { field: "shear_0_8km", stateKey: "shear08", toggleId: "shear-08-toggle" },
     { field: "effective_shear", stateKey: "effectiveShear", toggleId: "effective-shear-toggle" },
     { field: "bunkers_right", stateKey: "bunkersRight", toggleId: "bunkers-right-toggle" },
-    { field: "bunkers_left", stateKey: "bunkersLeft", toggleId: "bunkers-left-toggle" }
+    { field: "bunkers_left", stateKey: "bunkersLeft", toggleId: "bunkers-left-toggle" },
+    { field: "mean_wind_0_6km", stateKey: "meanWind06", toggleId: "mean-wind-06-toggle" },
+    { field: "mean_wind_mu_lcl_el", stateKey: "meanWindMuLclEl", toggleId: "mean-wind-mu-lcl-el-toggle" }
 ];
 
 const vectorColors = Object.fromEntries(
@@ -496,6 +512,8 @@ const activeOverlays = {
     effectiveShear: false,
     bunkersRight: false,
     bunkersLeft: false,
+    meanWind06: false,
+    meanWindMuLclEl: false,
     mslp: false,
     dcape: false,
     warmCloudDepth: false
