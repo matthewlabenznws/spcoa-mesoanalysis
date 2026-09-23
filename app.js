@@ -27,6 +27,11 @@
      - Bunkers Left-Mover Storm Motion Barbs
      - 0–6 km Mean Wind Barbs
      - MU LCL–EL Mean Wind Barbs
+     - 925 mb Wind Barbs
+     - 850 mb Wind Barbs
+     - 700 mb Wind Barbs
+     - 500 mb Wind Barbs
+     - 250 mb Wind Barbs
 
    INDEPENDENT CONTOUR OVERLAYS
      - Surface MSLP
@@ -45,10 +50,10 @@
      - MSLP/DCAPE/WCD labels rendered separately above geography
 
    CANVAS STACK
+     vector-canvas          z = 7
      contour-label-canvas   z = 6
      geography-canvas       z = 5
      contour-canvas         z = 4
-     vector-canvas          z = 3
      weather-canvas         z = 2
      MapLibre
 
@@ -420,6 +425,36 @@ const VECTOR_FIELDS = {
         name: "MU LCL–EL Mean Wind",
         shortName: "MU LCL–EL Mean Wind",
         defaultColor: "#000000"
+    },
+
+    wind_925mb: {
+        name: "925 mb Wind",
+        shortName: "925 mb Wind",
+        defaultColor: "#000000"
+    },
+
+    wind_850mb: {
+        name: "850 mb Wind",
+        shortName: "850 mb Wind",
+        defaultColor: "#000000"
+    },
+
+    wind_700mb: {
+        name: "700 mb Wind",
+        shortName: "700 mb Wind",
+        defaultColor: "#000000"
+    },
+
+    wind_500mb: {
+        name: "500 mb Wind",
+        shortName: "500 mb Wind",
+        defaultColor: "#000000"
+    },
+
+    wind_250mb: {
+        name: "250 mb Wind",
+        shortName: "250 mb Wind",
+        defaultColor: "#000000"
     }
 
 };
@@ -439,7 +474,12 @@ const VECTOR_OVERLAY_CONFIG = [
     { field: "bunkers_right", stateKey: "bunkersRight", toggleId: "bunkers-right-toggle" },
     { field: "bunkers_left", stateKey: "bunkersLeft", toggleId: "bunkers-left-toggle" },
     { field: "mean_wind_0_6km", stateKey: "meanWind06", toggleId: "mean-wind-06-toggle" },
-    { field: "mean_wind_mu_lcl_el", stateKey: "meanWindMuLclEl", toggleId: "mean-wind-mu-lcl-el-toggle" }
+    { field: "mean_wind_mu_lcl_el", stateKey: "meanWindMuLclEl", toggleId: "mean-wind-mu-lcl-el-toggle" },
+    { field: "wind_925mb", stateKey: "wind925", toggleId: "wind-925mb-toggle" },
+    { field: "wind_850mb", stateKey: "wind850", toggleId: "wind-850mb-toggle" },
+    { field: "wind_700mb", stateKey: "wind700", toggleId: "wind-700mb-toggle" },
+    { field: "wind_500mb", stateKey: "wind500", toggleId: "wind-500mb-toggle" },
+    { field: "wind_250mb", stateKey: "wind250", toggleId: "wind-250mb-toggle" }
 ];
 
 const vectorColors = Object.fromEntries(
@@ -514,6 +554,11 @@ const activeOverlays = {
     bunkersLeft: false,
     meanWind06: false,
     meanWindMuLclEl: false,
+    wind925: false,
+    wind850: false,
+    wind700: false,
+    wind500: false,
+    wind250: false,
     mslp: false,
     dcape: false,
     warmCloudDepth: false
@@ -688,17 +733,19 @@ if (!contourLabelCanvas) {
  *
  * MapLibre
  * weather shading
- * wind barbs
- * MSLP contour lines
+ * contour lines
  * counties / states / cities
- * MSLP contour labels
+ * contour labels
+ * wind barbs
+ *
+ * Wind barbs intentionally render above every other custom canvas.
  */
 
 weatherCanvas.style.zIndex =
     "2";
 
 vectorCanvas.style.zIndex =
-    "3";
+    "7";
 
 contourCanvas.style.zIndex =
     "4";
