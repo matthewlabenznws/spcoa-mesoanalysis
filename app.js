@@ -23,6 +23,8 @@
      - 0–6 km Bulk Shear Barbs
      - 0–8 km Bulk Shear Barbs
      - Effective Bulk Shear Barbs
+     - Bunkers Right-Mover Storm Motion Barbs
+     - Bunkers Left-Mover Storm Motion Barbs
 
    INDEPENDENT CONTOUR OVERLAYS
      - Surface MSLP
@@ -392,6 +394,18 @@ const VECTOR_FIELDS = {
         name: "Effective Bulk Shear",
         shortName: "Effective Bulk Shear",
         defaultColor: "#000000"
+    },
+
+    bunkers_right: {
+        name: "Bunkers Right-Mover Storm Motion",
+        shortName: "Bunkers Right",
+        defaultColor: "#000000"
+    },
+
+    bunkers_left: {
+        name: "Bunkers Left-Mover Storm Motion",
+        shortName: "Bunkers Left",
+        defaultColor: "#000000"
     }
 
 };
@@ -407,7 +421,9 @@ const VECTOR_OVERLAY_CONFIG = [
     { field: "shear_0_3km", stateKey: "shear03", toggleId: "shear-03-toggle" },
     { field: "shear_0_6km", stateKey: "shear06", toggleId: "shear-06-toggle" },
     { field: "shear_0_8km", stateKey: "shear08", toggleId: "shear-08-toggle" },
-    { field: "effective_shear", stateKey: "effectiveShear", toggleId: "effective-shear-toggle" }
+    { field: "effective_shear", stateKey: "effectiveShear", toggleId: "effective-shear-toggle" },
+    { field: "bunkers_right", stateKey: "bunkersRight", toggleId: "bunkers-right-toggle" },
+    { field: "bunkers_left", stateKey: "bunkersLeft", toggleId: "bunkers-left-toggle" }
 ];
 
 const vectorColors = Object.fromEntries(
@@ -478,6 +494,8 @@ const activeOverlays = {
     shear06: false,
     shear08: false,
     effectiveShear: false,
+    bunkersRight: false,
+    bunkersLeft: false,
     mslp: false,
     dcape: false,
     warmCloudDepth: false
@@ -5347,7 +5365,8 @@ function drawMslpLabel(
     y,
     angle,
     level,
-    color = "#000000"
+    color = "#000000",
+    haloColor = "rgba(255,255,255,0.88)"
 ) {
 
     /*
@@ -5417,7 +5436,7 @@ function drawMslpLabel(
 
 
     ctx.strokeStyle =
-        "rgba(255,255,255,0.88)";
+        haloColor;
 
 
     ctx.strokeText(
@@ -6077,7 +6096,10 @@ async function renderContourField(
             candidate.y,
             candidate.angle,
             candidate.level,
-            candidate.color
+            candidate.color,
+            field === "warm_cloud_depth"
+                ? "rgba(0,0,0,0.92)"
+                : "rgba(255,255,255,0.88)"
         );
 
         acceptedLabels.push({
