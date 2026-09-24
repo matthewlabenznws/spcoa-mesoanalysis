@@ -37,6 +37,11 @@
      - Surface MSLP
      - DCAPE
      - Warm Cloud Depth
+     - 925 mb Geopotential Height
+     - 850 mb Geopotential Height
+     - 700 mb Geopotential Height
+     - 500 mb Geopotential Height
+     - 250 mb Geopotential Height
 
    RENDERING
      - Full-resolution scalar canvas
@@ -46,8 +51,12 @@
      - MSLP numerical contours every 2 hPa
      - DCAPE numerical contours every 200 J/kg beginning at 100 J/kg
      - Warm Cloud Depth numerical contours every 250 m beginning at 250 m
-     - WCD uses the backend-smoothed numerical field plus light browser contour smoothing
-     - MSLP/DCAPE/WCD labels rendered separately above geography
+     - 925/850/700/500 mb height contours every 30 m
+     - 250 mb height contours every 60 m
+     - WCD and geopotential heights use backend-smoothed numerical fields
+     - Geopotential height contours and labels are fixed black
+     - Height labels use a light white halo
+     - MSLP/DCAPE/WCD/height labels rendered separately above geography
 
    CANVAS STACK
      vector-canvas          z = 7
@@ -523,6 +532,56 @@ const CONTOUR_FIELDS = {
         minimum: 250,
         colorScheme: "wcd",
         color: null
+    },
+
+    hght_925mb: {
+        name: "925 mb Geopotential Height",
+        shortName: "925 mb Height",
+        units: "m",
+        interval: 30,
+        minimum: null,
+        colorScheme: "fixed",
+        color: "#000000"
+    },
+
+    hght_850mb: {
+        name: "850 mb Geopotential Height",
+        shortName: "850 mb Height",
+        units: "m",
+        interval: 30,
+        minimum: null,
+        colorScheme: "fixed",
+        color: "#000000"
+    },
+
+    hght_700mb: {
+        name: "700 mb Geopotential Height",
+        shortName: "700 mb Height",
+        units: "m",
+        interval: 30,
+        minimum: null,
+        colorScheme: "fixed",
+        color: "#000000"
+    },
+
+    hght_500mb: {
+        name: "500 mb Geopotential Height",
+        shortName: "500 mb Height",
+        units: "m",
+        interval: 30,
+        minimum: null,
+        colorScheme: "fixed",
+        color: "#000000"
+    },
+
+    hght_250mb: {
+        name: "250 mb Geopotential Height",
+        shortName: "250 mb Height",
+        units: "m",
+        interval: 60,
+        minimum: null,
+        colorScheme: "fixed",
+        color: "#000000"
     }
 
 };
@@ -561,7 +620,12 @@ const activeOverlays = {
     wind250: false,
     mslp: false,
     dcape: false,
-    warmCloudDepth: false
+    warmCloudDepth: false,
+    hght925: false,
+    hght850: false,
+    hght700: false,
+    hght500: false,
+    hght250: false
 };
 
 let fieldMetadata = {};
@@ -1006,6 +1070,65 @@ if (!warmCloudDepthToggle) {
         );
 
         overlayContainer.appendChild(label);
+    }
+}
+
+
+/* =========================================================================================
+   GEOPOTENTIAL HEIGHT TOGGLES
+   ========================================================================================= */
+
+const GEOPOTENTIAL_HEIGHT_OVERLAYS = [
+    { field: "hght_925mb", stateKey: "hght925", toggleId: "hght-925mb-toggle", label: "925 mb Geopotential Height" },
+    { field: "hght_850mb", stateKey: "hght850", toggleId: "hght-850mb-toggle", label: "850 mb Geopotential Height" },
+    { field: "hght_700mb", stateKey: "hght700", toggleId: "hght-700mb-toggle", label: "700 mb Geopotential Height" },
+    { field: "hght_500mb", stateKey: "hght500", toggleId: "hght-500mb-toggle", label: "500 mb Geopotential Height" },
+    { field: "hght_250mb", stateKey: "hght250", toggleId: "hght-250mb-toggle", label: "250 mb Geopotential Height" }
+];
+
+const geopotentialHeightToggles = {};
+
+{
+    const overlayAnchor =
+        warmCloudDepthToggle
+            ? warmCloudDepthToggle.closest("label")
+            : (dcapeToggle ? dcapeToggle.closest("label") : (mslpToggle ? mslpToggle.closest("label") : null));
+
+    const overlayContainer =
+        overlayAnchor
+            ? overlayAnchor.parentElement
+            : null;
+
+    for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
+
+        let toggle =
+            document.getElementById(config.toggleId);
+
+        if (!toggle && overlayContainer) {
+
+            const label =
+                document.createElement("label");
+
+            label.style.display = "block";
+            label.style.marginTop = "6px";
+
+            toggle =
+                document.createElement("input");
+
+            toggle.type = "checkbox";
+            toggle.id = config.toggleId;
+            toggle.checked = false;
+
+            label.appendChild(toggle);
+            label.appendChild(
+                document.createTextNode(` ${config.label}`)
+            );
+
+            overlayContainer.appendChild(label);
+        }
+
+        geopotentialHeightToggles[config.stateKey] =
+            toggle;
     }
 }
 
@@ -6218,6 +6341,12 @@ async function renderContours() {
         fields.push("warm_cloud_depth");
     }
 
+    for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
+        if (activeOverlays[config.stateKey]) {
+            fields.push(config.field);
+        }
+    }
+
     if (fields.length === 0) {
         return;
     }
@@ -6225,7 +6354,8 @@ async function renderContours() {
     const acceptedLabels = [];
 
     /*
-     * Render MSLP first, DCAPE second, and Warm Cloud Depth third.
+     * Render MSLP first, DCAPE second, Warm Cloud Depth third,
+     * followed by any active geopotential-height contours.
      * All contour overlays remain independent and may be displayed simultaneously.
      */
     for (
@@ -8205,6 +8335,40 @@ if (warmCloudDepthToggle) {
 
 
 /* =========================================================================================
+   GEOPOTENTIAL HEIGHT TOGGLE EVENTS
+   ========================================================================================= */
+
+for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
+
+    const toggle =
+        geopotentialHeightToggles[config.stateKey];
+
+    if (!toggle) {
+        continue;
+    }
+
+    toggle.addEventListener(
+        "change",
+        async event => {
+
+            activeOverlays[config.stateKey] =
+                event.target.checked;
+
+            contourRenderGeneration++;
+
+            resetNumericalCanvasTransforms();
+
+            await renderContours();
+
+            renderGeography();
+
+            captureCanvasCamera();
+        }
+    );
+}
+
+
+/* =========================================================================================
    WINDOW RESIZE
    ========================================================================================= */
 
@@ -8341,6 +8505,19 @@ async function initialize() {
 
             activeOverlays.warmCloudDepth =
                 warmCloudDepthToggle.checked;
+
+        }
+
+
+        for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
+
+            const toggle =
+                geopotentialHeightToggles[config.stateKey];
+
+            if (toggle) {
+                activeOverlays[config.stateKey] =
+                    toggle.checked;
+            }
 
         }
 
