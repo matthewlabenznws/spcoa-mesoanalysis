@@ -271,6 +271,44 @@ const WCD_COLORS = [
 
 
 /* =========================================================================================
+   LCL / LCL-LFC RH COLOR TABLES
+   ========================================================================================= */
+
+const LCL_BOUNDS = [
+    250, 500, 750, 1000, 1250, 1500,
+    1750, 2000, 2250, 2500, 2750, 3000,
+    3250, 3500, 3750, 4000
+];
+
+const LCL_COLORS = [
+    "#087f23", "#15952d", "#29aa38", "#47bd43",
+    "#70ca4b", "#a7d653", "#d6db57", "#e6cf4d",
+    "#e5b84b", "#d99642", "#c47a3a", "#9a5b32",
+    "#89502d", "#774429", "#653824", "#532d20"
+];
+
+const LCL_LFC_RH_BOUNDS = [
+    20, 30, 40, 50, 60, 70, 80, 90, 100
+];
+
+const LCL_LFC_RH_COLORS = [
+    "#9a5b32", "#c47a3a", "#d99642", "#e5b84b",
+    "#e6cf4d", "#a7d653", "#70ca4b", "#29aa38",
+    "#087f23"
+];
+
+const LCL_LFC_RH_FILL_BOUNDS = [
+    60, 70, 80, 90, 100
+];
+
+const LCL_LFC_RH_FILL_COLORS = [
+    "#e6cf4d", "#a7d653", "#70ca4b", "#29aa38"
+];
+
+const LCL_LFC_RH_FILL_OPACITY = 0.75;
+
+
+/* =========================================================================================
    PRESSURE-LEVEL FILLED WIND-SPEED COLOR TABLES
    ========================================================================================= */
 
@@ -446,6 +484,13 @@ const WEATHER_FIELDS = {
         type: "wind_250"
     },
 
+    lcl_lfc_rh: {
+        name: "LCL–LFC Mean Relative Humidity",
+        shortName: "LCL–LFC RH",
+        units: "%",
+        type: "lcl_lfc_rh"
+    },
+
     sfc_dewpoint: {
         name: "Surface Dewpoint",
         shortName: "Surface Dewpoint",
@@ -616,6 +661,28 @@ const vectorColors = Object.fromEntries(
 
 const CONTOUR_FIELDS = {
 
+    ml_lcl_height: {
+        name: "100-hPa Mixed-Layer Parcel LCL Height",
+        shortName: "ML LCL Height",
+        units: "m AGL",
+        interval: 250,
+        minimum: 250,
+        maximum: 4000,
+        colorScheme: "lcl",
+        color: null
+    },
+
+    lcl_lfc_rh_contours: {
+        name: "LCL–LFC Mean Relative Humidity",
+        shortName: "LCL–LFC RH",
+        units: "%",
+        interval: 10,
+        minimum: 20,
+        maximum: 100,
+        colorScheme: "lcl_lfc_rh",
+        color: null
+    },
+
     sfc_mslp: {
         name: "Surface MSLP",
         shortName: "MSLP",
@@ -737,7 +804,9 @@ const activeOverlays = {
     hght850: false,
     hght700: false,
     hght500: false,
-    hght250: false
+    hght250: false,
+    mlLclHeight: false,
+    lclLfcRhContours: false
 };
 
 let fieldMetadata = {};
@@ -976,7 +1045,8 @@ function ensureFilledWindFieldOptions() {
         "wind_speed_850mb",
         "wind_speed_700mb",
         "wind_speed_500mb",
-        "wind_speed_250mb"
+        "wind_speed_250mb",
+        "lcl_lfc_rh"
     ];
 
     for (const field of fields) {
@@ -1280,6 +1350,76 @@ const geopotentialHeightToggles = {};
         }
 
         geopotentialHeightToggles[config.stateKey] =
+            toggle;
+    }
+}
+
+
+/* =========================================================================================
+   LCL / LCL-LFC RH CONTOUR TOGGLES
+   ========================================================================================= */
+
+const THERMODYNAMIC_CONTOUR_OVERLAYS = [
+    {
+        field: "ml_lcl_height",
+        stateKey: "mlLclHeight",
+        toggleId: "ml-lcl-height-toggle",
+        label: "ML LCL Height"
+    },
+    {
+        field: "lcl_lfc_rh_contours",
+        stateKey: "lclLfcRhContours",
+        toggleId: "lcl-lfc-rh-contours-toggle",
+        label: "LCL-LFC RH Contours"
+    }
+];
+
+const thermodynamicContourToggles = {};
+
+{
+    const overlayAnchor =
+        geopotentialHeightToggles.hght250
+            ? geopotentialHeightToggles.hght250.closest("label")
+            : (
+                warmCloudDepthToggle
+                    ? warmCloudDepthToggle.closest("label")
+                    : null
+            );
+
+    const overlayContainer =
+        overlayAnchor
+            ? overlayAnchor.parentElement
+            : null;
+
+    for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
+
+        let toggle =
+            document.getElementById(config.toggleId);
+
+        if (!toggle && overlayContainer) {
+
+            const label =
+                document.createElement("label");
+
+            label.style.display = "block";
+            label.style.marginTop = "6px";
+
+            toggle =
+                document.createElement("input");
+
+            toggle.type = "checkbox";
+            toggle.id = config.toggleId;
+            toggle.checked = false;
+
+            label.appendChild(toggle);
+            label.appendChild(
+                document.createTextNode(` ${config.label}`)
+            );
+
+            overlayContainer.appendChild(label);
+        }
+
+        thermodynamicContourToggles[config.stateKey] =
             toggle;
     }
 }
@@ -4044,6 +4184,12 @@ const WIND_250_RGB =
     );
 
 
+const LCL_LFC_RH_FILL_RGB =
+    LCL_LFC_RH_FILL_COLORS.map(
+        hexToRgb
+    );
+
+
 /* =========================================================================================
    CAPE COLOR LOOKUP
    ========================================================================================= */
@@ -4362,6 +4508,21 @@ function getFieldColor(
 
     if (
         definition.type ===
+        "lcl_lfc_rh"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            60,
+            LCL_LFC_RH_FILL_BOUNDS,
+            LCL_LFC_RH_FILL_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
         "dewpoint"
     ) {
 
@@ -4642,7 +4803,9 @@ async function renderWeather() {
                 pixels[
                     pixelIndex + 3
                 ] =
-                    235;
+                    WEATHER_FIELDS[activeField].type === "lcl_lfc_rh"
+                        ? Math.round(255 * LCL_LFC_RH_FILL_OPACITY)
+                        : 235;
 
             }
             else {
@@ -6064,6 +6227,54 @@ function getWcdColor(value) {
 }
 
 
+function getDiscreteContourColor(
+    value,
+    bounds,
+    colors
+) {
+
+    if (!Number.isFinite(value)) {
+        return colors[0];
+    }
+
+    let index = 0;
+
+    for (let i = 0; i < bounds.length; i++) {
+        if (value >= bounds[i]) {
+            index = i;
+        }
+        else {
+            break;
+        }
+    }
+
+    index = Math.max(
+        0,
+        Math.min(colors.length - 1, index)
+    );
+
+    return colors[index];
+}
+
+
+function getLclColor(value) {
+    return getDiscreteContourColor(
+        value,
+        LCL_BOUNDS,
+        LCL_COLORS
+    );
+}
+
+
+function getLclLfcRhColor(value) {
+    return getDiscreteContourColor(
+        value,
+        LCL_LFC_RH_BOUNDS,
+        LCL_LFC_RH_COLORS
+    );
+}
+
+
 function smoothContourGrid(grid, columns, rows, passes = 1) {
 
     let source = new Float32Array(grid);
@@ -6308,10 +6519,30 @@ async function renderContourField(
 
     }
 
-    const lastLevel =
+    const configuredMaximum =
+        metadata.display &&
+        metadata.display.maximum !== undefined &&
+        metadata.display.maximum !== null
+            ? Number(metadata.display.maximum)
+            : (
+                definition.maximum !== undefined &&
+                definition.maximum !== null
+                    ? Number(definition.maximum)
+                    : null
+            );
+
+    let lastLevel =
         Math.floor(
             maximumValue / interval
         ) * interval;
+
+    if (Number.isFinite(configuredMaximum)) {
+        lastLevel =
+            Math.min(
+                lastLevel,
+                Math.floor(configuredMaximum / interval) * interval
+            );
+    }
 
     if (firstLevel > lastLevel) {
         return;
@@ -6353,7 +6584,12 @@ async function renderContourField(
     contourCtx.save();
 
     contourCtx.lineWidth =
-        (field === "dcape" || field === "warm_cloud_depth")
+        (
+            field === "dcape" ||
+            field === "warm_cloud_depth" ||
+            field === "ml_lcl_height" ||
+            field === "lcl_lfc_rh_contours"
+        )
             ? 1.25
             : 1.15;
 
@@ -6375,7 +6611,15 @@ async function renderContourField(
                         : (
                             colorScheme === "cape"
                                 ? getContourCapeColor(level)
-                                : fixedColor
+                                : (
+                                    colorScheme === "lcl"
+                                        ? getLclColor(level)
+                                        : (
+                                            colorScheme === "lcl_lfc_rh"
+                                                ? getLclLfcRhColor(level)
+                                                : fixedColor
+                                        )
+                                )
                         )
                 );
 
@@ -6517,7 +6761,12 @@ async function renderContourField(
     contourLabelCtx.save();
 
     const minimumLabelDistance =
-        (field === "dcape" || field === "warm_cloud_depth")
+        (
+            field === "dcape" ||
+            field === "warm_cloud_depth" ||
+            field === "ml_lcl_height" ||
+            field === "lcl_lfc_rh_contours"
+        )
             ? 80
             : 95;
 
@@ -6605,6 +6854,22 @@ async function renderContours() {
         if (activeOverlays[config.stateKey]) {
             fields.push(config.field);
         }
+    }
+
+    if (activeOverlays.mlLclHeight) {
+        fields.push("ml_lcl_height");
+    }
+
+    /*
+     * When LCL-LFC RH is the selected filled field, its colored contours
+     * are automatically drawn on top. The independent contour toggle also
+     * allows those contours to be used with any other filled field.
+     */
+    if (
+        activeField === "lcl_lfc_rh" ||
+        activeOverlays.lclLfcRhContours
+    ) {
+        fields.push("lcl_lfc_rh_contours");
     }
 
     if (fields.length === 0) {
@@ -7770,6 +8035,28 @@ function updateLegend() {
 
 
     /*
+     * LCL-LFC mean RH. Only 60% and greater is filled.
+     */
+    else if (
+        field.type ===
+        "lcl_lfc_rh"
+    ) {
+
+        drawColorLegend(
+            LCL_LFC_RH_FILL_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>60</span>" +
+            "<span>70</span>" +
+            "<span>80</span>" +
+            "<span>90</span>" +
+            "<span>100%</span>";
+
+    }
+
+
+    /*
      * Surface dewpoint.
      */
     else if (
@@ -8437,7 +8724,10 @@ if (fieldSelect) {
             if (
                 activeOverlays.mslp ||
                 activeOverlays.dcape ||
-                activeOverlays.warmCloudDepth
+                activeOverlays.warmCloudDepth ||
+                activeOverlays.mlLclHeight ||
+                activeOverlays.lclLfcRhContours ||
+                activeField === "lcl_lfc_rh"
             ) {
 
                 await renderContours();
@@ -8701,6 +8991,40 @@ for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
 
 
 /* =========================================================================================
+   LCL / LCL-LFC RH CONTOUR TOGGLE EVENTS
+   ========================================================================================= */
+
+for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
+
+    const toggle =
+        thermodynamicContourToggles[config.stateKey];
+
+    if (!toggle) {
+        continue;
+    }
+
+    toggle.addEventListener(
+        "change",
+        async event => {
+
+            activeOverlays[config.stateKey] =
+                event.target.checked;
+
+            contourRenderGeneration++;
+
+            resetNumericalCanvasTransforms();
+
+            await renderContours();
+
+            renderGeography();
+
+            captureCanvasCamera();
+        }
+    );
+}
+
+
+/* =========================================================================================
    WINDOW RESIZE
    ========================================================================================= */
 
@@ -8845,6 +9169,19 @@ async function initialize() {
 
             const toggle =
                 geopotentialHeightToggles[config.stateKey];
+
+            if (toggle) {
+                activeOverlays[config.stateKey] =
+                    toggle.checked;
+            }
+
+        }
+
+
+        for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
+
+            const toggle =
+                thermodynamicContourToggles[config.stateKey];
 
             if (toggle) {
                 activeOverlays[config.stateKey] =
