@@ -271,6 +271,83 @@ const WCD_COLORS = [
 
 
 /* =========================================================================================
+   PRESSURE-LEVEL FILLED WIND-SPEED COLOR TABLES
+   ========================================================================================= */
+
+const MIDLEVEL_WIND_BOUNDS =
+    Array.from({ length: 62 }, (_, index) => 20 + index);
+
+const MIDLEVEL_WIND_COLORS = [
+    "#f1f8ff", "#def0fd", "#cae6fc", "#b7defb", "#a4d5fa", "#92cdf8",
+    "#8ab6ef", "#839fe6", "#7c87dd", "#7570d4", "#6e59cb", "#8566ce",
+    "#9c72d1", "#b27fd5", "#ca8bd8", "#e298db", "#dc8cd5", "#d580cf",
+    "#cf74c9", "#c969c3", "#c35dbd", "#bb4fb5", "#b342ad", "#ab35a5",
+    "#a3289d", "#9b1d95", "#a21c80", "#a91c6a", "#b11c55", "#b81c41",
+    "#c01c2e", "#c42032", "#c72435", "#cb2939", "#cf2e3d", "#d33441",
+    "#d73b45", "#db4249", "#df494c", "#e35050", "#e75754", "#e97559",
+    "#ec935d", "#efb262", "#f3d167", "#f7f16b", "#f0e765", "#eadd60",
+    "#e4d35a", "#dec954", "#d8bf4e", "#d1b548", "#cbab42", "#c5a13c",
+    "#bf9737", "#b98e31", "#b3842b", "#ad7a26", "#a77021", "#a1661c",
+    "#9b5c17"
+];
+
+const WIND_500_BOUNDS =
+    Array.from({ length: 122 }, (_, index) => 20 + index);
+
+const WIND_500_COLORS = [
+    "#f1f8ff", "#e8f4ff", "#def0fd", "#d4eafd", "#cae6fc", "#c1e2fc",
+    "#b7defb", "#aedafb", "#a4d5fa", "#9bd1fa", "#92cdf8", "#8ec1f4",
+    "#8ab6ef", "#86aaeb", "#839fe6", "#8093e2", "#7c87dd", "#797cd9",
+    "#7570d4", "#7165d0", "#6e59cb", "#795fcd", "#8566ce", "#906cd0",
+    "#9c72d1", "#a778d4", "#b27fd5", "#bf85d7", "#ca8bd8", "#d691da",
+    "#e298db", "#df92d8", "#dc8cd5", "#d986d2", "#d580cf", "#d27acc",
+    "#cf74c9", "#cc6ec6", "#c969c3", "#c663c0", "#c35dbd", "#bf56b9",
+    "#bb4fb5", "#b749b1", "#b342ad", "#af3ba9", "#ab35a5", "#a72fa1",
+    "#a3289d", "#9f2299", "#9b1d95", "#9f1c8a", "#a21c80", "#a61c75",
+    "#a91c6a", "#ad1c60", "#b11c55", "#b41c4b", "#b81c41", "#bc1c37",
+    "#c01c2e", "#c21e30", "#c42032", "#c52233", "#c72435", "#c92637",
+    "#cb2939", "#cd2b3b", "#cf2e3d", "#d1313f", "#d33441", "#d53843",
+    "#d73b45", "#d93e47", "#db4249", "#dd454a", "#df494c", "#e14c4e",
+    "#e35050", "#e55452", "#e75754", "#e86656", "#e97559", "#eb845b",
+    "#ec935d", "#eea35f", "#efb262", "#f1c264", "#f3d167", "#f5e169",
+    "#f7f16b", "#f3ec68", "#f0e765", "#ede262", "#eadd60", "#e7d85d",
+    "#e4d35a", "#e1ce57", "#dec954", "#dbc451", "#d8bf4e", "#d4ba4b",
+    "#d1b548", "#ceb045", "#cbab42", "#c8a63f", "#c5a13c", "#c29c39",
+    "#bf9737", "#bc9334", "#b98e31", "#b6892e", "#b3842b", "#b07f29",
+    "#ad7a26", "#aa7523", "#a77021", "#a46b1e", "#a1661c", "#9e6119",
+    "#9b5c17"
+];
+
+const WIND_250_BOUNDS =
+    Array.from({ length: 122 }, (_, index) => 50 + index);
+
+const WIND_250_COLORS = [
+    "#f1f8ff", "#e8f4ff", "#def0fd", "#d4eafd", "#cae6fc", "#c1e2fc",
+    "#b7defb", "#aedafb", "#a4d5fa", "#9bd1fa", "#92cdf8", "#8ec1f4",
+    "#8ab6ef", "#86aaeb", "#839fe6", "#8093e2", "#7c87dd", "#797cd9",
+    "#7570d4", "#7165d0", "#6e59cb", "#795fcd", "#8566ce", "#906cd0",
+    "#9c72d1", "#a778d4", "#b27fd5", "#bf85d7", "#ca8bd8", "#d691da",
+    "#e298db", "#df92d8", "#dc8cd5", "#d986d2", "#d580cf", "#d27acc",
+    "#cf74c9", "#cc6ec6", "#c969c3", "#c663c0", "#c35dbd", "#bf56b9",
+    "#bb4fb5", "#b749b1", "#b342ad", "#af3ba9", "#ab35a5", "#a72fa1",
+    "#a3289d", "#9f2299", "#9b1d95", "#9f1c8a", "#a21c80", "#a61c75",
+    "#a91c6a", "#ad1c60", "#b11c55", "#b41c4b", "#b81c41", "#bc1c37",
+    "#c01c2e", "#c21e30", "#c42032", "#c52233", "#c72435", "#c92637",
+    "#cb2939", "#cd2b3b", "#cf2e3d", "#d1313f", "#d33441", "#d53843",
+    "#d73b45", "#d93e47", "#db4249", "#dd454a", "#df494c", "#e14c4e",
+    "#e35050", "#e55452", "#e75754", "#e86656", "#e97559", "#eb845b",
+    "#ec935d", "#eea35f", "#efb262", "#f1c264", "#f3d167", "#f5e169",
+    "#f7f16b", "#f3ec68", "#f0e765", "#ede262", "#eadd60", "#e7d85d",
+    "#e4d35a", "#e1ce57", "#dec954", "#dbc451", "#d8bf4e", "#d4ba4b",
+    "#d1b548", "#ceb045", "#cbab42", "#c8a63f", "#c5a13c", "#c29c39",
+    "#bf9737", "#bc9334", "#b98e31", "#b6892e", "#b3842b", "#b07f29",
+    "#ad7a26", "#aa7523", "#a77021", "#a46b1e", "#a1661c", "#9e6119",
+    "#9b5c17"
+];
+
+
+
+/* =========================================================================================
    DEWPOINT COLOR TABLE
    ========================================================================================= */
 
@@ -332,6 +409,41 @@ const WEATHER_FIELDS = {
         shortName: "0–3 km MLCAPE",
         units: "J/kg",
         type: "cape_0_3km"
+    },
+
+    wind_speed_925mb: {
+        name: "925 mb Wind Speed",
+        shortName: "925 mb Wind Speed",
+        units: "kt",
+        type: "wind_midlevel"
+    },
+
+    wind_speed_850mb: {
+        name: "850 mb Wind Speed",
+        shortName: "850 mb Wind Speed",
+        units: "kt",
+        type: "wind_midlevel"
+    },
+
+    wind_speed_700mb: {
+        name: "700 mb Wind Speed",
+        shortName: "700 mb Wind Speed",
+        units: "kt",
+        type: "wind_midlevel"
+    },
+
+    wind_speed_500mb: {
+        name: "500 mb Wind Speed",
+        shortName: "500 mb Wind Speed",
+        units: "kt",
+        type: "wind_500"
+    },
+
+    wind_speed_250mb: {
+        name: "250 mb Wind Speed",
+        shortName: "250 mb Wind Speed",
+        units: "kt",
+        type: "wind_250"
     },
 
     sfc_dewpoint: {
@@ -847,6 +959,46 @@ const contourLabelCtx =
 
 const fieldSelect =
     document.getElementById("field-select");
+
+
+/*
+ * Add the pressure-level filled wind-speed fields dynamically so index.html
+ * does not need to change. Existing options are preserved exactly.
+ */
+function ensureFilledWindFieldOptions() {
+
+    if (!fieldSelect) {
+        return;
+    }
+
+    const fields = [
+        "wind_speed_925mb",
+        "wind_speed_850mb",
+        "wind_speed_700mb",
+        "wind_speed_500mb",
+        "wind_speed_250mb"
+    ];
+
+    for (const field of fields) {
+
+        if (
+            fieldSelect.querySelector(
+                `option[value="${field}"]`
+            )
+        ) {
+            continue;
+        }
+
+        const option =
+            document.createElement("option");
+
+        option.value = field;
+        option.textContent = WEATHER_FIELDS[field].name;
+        fieldSelect.appendChild(option);
+    }
+}
+
+ensureFilledWindFieldOptions();
 
 const sectorSelect =
     document.getElementById("sector-select");
@@ -3876,6 +4028,22 @@ const DEWPOINT_RGB =
     );
 
 
+const MIDLEVEL_WIND_RGB =
+    MIDLEVEL_WIND_COLORS.map(
+        hexToRgb
+    );
+
+const WIND_500_RGB =
+    WIND_500_COLORS.map(
+        hexToRgb
+    );
+
+const WIND_250_RGB =
+    WIND_250_COLORS.map(
+        hexToRgb
+    );
+
+
 /* =========================================================================================
    CAPE COLOR LOOKUP
    ========================================================================================= */
@@ -4055,6 +4223,53 @@ function getDewpointColor(
 
 
 /* =========================================================================================
+   FILLED WIND-SPEED COLOR LOOKUP
+   ========================================================================================= */
+
+function getBinnedWindColor(
+    value,
+    minimum,
+    bounds,
+    rgbColors
+) {
+
+    if (
+        !Number.isFinite(value) ||
+        value < minimum
+    ) {
+        return null;
+    }
+
+    let index =
+        rgbColors.length - 1;
+
+    for (
+        let i = 0;
+        i < bounds.length - 1;
+        i++
+    ) {
+        if (
+            value >= bounds[i] &&
+            value < bounds[i + 1]
+        ) {
+            index = i;
+            break;
+        }
+    }
+
+    index = Math.max(
+        0,
+        Math.min(
+            rgbColors.length - 1,
+            index
+        )
+    );
+
+    return rgbColors[index];
+}
+
+
+/* =========================================================================================
    FIELD COLOR LOOKUP
    ========================================================================================= */
 
@@ -4095,6 +4310,51 @@ function getFieldColor(
 
         return get03kmCapeColor(
             value
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "wind_midlevel"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            20,
+            MIDLEVEL_WIND_BOUNDS,
+            MIDLEVEL_WIND_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "wind_500"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            20,
+            WIND_500_BOUNDS,
+            WIND_500_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "wind_250"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            50,
+            WIND_250_BOUNDS,
+            WIND_250_RGB
         );
 
     }
@@ -7433,6 +7693,78 @@ function updateLegend() {
             "<span>400</span>" +
             "<span>500</span>" +
             "<span>600+</span>";
+
+    }
+
+
+    /*
+     * 925 / 850 / 700 mb wind speed.
+     */
+    else if (
+        field.type ===
+        "wind_midlevel"
+    ) {
+
+        drawColorLegend(
+            MIDLEVEL_WIND_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>20</span>" +
+            "<span>30</span>" +
+            "<span>40</span>" +
+            "<span>50</span>" +
+            "<span>60</span>" +
+            "<span>70</span>" +
+            "<span>80+</span>";
+
+    }
+
+
+    /*
+     * 500 mb wind speed.
+     */
+    else if (
+        field.type ===
+        "wind_500"
+    ) {
+
+        drawColorLegend(
+            WIND_500_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>20</span>" +
+            "<span>40</span>" +
+            "<span>60</span>" +
+            "<span>80</span>" +
+            "<span>100</span>" +
+            "<span>120</span>" +
+            "<span>140+</span>";
+
+    }
+
+
+    /*
+     * 250 mb wind speed.
+     */
+    else if (
+        field.type ===
+        "wind_250"
+    ) {
+
+        drawColorLegend(
+            WIND_250_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>50</span>" +
+            "<span>70</span>" +
+            "<span>90</span>" +
+            "<span>110</span>" +
+            "<span>130</span>" +
+            "<span>150</span>" +
+            "<span>170+</span>";
 
     }
 
