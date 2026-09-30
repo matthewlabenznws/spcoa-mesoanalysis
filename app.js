@@ -850,6 +850,28 @@ const CONTOUR_FIELDS = {
         maximum: null,
         colorScheme: "fixed",
         color: "#ff00ff"
+    },
+
+    frontogenesis_850mb: {
+        name: "850 mb Frontogenesis",
+        shortName: "850 mb Frontogenesis",
+        units: "K / (100 km) / 3 h",
+        interval: 1,
+        minimum: 1,
+        maximum: null,
+        colorScheme: "fixed",
+        color: "#990099"
+    },
+
+    frontogenesis_700mb: {
+        name: "700 mb Frontogenesis",
+        shortName: "700 mb Frontogenesis",
+        units: "K / (100 km) / 3 h",
+        interval: 1,
+        minimum: 1,
+        maximum: null,
+        colorScheme: "fixed",
+        color: "#990099"
     }
 
 };
@@ -1496,6 +1518,18 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         stateKey: "divergence250",
         toggleId: "divergence-250mb-toggle",
         label: "250 mb Divergence"
+    },
+    {
+        field: "frontogenesis_850mb",
+        stateKey: "frontogenesis850",
+        toggleId: "frontogenesis-850mb-toggle",
+        label: "850 mb Frontogenesis"
+    },
+    {
+        field: "frontogenesis_700mb",
+        stateKey: "frontogenesis700",
+        toggleId: "frontogenesis-700mb-toggle",
+        label: "700 mb Frontogenesis"
     }
 ];
 
