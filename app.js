@@ -6815,52 +6815,87 @@ function getLclColor(value) {
 
 
 
-function smoothContourGrid(grid, columns, rows, passes = 1) {
+function smoothContourGrid(grid, columns, rows, sigma = 2.0) {
 
-    let source = new Float32Array(grid);
-
-    for (let pass = 0; pass < passes; pass++) {
-        const destination = new Float32Array(source.length);
-        destination.fill(NaN);
-
-        for (let row = 0; row < rows; row++) {
-            for (let column = 0; column < columns; column++) {
-                let weightedSum = 0;
-                let totalWeight = 0;
-
-                for (let dy = -1; dy <= 1; dy++) {
-                    const sampleRow = row + dy;
-                    if (sampleRow < 0 || sampleRow >= rows) continue;
-
-                    for (let dx = -1; dx <= 1; dx++) {
-                        const sampleColumn = column + dx;
-                        if (sampleColumn < 0 || sampleColumn >= columns) continue;
-
-                        const value = source[sampleRow * columns + sampleColumn];
-                        if (!Number.isFinite(value)) continue;
-
-                        const weight =
-                            dx === 0 && dy === 0
-                                ? 4
-                                : (dx === 0 || dy === 0 ? 2 : 1);
-
-                        weightedSum += value * weight;
-                        totalWeight += weight;
-                    }
-                }
-
-                if (totalWeight > 0) {
-                    destination[row * columns + column] =
-                        weightedSum / totalWeight;
-                }
-            }
-        }
-
-        source = destination;
+    /*
+     * True separable Gaussian smoothing of the sampled screen-space grid.
+     * This is intentionally performed BEFORE marching squares so the contour
+     * generator receives a smooth scalar field instead of trying to repair
+     * jagged contour geometry afterward.
+     */
+    if (!Number.isFinite(sigma) || sigma <= 0) {
+        return new Float32Array(grid);
     }
 
-    return source;
+    const radius = Math.max(1, Math.ceil(sigma * 3));
+    const kernel = new Float64Array(radius * 2 + 1);
+    let kernelSum = 0;
 
+    for (let offset = -radius; offset <= radius; offset++) {
+        const weight = Math.exp(-(offset * offset) / (2 * sigma * sigma));
+        kernel[offset + radius] = weight;
+        kernelSum += weight;
+    }
+
+    for (let i = 0; i < kernel.length; i++) {
+        kernel[i] /= kernelSum;
+    }
+
+    const source = new Float32Array(grid);
+    const horizontal = new Float32Array(source.length);
+    const output = new Float32Array(source.length);
+    horizontal.fill(NaN);
+    output.fill(NaN);
+
+    // Horizontal pass. Renormalize around NaNs and map edges.
+    for (let row = 0; row < rows; row++) {
+        for (let column = 0; column < columns; column++) {
+            let weightedSum = 0;
+            let totalWeight = 0;
+
+            for (let offset = -radius; offset <= radius; offset++) {
+                const sampleColumn = column + offset;
+                if (sampleColumn < 0 || sampleColumn >= columns) continue;
+
+                const value = source[row * columns + sampleColumn];
+                if (!Number.isFinite(value)) continue;
+
+                const weight = kernel[offset + radius];
+                weightedSum += value * weight;
+                totalWeight += weight;
+            }
+
+            if (totalWeight > 0) {
+                horizontal[row * columns + column] = weightedSum / totalWeight;
+            }
+        }
+    }
+
+    // Vertical pass. Renormalize around NaNs and map edges.
+    for (let row = 0; row < rows; row++) {
+        for (let column = 0; column < columns; column++) {
+            let weightedSum = 0;
+            let totalWeight = 0;
+
+            for (let offset = -radius; offset <= radius; offset++) {
+                const sampleRow = row + offset;
+                if (sampleRow < 0 || sampleRow >= rows) continue;
+
+                const value = horizontal[sampleRow * columns + column];
+                if (!Number.isFinite(value)) continue;
+
+                const weight = kernel[offset + radius];
+                weightedSum += value * weight;
+                totalWeight += weight;
+            }
+
+            if (totalWeight > 0) {
+                output[row * columns + column] = weightedSum / totalWeight;
+            }
+        }
+    }
+
+    return output;
 }
 
 
@@ -7011,10 +7046,22 @@ async function renderContourField(
         return;
     }
 
+    /*
+     * Smooth only MSLP, pressure-level heights, divergence, and
+     * frontogenesis before marching squares. A screen-grid sigma of 2.0
+     * is the initial test value. Existing DCAPE/WCD light smoothing remains.
+     */
+    const useGaussianContourSmoothing =
+        definition.smoothGeometry === true;
+
     const contourValues =
-        (field === "dcape" || field === "warm_cloud_depth")
-            ? smoothContourGrid(values, columns, rows, 1)
-            : values;
+        useGaussianContourSmoothing
+            ? smoothContourGrid(values, columns, rows, 2.0)
+            : (
+                (field === "dcape" || field === "warm_cloud_depth")
+                    ? smoothContourGrid(values, columns, rows, 1.0)
+                    : values
+            );
 
     const interval =
         Number(
@@ -7307,9 +7354,9 @@ async function renderContourField(
         }
 
         /*
-         * MSLP, geopotential heights, divergence, and frontogenesis use
-         * stitched + simplified + Catmull-Rom-smoothed contour geometry. Four
-         * subdivisions affect only the appearance of the line, not the numerical field.
+         * MSLP, geopotential heights, divergence, and frontogenesis are
+         * Gaussian-smoothed on the sampled scalar grid before marching squares.
+         * Segments are stitched here only to draw continuous contour paths.
          */
         if (smoothGeometry && levelSegments.length > 0) {
 
@@ -7324,11 +7371,9 @@ async function renderContourField(
                     continue;
                 }
 
-                const line =
-                    smoothContourPolyline(
-                        rawLine,
-                        smoothIterations
-                    );
+                // The scalar grid was already Gaussian-smoothed before
+                // marching squares. Keep the stitched contour itself intact.
+                const line = rawLine;
 
                 if (!line || line.length < 2) {
                     continue;
