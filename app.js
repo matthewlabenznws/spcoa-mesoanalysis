@@ -271,7 +271,7 @@ const WCD_COLORS = [
 
 
 /* =========================================================================================
-   LCL / LCL-LFC RH COLOR TABLES
+   LCL HEIGHT / PWAT COLOR TABLES
    ========================================================================================= */
 
 const LCL_BOUNDS = [
@@ -287,25 +287,27 @@ const LCL_COLORS = [
     "#89502d", "#774429", "#653824", "#532d20"
 ];
 
-const LCL_LFC_RH_BOUNDS = [
-    20, 30, 40, 50, 60, 70, 80, 90, 100
+/*
+ * Precipitable Water (inches)
+ * Exact palette supplied for 0.00–3.00 inches at 0.05-inch intervals.
+ */
+const PWAT_BOUNDS =
+    Array.from({ length: 61 }, (_, index) => index * 0.05);
+
+const PWAT_COLORS = [
+    "#423921", "#524a32", "#625a43", "#726b53", "#827c64", "#918c75", "#a19d86", "#b1ad96",
+    "#c1bea7", "#bce4ba", "#a8d3a6", "#96c293", "#82b27f", "#6fa16b", "#5c9058", "#497f44", "#366f31",
+    "#245e1e", "#144d0c", "#6aa2ae", "#60959f", "#588891", "#4e7a82", "#456d73", "#3c6066", "#325357",
+    "#294648", "#20393a", "#162c2b", "#686699", "#625e93", "#5b568d",
+    "#554e87", "#4f4681", "#483e7b", "#423675", "#3c2e6f", "#352669", "#2f1d63", "#704271",
+    "#764774", "#7a4d75", "#805277", "#855879", "#8b5d7a", "#90637c", "#96687e", "#9b6e7f", "#a17381",
+    "#c5988d", "#caa194", "#ceaa9c", "#d4b3a3", "#d8bcab", "#ddc5b2", "#e1cdba", "#e7d6c1", "#ebdec9",
+    "#f0e7d0", "#f0e7d0"
 ];
 
-const LCL_LFC_RH_COLORS = [
-    "#9a5b32", "#c47a3a", "#d99642", "#e5b84b",
-    "#e6cf4d", "#a7d653", "#70ca4b", "#29aa38",
-    "#087f23"
-];
-
-const LCL_LFC_RH_FILL_BOUNDS = [
-    60, 70, 80, 90, 100
-];
-
-const LCL_LFC_RH_FILL_COLORS = [
-    "#e6cf4d", "#a7d653", "#70ca4b", "#29aa38"
-];
-
-const LCL_LFC_RH_FILL_OPACITY = 0.75;
+if (PWAT_COLORS.length !== PWAT_BOUNDS.length - 1) {
+    throw new Error("PWAT palette mismatch: colors must equal bounds minus one.");
+}
 
 
 /* =========================================================================================
@@ -484,11 +486,11 @@ const WEATHER_FIELDS = {
         type: "wind_250"
     },
 
-    lcl_lfc_rh: {
-        name: "LCL–LFC Mean Relative Humidity",
-        shortName: "LCL–LFC RH",
-        units: "%",
-        type: "lcl_lfc_rh"
+    pwat: {
+        name: "Precipitable Water",
+        shortName: "PWAT",
+        units: "in",
+        type: "pwat"
     },
 
     sfc_dewpoint: {
@@ -661,25 +663,14 @@ const vectorColors = Object.fromEntries(
 
 const CONTOUR_FIELDS = {
 
-    ml_lcl_height: {
-        name: "100-hPa Mixed-Layer Parcel LCL Height",
-        shortName: "ML LCL Height",
+    lcl_height: {
+        name: "LCL Height",
+        shortName: "LCL Height",
         units: "m AGL",
         interval: 250,
         minimum: 250,
         maximum: 4000,
         colorScheme: "lcl",
-        color: null
-    },
-
-    lcl_lfc_rh_contours: {
-        name: "LCL–LFC Mean Relative Humidity",
-        shortName: "LCL–LFC RH",
-        units: "%",
-        interval: 10,
-        minimum: 20,
-        maximum: 100,
-        colorScheme: "lcl_lfc_rh",
         color: null
     },
 
@@ -805,8 +796,7 @@ const activeOverlays = {
     hght700: false,
     hght500: false,
     hght250: false,
-    mlLclHeight: false,
-    lclLfcRhContours: false
+    lclHeight: false
 };
 
 let fieldMetadata = {};
@@ -1046,7 +1036,7 @@ function ensureFilledWindFieldOptions() {
         "wind_speed_700mb",
         "wind_speed_500mb",
         "wind_speed_250mb",
-        "lcl_lfc_rh"
+        "pwat"
     ];
 
     for (const field of fields) {
@@ -1356,21 +1346,15 @@ const geopotentialHeightToggles = {};
 
 
 /* =========================================================================================
-   LCL / LCL-LFC RH CONTOUR TOGGLES
+   LCL HEIGHT CONTOUR TOGGLE
    ========================================================================================= */
 
 const THERMODYNAMIC_CONTOUR_OVERLAYS = [
     {
-        field: "ml_lcl_height",
-        stateKey: "mlLclHeight",
-        toggleId: "ml-lcl-height-toggle",
-        label: "ML LCL Height"
-    },
-    {
-        field: "lcl_lfc_rh_contours",
-        stateKey: "lclLfcRhContours",
-        toggleId: "lcl-lfc-rh-contours-toggle",
-        label: "LCL-LFC RH Contours"
+        field: "lcl_height",
+        stateKey: "lclHeight",
+        toggleId: "lcl-height-toggle",
+        label: "LCL Height"
     }
 ];
 
@@ -4184,8 +4168,8 @@ const WIND_250_RGB =
     );
 
 
-const LCL_LFC_RH_FILL_RGB =
-    LCL_LFC_RH_FILL_COLORS.map(
+const PWAT_RGB =
+    PWAT_COLORS.map(
         hexToRgb
     );
 
@@ -4508,14 +4492,14 @@ function getFieldColor(
 
     if (
         definition.type ===
-        "lcl_lfc_rh"
+        "pwat"
     ) {
 
         return getBinnedWindColor(
             value,
-            60,
-            LCL_LFC_RH_FILL_BOUNDS,
-            LCL_LFC_RH_FILL_RGB
+            0,
+            PWAT_BOUNDS,
+            PWAT_RGB
         );
 
     }
@@ -4803,9 +4787,7 @@ async function renderWeather() {
                 pixels[
                     pixelIndex + 3
                 ] =
-                    WEATHER_FIELDS[activeField].type === "lcl_lfc_rh"
-                        ? Math.round(255 * LCL_LFC_RH_FILL_OPACITY)
-                        : 235;
+                    235;
 
             }
             else {
@@ -6266,14 +6248,6 @@ function getLclColor(value) {
 }
 
 
-function getLclLfcRhColor(value) {
-    return getDiscreteContourColor(
-        value,
-        LCL_LFC_RH_BOUNDS,
-        LCL_LFC_RH_COLORS
-    );
-}
-
 
 function smoothContourGrid(grid, columns, rows, passes = 1) {
 
@@ -6587,8 +6561,7 @@ async function renderContourField(
         (
             field === "dcape" ||
             field === "warm_cloud_depth" ||
-            field === "ml_lcl_height" ||
-            field === "lcl_lfc_rh_contours"
+            field === "lcl_height"
         )
             ? 1.25
             : 1.15;
@@ -6614,11 +6587,7 @@ async function renderContourField(
                                 : (
                                     colorScheme === "lcl"
                                         ? getLclColor(level)
-                                        : (
-                                            colorScheme === "lcl_lfc_rh"
-                                                ? getLclLfcRhColor(level)
-                                                : fixedColor
-                                        )
+                                        : fixedColor
                                 )
                         )
                 );
@@ -6764,8 +6733,7 @@ async function renderContourField(
         (
             field === "dcape" ||
             field === "warm_cloud_depth" ||
-            field === "ml_lcl_height" ||
-            field === "lcl_lfc_rh_contours"
+            field === "lcl_height"
         )
             ? 80
             : 95;
@@ -6856,20 +6824,8 @@ async function renderContours() {
         }
     }
 
-    if (activeOverlays.mlLclHeight) {
-        fields.push("ml_lcl_height");
-    }
-
-    /*
-     * When LCL-LFC RH is the selected filled field, its colored contours
-     * are automatically drawn on top. The independent contour toggle also
-     * allows those contours to be used with any other filled field.
-     */
-    if (
-        activeField === "lcl_lfc_rh" ||
-        activeOverlays.lclLfcRhContours
-    ) {
-        fields.push("lcl_lfc_rh_contours");
+    if (activeOverlays.lclHeight) {
+        fields.push("lcl_height");
     }
 
     if (fields.length === 0) {
@@ -8035,23 +7991,25 @@ function updateLegend() {
 
 
     /*
-     * LCL-LFC mean RH. Only 60% and greater is filled.
+     * Precipitable Water (inches).
      */
     else if (
         field.type ===
-        "lcl_lfc_rh"
+        "pwat"
     ) {
 
         drawColorLegend(
-            LCL_LFC_RH_FILL_COLORS
+            PWAT_COLORS
         );
 
         legendLabels.innerHTML =
-            "<span>60</span>" +
-            "<span>70</span>" +
-            "<span>80</span>" +
-            "<span>90</span>" +
-            "<span>100%</span>";
+            "<span>0.0</span>" +
+            "<span>0.5</span>" +
+            "<span>1.0</span>" +
+            "<span>1.5</span>" +
+            "<span>2.0</span>" +
+            "<span>2.5</span>" +
+            "<span>3.0+</span>";
 
     }
 
@@ -8725,9 +8683,7 @@ if (fieldSelect) {
                 activeOverlays.mslp ||
                 activeOverlays.dcape ||
                 activeOverlays.warmCloudDepth ||
-                activeOverlays.mlLclHeight ||
-                activeOverlays.lclLfcRhContours ||
-                activeField === "lcl_lfc_rh"
+                activeOverlays.lclHeight
             ) {
 
                 await renderContours();
@@ -8991,7 +8947,7 @@ for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
 
 
 /* =========================================================================================
-   LCL / LCL-LFC RH CONTOUR TOGGLE EVENTS
+   LCL HEIGHT CONTOUR TOGGLE EVENTS
    ========================================================================================= */
 
 for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
