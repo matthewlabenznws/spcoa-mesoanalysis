@@ -311,6 +311,42 @@ if (PWAT_COLORS.length !== PWAT_BOUNDS.length - 1) {
 
 
 /* =========================================================================================
+   SIGNIFICANT TORNADO PARAMETER (EFFECTIVE-LAYER) COLOR TABLE
+   ========================================================================================= */
+
+const STP_BOUNDS = [
+    0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,
+    1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9,
+    2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9,
+    3.0, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9,
+    4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9,
+    5.0, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9,
+    6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 10.5
+];
+
+const STP_COLORS = [
+    "#ffffff", "#f0f0f0", "#e1e1e1", "#d2d2d2", "#c3c3c3",
+    "#a5a5a5", "#969696", "#878787", "#787878", "#696969",
+    "#3b5269", "#475f74", "#546c7f", "#60798a", "#6d8695",
+    "#7993a1", "#86a0ac", "#92adb7", "#9fbac2", "#abc7ce",
+    "#e6de99", "#e4d289", "#e3c679", "#e1b96a", "#dfae5a",
+    "#dfa24b", "#dd963c", "#dc8a2f", "#da7e24", "#d9731c",
+    "#d3491f", "#cb4323", "#c23d27", "#b9362b", "#b13131",
+    "#a82b37", "#9f253d", "#971f44", "#8e1a4a", "#861550",
+    "#700e89", "#7b1c93", "#872b9e", "#923aa8", "#9e4ab2",
+    "#a95bbd", "#b56ac7", "#c07ad1", "#cc8adc", "#d79ae6",
+    "#e6bfc3", "#dfb1b7", "#d9a4ad", "#d297a1", "#cc8a95",
+    "#c57c8a", "#be707e", "#b86272", "#b25667", "#ac485b",
+    "#844049", "#8a4953", "#91545c", "#985e66", "#9e6970",
+    "#a57279", "#ab7d83", "#b2878c", "#b99295"
+];
+
+if (STP_COLORS.length !== STP_BOUNDS.length - 1) {
+    throw new Error("STP palette mismatch: colors must equal bounds minus one.");
+}
+
+
+/* =========================================================================================
    PRESSURE-LEVEL FILLED WIND-SPEED COLOR TABLES
    ========================================================================================= */
 
@@ -491,6 +527,13 @@ const WEATHER_FIELDS = {
         shortName: "PWAT",
         units: "in",
         type: "pwat"
+    },
+
+    stp_eff: {
+        name: "Significant Tornado Parameter (Effective Layer)",
+        shortName: "Effective-Layer STP",
+        units: "",
+        type: "stp"
     },
 
     sfc_dewpoint: {
@@ -796,7 +839,8 @@ const activeOverlays = {
     hght700: false,
     hght500: false,
     hght250: false,
-    lclHeight: false
+    lclHeight: false,
+    stpEff: false
 };
 
 let fieldMetadata = {};
@@ -1036,7 +1080,8 @@ function ensureFilledWindFieldOptions() {
         "wind_speed_700mb",
         "wind_speed_500mb",
         "wind_speed_250mb",
-        "pwat"
+        "pwat",
+        "stp_eff"
     ];
 
     for (const field of fields) {
@@ -1355,6 +1400,12 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         stateKey: "lclHeight",
         toggleId: "lcl-height-toggle",
         label: "LCL Height"
+    },
+    {
+        field: "stp_eff_contours",
+        stateKey: "stpEff",
+        toggleId: "stp-eff-toggle",
+        label: "Effective-Layer STP"
     }
 ];
 
@@ -4173,6 +4224,11 @@ const PWAT_RGB =
         hexToRgb
     );
 
+const STP_RGB =
+    STP_COLORS.map(
+        hexToRgb
+    );
+
 
 /* =========================================================================================
    CAPE COLOR LOOKUP
@@ -4500,6 +4556,21 @@ function getFieldColor(
             0,
             PWAT_BOUNDS,
             PWAT_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "stp"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            0,
+            STP_BOUNDS,
+            STP_RGB
         );
 
     }
@@ -6587,7 +6658,11 @@ async function renderContourField(
                                 : (
                                     colorScheme === "lcl"
                                         ? getLclColor(level)
-                                        : fixedColor
+                                        : (
+                                            colorScheme === "stp"
+                                                ? getDiscreteContourColor(level, STP_BOUNDS, STP_COLORS)
+                                                : fixedColor
+                                        )
                                 )
                         )
                 );
@@ -6824,8 +6899,10 @@ async function renderContours() {
         }
     }
 
-    if (activeOverlays.lclHeight) {
-        fields.push("lcl_height");
+    for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
+        if (activeOverlays[config.stateKey]) {
+            fields.push(config.field);
+        }
     }
 
     if (fields.length === 0) {
@@ -8015,6 +8092,32 @@ function updateLegend() {
 
 
     /*
+     * Significant Tornado Parameter (Effective Layer).
+     */
+    else if (
+        field.type ===
+        "stp"
+    ) {
+
+        drawColorLegend(
+            STP_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>0</span>" +
+            "<span>1</span>" +
+            "<span>2</span>" +
+            "<span>3</span>" +
+            "<span>4</span>" +
+            "<span>5</span>" +
+            "<span>6</span>" +
+            "<span>8</span>" +
+            "<span>10.5+</span>";
+
+    }
+
+
+    /*
      * Surface dewpoint.
      */
     else if (
@@ -8683,7 +8786,8 @@ if (fieldSelect) {
                 activeOverlays.mslp ||
                 activeOverlays.dcape ||
                 activeOverlays.warmCloudDepth ||
-                activeOverlays.lclHeight
+                activeOverlays.lclHeight ||
+                activeOverlays.stpEff
             ) {
 
                 await renderContours();
