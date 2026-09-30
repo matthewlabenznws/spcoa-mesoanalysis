@@ -797,6 +797,50 @@ const CONTOUR_FIELDS = {
         color: "#000000"
     },
 
+    divergence_925mb: {
+        name: "925 mb Divergence",
+        shortName: "925 mb Divergence",
+        units: "10^-5 s^-1",
+        interval: 2,
+        minimum: 2,
+        maximum: null,
+        colorScheme: "fixed",
+        color: "#ff00ff"
+    },
+
+    divergence_850mb: {
+        name: "850 mb Divergence",
+        shortName: "850 mb Divergence",
+        units: "10^-5 s^-1",
+        interval: 2,
+        minimum: 2,
+        maximum: null,
+        colorScheme: "fixed",
+        color: "#ff00ff"
+    },
+
+    divergence_700mb: {
+        name: "700 mb Divergence",
+        shortName: "700 mb Divergence",
+        units: "10^-5 s^-1",
+        interval: 2,
+        minimum: 2,
+        maximum: null,
+        colorScheme: "fixed",
+        color: "#ff00ff"
+    },
+
+    divergence_500mb: {
+        name: "500 mb Divergence",
+        shortName: "500 mb Divergence",
+        units: "10^-5 s^-1",
+        interval: 2,
+        minimum: 2,
+        maximum: null,
+        colorScheme: "fixed",
+        color: "#ff00ff"
+    },
+
     divergence_250mb: {
         name: "250 mb Divergence",
         shortName: "250 mb Divergence",
@@ -852,6 +896,10 @@ const activeOverlays = {
     hght250: false,
     lclHeight: false,
     stpEff: false,
+    divergence925: false,
+    divergence850: false,
+    divergence700: false,
+    divergence500: false,
     divergence250: false
 };
 
@@ -1418,6 +1466,30 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         stateKey: "stpEff",
         toggleId: "stp-eff-toggle",
         label: "Effective-Layer STP"
+    },
+    {
+        field: "divergence_925mb",
+        stateKey: "divergence925",
+        toggleId: "divergence-925mb-toggle",
+        label: "925 mb Divergence"
+    },
+    {
+        field: "divergence_850mb",
+        stateKey: "divergence850",
+        toggleId: "divergence-850mb-toggle",
+        label: "850 mb Divergence"
+    },
+    {
+        field: "divergence_700mb",
+        stateKey: "divergence700",
+        toggleId: "divergence-700mb-toggle",
+        label: "700 mb Divergence"
+    },
+    {
+        field: "divergence_500mb",
+        stateKey: "divergence500",
+        toggleId: "divergence-500mb-toggle",
+        label: "500 mb Divergence"
     },
     {
         field: "divergence_250mb",
@@ -8806,6 +8878,10 @@ if (fieldSelect) {
                 activeOverlays.warmCloudDepth ||
                 activeOverlays.lclHeight ||
                 activeOverlays.stpEff ||
+                activeOverlays.divergence925 ||
+                activeOverlays.divergence850 ||
+                activeOverlays.divergence700 ||
+                activeOverlays.divergence500 ||
                 activeOverlays.divergence250
             ) {
 
