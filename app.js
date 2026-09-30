@@ -5818,7 +5818,7 @@ function interpolateContourPoint(
    Used only by contour definitions with smoothGeometry: true.
    The numerical field is NOT changed here.  These helpers first join the
    individual marching-squares segments into continuous polylines and then
-   apply Chaikin corner cutting to make the rendered line visually smoother.
+   remove redundant close vertices and apply Catmull-Rom interpolation to make the rendered line visually smoother.
    ========================================================================================= */
 
 function contourPointKey(point, precision = 1000) {
@@ -5984,19 +5984,45 @@ function stitchContourSegments(segments) {
 }
 
 
-function smoothContourPolyline(points, iterations = 4) {
+function simplifyContourPolyline(points, minimumDistance = 2.5) {
 
-    if (!points || points.length < 3 || iterations <= 0) {
+    if (!points || points.length < 3) {
         return points;
     }
 
-    let working = points.map(point => ({
-        x: point.x,
-        y: point.y
-    }));
+    const simplified = [points[0]];
+    let lastKept = points[0];
 
-    const first = working[0];
-    const last = working[working.length - 1];
+    for (let i = 1; i < points.length - 1; i++) {
+
+        const point = points[i];
+        const distance = Math.hypot(
+            point.x - lastKept.x,
+            point.y - lastKept.y
+        );
+
+        if (distance >= minimumDistance) {
+            simplified.push(point);
+            lastKept = point;
+        }
+
+    }
+
+    simplified.push(points[points.length - 1]);
+
+    return simplified;
+
+}
+
+
+function smoothContourPolyline(points, subdivisions = 4) {
+
+    if (!points || points.length < 4) {
+        return points;
+    }
+
+    const first = points[0];
+    const last = points[points.length - 1];
 
     const closed =
         Math.hypot(
@@ -6004,77 +6030,129 @@ function smoothContourPolyline(points, iterations = 4) {
             first.y - last.y
         ) < 0.01;
 
+    let working = points.map(point => ({
+        x: point.x,
+        y: point.y
+    }));
+
     if (closed) {
         working = working.slice(0, -1);
     }
 
-    for (let iteration = 0; iteration < iterations; iteration++) {
+    /*
+     * Remove very closely spaced marching-squares vertices before fitting
+     * the spline.  This suppresses the tiny grid-scale wiggles without
+     * changing the underlying meteorological field.
+     */
+    if (closed) {
+        const temporarilyClosed = working.concat([working[0]]);
+        working = simplifyContourPolyline(temporarilyClosed, 2.5);
+        working = working.slice(0, -1);
+    }
+    else {
+        working = simplifyContourPolyline(working, 2.5);
+    }
 
-        if (working.length < 3) {
-            break;
+    if (working.length < 4) {
+        const fallback = working.slice();
+        if (closed && fallback.length > 0) {
+            fallback.push({
+                x: fallback[0].x,
+                y: fallback[0].y
+            });
         }
+        return fallback;
+    }
 
-        const smoothed = [];
+    const result = [];
+    const steps = Math.max(2, Math.round(subdivisions));
 
-        if (closed) {
+    function catmullRom(p0, p1, p2, p3, t) {
 
-            for (let i = 0; i < working.length; i++) {
+        const t2 = t * t;
+        const t3 = t2 * t;
 
-                const p0 = working[i];
-                const p1 = working[(i + 1) % working.length];
-
-                smoothed.push({
-                    x: 0.75 * p0.x + 0.25 * p1.x,
-                    y: 0.75 * p0.y + 0.25 * p1.y
-                });
-
-                smoothed.push({
-                    x: 0.25 * p0.x + 0.75 * p1.x,
-                    y: 0.25 * p0.y + 0.75 * p1.y
-                });
-
-            }
-
-        }
-        else {
-
-            smoothed.push(working[0]);
-
-            for (let i = 0; i < working.length - 1; i++) {
-
-                const p0 = working[i];
-                const p1 = working[i + 1];
-
-                smoothed.push({
-                    x: 0.75 * p0.x + 0.25 * p1.x,
-                    y: 0.75 * p0.y + 0.25 * p1.y
-                });
-
-                smoothed.push({
-                    x: 0.25 * p0.x + 0.75 * p1.x,
-                    y: 0.25 * p0.y + 0.75 * p1.y
-                });
-
-            }
-
-            smoothed.push(
-                working[working.length - 1]
-            );
-
-        }
-
-        working = smoothed;
+        return {
+            x: 0.5 * (
+                (2 * p1.x) +
+                (-p0.x + p2.x) * t +
+                (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+                (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3
+            ),
+            y: 0.5 * (
+                (2 * p1.y) +
+                (-p0.y + p2.y) * t +
+                (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+                (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
+            )
+        };
 
     }
 
-    if (closed && working.length > 0) {
-        working.push({
-            x: working[0].x,
-            y: working[0].y
+    if (closed) {
+
+        const n = working.length;
+
+        for (let i = 0; i < n; i++) {
+
+            const p0 = working[(i - 1 + n) % n];
+            const p1 = working[i];
+            const p2 = working[(i + 1) % n];
+            const p3 = working[(i + 2) % n];
+
+            for (let j = 0; j < steps; j++) {
+                result.push(
+                    catmullRom(
+                        p0,
+                        p1,
+                        p2,
+                        p3,
+                        j / steps
+                    )
+                );
+            }
+
+        }
+
+        if (result.length > 0) {
+            result.push({
+                x: result[0].x,
+                y: result[0].y
+            });
+        }
+
+    }
+    else {
+
+        for (let i = 0; i < working.length - 1; i++) {
+
+            const p0 = working[Math.max(0, i - 1)];
+            const p1 = working[i];
+            const p2 = working[i + 1];
+            const p3 = working[Math.min(working.length - 1, i + 2)];
+
+            for (let j = 0; j < steps; j++) {
+                result.push(
+                    catmullRom(
+                        p0,
+                        p1,
+                        p2,
+                        p3,
+                        j / steps
+                    )
+                );
+            }
+
+        }
+
+        result.push({
+            x: working[working.length - 1].x,
+            y: working[working.length - 1].y
         });
+
     }
 
-    return working;
+    return result;
 
 }
 
@@ -7230,8 +7308,8 @@ async function renderContourField(
 
         /*
          * MSLP, geopotential heights, divergence, and frontogenesis use
-         * stitched + Chaikin-smoothed contour geometry.  Four iterations
-         * affect only the appearance of the line, not the numerical field.
+         * stitched + simplified + Catmull-Rom-smoothed contour geometry. Four
+         * subdivisions affect only the appearance of the line, not the numerical field.
          */
         if (smoothGeometry && levelSegments.length > 0) {
 
