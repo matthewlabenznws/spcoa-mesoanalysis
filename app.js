@@ -724,7 +724,9 @@ const CONTOUR_FIELDS = {
         interval: 2,
         minimum: null,
         colorScheme: "fixed",
-        color: "#000000"
+        color: "#000000",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     dcape: {
@@ -754,7 +756,9 @@ const CONTOUR_FIELDS = {
         interval: 30,
         minimum: null,
         colorScheme: "fixed",
-        color: "#000000"
+        color: "#000000",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     hght_850mb: {
@@ -764,7 +768,9 @@ const CONTOUR_FIELDS = {
         interval: 30,
         minimum: null,
         colorScheme: "fixed",
-        color: "#000000"
+        color: "#000000",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     hght_700mb: {
@@ -774,7 +780,9 @@ const CONTOUR_FIELDS = {
         interval: 30,
         minimum: null,
         colorScheme: "fixed",
-        color: "#000000"
+        color: "#000000",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     hght_500mb: {
@@ -784,7 +792,9 @@ const CONTOUR_FIELDS = {
         interval: 30,
         minimum: null,
         colorScheme: "fixed",
-        color: "#000000"
+        color: "#000000",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     hght_250mb: {
@@ -794,7 +804,9 @@ const CONTOUR_FIELDS = {
         interval: 60,
         minimum: null,
         colorScheme: "fixed",
-        color: "#000000"
+        color: "#000000",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     divergence_925mb: {
@@ -805,7 +817,9 @@ const CONTOUR_FIELDS = {
         minimum: 2,
         maximum: null,
         colorScheme: "fixed",
-        color: "#ff00ff"
+        color: "#ff00ff",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     divergence_850mb: {
@@ -816,7 +830,9 @@ const CONTOUR_FIELDS = {
         minimum: 2,
         maximum: null,
         colorScheme: "fixed",
-        color: "#ff00ff"
+        color: "#ff00ff",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     divergence_700mb: {
@@ -827,7 +843,9 @@ const CONTOUR_FIELDS = {
         minimum: 2,
         maximum: null,
         colorScheme: "fixed",
-        color: "#ff00ff"
+        color: "#ff00ff",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     divergence_500mb: {
@@ -838,7 +856,9 @@ const CONTOUR_FIELDS = {
         minimum: 2,
         maximum: null,
         colorScheme: "fixed",
-        color: "#ff00ff"
+        color: "#ff00ff",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     divergence_250mb: {
@@ -849,7 +869,9 @@ const CONTOUR_FIELDS = {
         minimum: 2,
         maximum: null,
         colorScheme: "fixed",
-        color: "#ff00ff"
+        color: "#ff00ff",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     frontogenesis_850mb: {
@@ -860,7 +882,9 @@ const CONTOUR_FIELDS = {
         minimum: 1,
         maximum: null,
         colorScheme: "fixed",
-        color: "#990099"
+        color: "#990099",
+        smoothGeometry: true,
+        smoothIterations: 4
     },
 
     frontogenesis_700mb: {
@@ -871,7 +895,9 @@ const CONTOUR_FIELDS = {
         minimum: 1,
         maximum: null,
         colorScheme: "fixed",
-        color: "#990099"
+        color: "#990099",
+        smoothGeometry: true,
+        smoothIterations: 4
     }
 
 };
@@ -5787,6 +5813,273 @@ function interpolateContourPoint(
 
 
 /* =========================================================================================
+   OPTIONAL CONTOUR-GEOMETRY SMOOTHING
+
+   Used only by contour definitions with smoothGeometry: true.
+   The numerical field is NOT changed here.  These helpers first join the
+   individual marching-squares segments into continuous polylines and then
+   apply Chaikin corner cutting to make the rendered line visually smoother.
+   ========================================================================================= */
+
+function contourPointKey(point, precision = 1000) {
+
+    return (
+        Math.round(point.x * precision) +
+        ":" +
+        Math.round(point.y * precision)
+    );
+
+}
+
+
+function stitchContourSegments(segments) {
+
+    if (!segments || segments.length === 0) {
+        return [];
+    }
+
+    const endpointMap = new Map();
+
+    function addEndpoint(key, segmentIndex, endpointIndex) {
+
+        if (!endpointMap.has(key)) {
+            endpointMap.set(key, []);
+        }
+
+        endpointMap.get(key).push({
+            segmentIndex,
+            endpointIndex
+        });
+
+    }
+
+    for (let i = 0; i < segments.length; i++) {
+
+        addEndpoint(
+            contourPointKey(segments[i][0]),
+            i,
+            0
+        );
+
+        addEndpoint(
+            contourPointKey(segments[i][1]),
+            i,
+            1
+        );
+
+    }
+
+    const used = new Uint8Array(segments.length);
+    const polylines = [];
+
+    function extendLine(line, atStart) {
+
+        while (true) {
+
+            const endpoint =
+                atStart
+                    ? line[0]
+                    : line[line.length - 1];
+
+            const matches =
+                endpointMap.get(
+                    contourPointKey(endpoint)
+                ) || [];
+
+            let nextMatch = null;
+
+            for (const match of matches) {
+
+                if (!used[match.segmentIndex]) {
+                    nextMatch = match;
+                    break;
+                }
+
+            }
+
+            if (!nextMatch) {
+                break;
+            }
+
+            used[nextMatch.segmentIndex] = 1;
+
+            const segment =
+                segments[nextMatch.segmentIndex];
+
+            const otherPoint =
+                nextMatch.endpointIndex === 0
+                    ? segment[1]
+                    : segment[0];
+
+            if (atStart) {
+                line.unshift(otherPoint);
+            }
+            else {
+                line.push(otherPoint);
+            }
+
+        }
+
+    }
+
+    /*
+     * Begin open contours at endpoints that occur only once.  This avoids
+     * accidentally starting an open contour in its middle.
+     */
+    for (let i = 0; i < segments.length; i++) {
+
+        if (used[i]) {
+            continue;
+        }
+
+        const keyA = contourPointKey(segments[i][0]);
+        const keyB = contourPointKey(segments[i][1]);
+
+        const degreeA = (endpointMap.get(keyA) || []).length;
+        const degreeB = (endpointMap.get(keyB) || []).length;
+
+        if (degreeA === 2 && degreeB === 2) {
+            continue;
+        }
+
+        used[i] = 1;
+
+        const line = [
+            segments[i][0],
+            segments[i][1]
+        ];
+
+        extendLine(line, false);
+        extendLine(line, true);
+
+        polylines.push(line);
+
+    }
+
+    /*
+     * Anything left is normally a closed contour.  Stitch those loops now.
+     */
+    for (let i = 0; i < segments.length; i++) {
+
+        if (used[i]) {
+            continue;
+        }
+
+        used[i] = 1;
+
+        const line = [
+            segments[i][0],
+            segments[i][1]
+        ];
+
+        extendLine(line, false);
+        extendLine(line, true);
+
+        polylines.push(line);
+
+    }
+
+    return polylines;
+
+}
+
+
+function smoothContourPolyline(points, iterations = 4) {
+
+    if (!points || points.length < 3 || iterations <= 0) {
+        return points;
+    }
+
+    let working = points.map(point => ({
+        x: point.x,
+        y: point.y
+    }));
+
+    const first = working[0];
+    const last = working[working.length - 1];
+
+    const closed =
+        Math.hypot(
+            first.x - last.x,
+            first.y - last.y
+        ) < 0.01;
+
+    if (closed) {
+        working = working.slice(0, -1);
+    }
+
+    for (let iteration = 0; iteration < iterations; iteration++) {
+
+        if (working.length < 3) {
+            break;
+        }
+
+        const smoothed = [];
+
+        if (closed) {
+
+            for (let i = 0; i < working.length; i++) {
+
+                const p0 = working[i];
+                const p1 = working[(i + 1) % working.length];
+
+                smoothed.push({
+                    x: 0.75 * p0.x + 0.25 * p1.x,
+                    y: 0.75 * p0.y + 0.25 * p1.y
+                });
+
+                smoothed.push({
+                    x: 0.25 * p0.x + 0.75 * p1.x,
+                    y: 0.25 * p0.y + 0.75 * p1.y
+                });
+
+            }
+
+        }
+        else {
+
+            smoothed.push(working[0]);
+
+            for (let i = 0; i < working.length - 1; i++) {
+
+                const p0 = working[i];
+                const p1 = working[i + 1];
+
+                smoothed.push({
+                    x: 0.75 * p0.x + 0.25 * p1.x,
+                    y: 0.75 * p0.y + 0.25 * p1.y
+                });
+
+                smoothed.push({
+                    x: 0.25 * p0.x + 0.75 * p1.x,
+                    y: 0.25 * p0.y + 0.75 * p1.y
+                });
+
+            }
+
+            smoothed.push(
+                working[working.length - 1]
+            );
+
+        }
+
+        working = smoothed;
+
+    }
+
+    if (closed && working.length > 0) {
+        working.push({
+            x: working[0].x,
+            y: working[0].y
+        });
+    }
+
+    return working;
+
+}
+
+
+/* =========================================================================================
    MARCHING-SQUARES CELL
    ========================================================================================= */
 
@@ -6798,6 +7091,18 @@ async function renderContourField(
 
         let segmentCounter = 0;
 
+        const smoothGeometry =
+            definition.smoothGeometry === true;
+
+        const smoothIterations =
+            Number.isFinite(
+                Number(definition.smoothIterations)
+            )
+                ? Number(definition.smoothIterations)
+                : 4;
+
+        const levelSegments = [];
+
         for (
             let row = 0;
             row < rows - 1;
@@ -6846,6 +7151,20 @@ async function renderContourField(
                         level
                     );
 
+                if (smoothGeometry) {
+
+                    for (const segment of segments) {
+                        levelSegments.push(segment);
+                    }
+
+                    continue;
+
+                }
+
+                /*
+                 * Original rendering path for every contour product that
+                 * does NOT request geometry smoothing.
+                 */
                 for (
                     const segment
                     of
@@ -6900,6 +7219,106 @@ async function renderContourField(
                             });
 
                         }
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        /*
+         * MSLP, geopotential heights, divergence, and frontogenesis use
+         * stitched + Chaikin-smoothed contour geometry.  Four iterations
+         * affect only the appearance of the line, not the numerical field.
+         */
+        if (smoothGeometry && levelSegments.length > 0) {
+
+            const polylines =
+                stitchContourSegments(
+                    levelSegments
+                );
+
+            for (const rawLine of polylines) {
+
+                if (!rawLine || rawLine.length < 2) {
+                    continue;
+                }
+
+                const line =
+                    smoothContourPolyline(
+                        rawLine,
+                        smoothIterations
+                    );
+
+                if (!line || line.length < 2) {
+                    continue;
+                }
+
+                contourCtx.moveTo(
+                    line[0].x,
+                    line[0].y
+                );
+
+                for (let i = 1; i < line.length; i++) {
+
+                    contourCtx.lineTo(
+                        line[i].x,
+                        line[i].y
+                    );
+
+                }
+
+                segmentCounter +=
+                    Math.max(
+                        1,
+                        rawLine.length - 1
+                    );
+
+                if (
+                    labelsEnabled &&
+                    rawLine.length >= 8
+                ) {
+
+                    const middleIndex =
+                        Math.floor(line.length / 2);
+
+                    const previousIndex =
+                        Math.max(
+                            0,
+                            middleIndex - 2
+                        );
+
+                    const nextIndex =
+                        Math.min(
+                            line.length - 1,
+                            middleIndex + 2
+                        );
+
+                    const labelPoint =
+                        line[middleIndex];
+
+                    if (
+                        labelPoint.x > 35 &&
+                        labelPoint.x < width - 35 &&
+                        labelPoint.y > 20 &&
+                        labelPoint.y < height - 20
+                    ) {
+
+                        const angle =
+                            Math.atan2(
+                                line[nextIndex].y - line[previousIndex].y,
+                                line[nextIndex].x - line[previousIndex].x
+                            );
+
+                        labelCandidates.push({
+                            x: labelPoint.x,
+                            y: labelPoint.y,
+                            angle,
+                            level,
+                            color: contourColor
+                        });
 
                     }
 
