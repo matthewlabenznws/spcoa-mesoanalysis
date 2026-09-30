@@ -795,6 +795,17 @@ const CONTOUR_FIELDS = {
         minimum: null,
         colorScheme: "fixed",
         color: "#000000"
+    },
+
+    divergence_250mb: {
+        name: "250 mb Divergence",
+        shortName: "250 mb Divergence",
+        units: "10^-5 s^-1",
+        interval: 2,
+        minimum: 2,
+        maximum: null,
+        colorScheme: "fixed",
+        color: "#ff00ff"
     }
 
 };
@@ -840,7 +851,8 @@ const activeOverlays = {
     hght500: false,
     hght250: false,
     lclHeight: false,
-    stpEff: false
+    stpEff: false,
+    divergence250: false
 };
 
 let fieldMetadata = {};
@@ -1406,6 +1418,12 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         stateKey: "stpEff",
         toggleId: "stp-eff-toggle",
         label: "Effective-Layer STP"
+    },
+    {
+        field: "divergence_250mb",
+        stateKey: "divergence250",
+        toggleId: "divergence-250mb-toggle",
+        label: "250 mb Divergence"
     }
 ];
 
@@ -8787,7 +8805,8 @@ if (fieldSelect) {
                 activeOverlays.dcape ||
                 activeOverlays.warmCloudDepth ||
                 activeOverlays.lclHeight ||
-                activeOverlays.stpEff
+                activeOverlays.stpEff ||
+                activeOverlays.divergence250
             ) {
 
                 await renderContours();
