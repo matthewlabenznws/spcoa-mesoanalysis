@@ -7307,7 +7307,7 @@ async function renderContourField(
 
     const isMslpOrHeightContour =
         field === "sfc_mslp" ||
-        field.startsWith("height_");
+        field.startsWith("hght_");
 
     contourCtx.lineWidth =
         isMslpOrHeightContour
