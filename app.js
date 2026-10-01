@@ -10,6 +10,9 @@
      - MUCAPE
      - 0–3 km MLCAPE
      - Surface Dewpoint
+     - 2 m Equivalent Potential Temperature
+     - 2 m Relative Humidity
+     - 925/850/700/500/250 mb Relative Humidity
 
    INDEPENDENT VECTOR OVERLAYS
      - Surface Wind Barbs
@@ -453,6 +456,32 @@ const DEWPOINT_COLORS = [
 ];
 
 
+
+/* =========================================================================================
+   THETA-E / RELATIVE HUMIDITY COLOR TABLES
+   ========================================================================================= */
+
+/* 131 one-Kelvin theta-e bins spanning 239 through 370 K. */
+const THETAE_BOUNDS =
+    Array.from({ length: 132 }, (_, index) => 239 + index);
+
+const THETAE_COLORS = [
+    "#946e4f", "#926d4e", "#906c4e", "#8e6b4d", "#8c6a4d", "#8b694c", "#89674c", "#87664b", "#85654a", "#83644a", "#816349", "#7f6249", "#7d6147", "#7b6047", "#795f46", "#775e45", "#755c45", "#735b44", "#715a44", "#705943", "#6f5843", "#6d5742", "#6b5641", "#695541", "#675440", "#655340", "#63513f", "#61503e", "#5f4f3e", "#5d4e3d", "#5b4c3d", "#594b3c", "#574a3c", "#56493b", "#54483a", "#52473a", "#504539", "#4e4439", "#4c4338", "#4a4237", "#484136", "#4c4335", "#504739", "#554c3d", "#595042", "#5d5546", "#61594a", "#665e4e", "#6a6252", "#6e6756", "#736b5b", "#77705f", "#7b7463", "#7f7967", "#847d6b", "#888270", "#8c8674", "#918b78", "#958f7c", "#999480", "#9d9884", "#a29d89", "#a6a18d", "#aaa691", "#aeaa95", "#b3af99", "#b7b39d", "#bbb8a2", "#c0bca6", "#c4c1aa", "#c8c5ae", "#cccab2", "#d1ceb7", "#d5d3bb", "#d9d7bf", "#dedcc3", "#e2e0c7", "#e6e5cb", "#eae9d0", "#efeed4", "#f3f2d8", "#e7f5e6", "#d9f0d7", "#caeac9", "#bce4ba", "#aedeab", "#a0d99c", "#92d38d", "#84ce7f", "#76c870", "#69c362", "#42ad35", "#3da231", "#38982c", "#338d27", "#2d8222", "#28781e", "#236d19", "#1e6215", "#195810", "#144d0c", "#6aa2ae", "#60959f", "#588891", "#4e7a82", "#456d73", "#3c6066", "#325357", "#294648", "#20393a", "#162c2b", "#686699", "#625e93", "#5b568d", "#554e87", "#4f4681", "#483e7b", "#423675", "#3c2e6f", "#352669", "#2f1d63", "#704170", "#754673", "#7a4c75", "#805176", "#855778", "#8b5c7a", "#90627c", "#96677d", "#9b6d7f", "#a07281"
+];
+
+/*
+ * RH palette supplied by Matthew. The original Matplotlib definition has
+ * boundaries -1..100 and 103 colors. BoundaryNorm is allowed to have more
+ * colors than bins, so the browser lookup below reproduces that behavior
+ * by spreading the 101 RH intervals across the complete 103-color palette.
+ */
+const RH_BOUNDS =
+    Array.from({ length: 102 }, (_, index) => -1 + index);
+
+const RH_COLORS = [
+    "#a1744f", "#966d4b", "#8b6648", "#816044", "#765940", "#6c523c", "#624b38", "#574434", "#4c3d30", "#42362d", "#372f28", "#3b352a", "#413a2f", "#464035", "#4c453a", "#514b3f", "#575044", "#5c554a", "#625b4f", "#676054", "#6d6559", "#736b5f", "#787064", "#7e766a", "#837b6f", "#898074", "#8e867a", "#948b7f", "#999084", "#9f968a", "#a49b8f", "#aaa195", "#b0a69a", "#b5ab9f", "#bbb1a4", "#c0b6aa", "#c6bbaf", "#cbc1b4", "#d1c6b9", "#d6ccbf", "#dcd1c4", "#c9d7c0", "#c5d4bd", "#c1d1ba", "#bdceb7", "#b9cbb4", "#b5c9b1", "#b1c6ae", "#adc3ab", "#a9c0a8", "#a5bda5", "#a1baa2", "#9db79f", "#99b49c", "#95b29a", "#92af97", "#8eac94", "#8aa991", "#86a68e", "#82a38b", "#7d9f88", "#799c85", "#769a82", "#72977f", "#6e947c", "#6a9179", "#668e76", "#628b73", "#5f8870", "#5b856d", "#57836a", "#538067", "#4f7d64", "#4b7a61", "#47775e", "#43745b", "#407158", "#3c6e55", "#386c53", "#356950", "#31664d", "#2e634a", "#2a6047", "#275d44", "#235a41", "#1f573e", "#1c553b", "#195238", "#164f35", "#164f35", "#134c32", "#10492f", "#0c4023", "#11422e", "#144538", "#184743", "#1b494d", "#1f4c57", "#234e61", "#27506c", "#2b5276", "#2f5581", "#33578b"
+];
+
 /* =========================================================================================
    FIELD DEFINITIONS
    ========================================================================================= */
@@ -541,7 +570,27 @@ const WEATHER_FIELDS = {
         shortName: "Surface Dewpoint",
         units: "°F",
         type: "dewpoint"
-    }
+    },
+
+    thetae_2m: {
+        name: "2 m Equivalent Potential Temperature",
+        shortName: "2 m Theta-e",
+        units: "K",
+        type: "thetae"
+    },
+
+    rh_2m: {
+        name: "2 m Relative Humidity",
+        shortName: "2 m RH",
+        units: "%",
+        type: "rh"
+    },
+
+    rh_925mb: { name: "925 mb Relative Humidity", shortName: "925 mb RH", units: "%", type: "rh" },
+    rh_850mb: { name: "850 mb Relative Humidity", shortName: "850 mb RH", units: "%", type: "rh" },
+    rh_700mb: { name: "700 mb Relative Humidity", shortName: "700 mb RH", units: "%", type: "rh" },
+    rh_500mb: { name: "500 mb Relative Humidity", shortName: "500 mb RH", units: "%", type: "rh" },
+    rh_250mb: { name: "250 mb Relative Humidity", shortName: "250 mb RH", units: "%", type: "rh" }
 
 };
 
@@ -1189,7 +1238,14 @@ function ensureFilledWindFieldOptions() {
         "wind_speed_500mb",
         "wind_speed_250mb",
         "pwat",
-        "stp_eff"
+        "stp_eff",
+        "thetae_2m",
+        "rh_2m",
+        "rh_925mb",
+        "rh_850mb",
+        "rh_700mb",
+        "rh_500mb",
+        "rh_250mb"
     ];
 
     for (const field of fields) {
@@ -1515,48 +1571,7 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         toggleId: "stp-eff-toggle",
         label: "Effective-Layer STP"
     },
-    {
-        field: "divergence_925mb",
-        stateKey: "divergence925",
-        toggleId: "divergence-925mb-toggle",
-        label: "925 mb Divergence"
-    },
-    {
-        field: "divergence_850mb",
-        stateKey: "divergence850",
-        toggleId: "divergence-850mb-toggle",
-        label: "850 mb Divergence"
-    },
-    {
-        field: "divergence_700mb",
-        stateKey: "divergence700",
-        toggleId: "divergence-700mb-toggle",
-        label: "700 mb Divergence"
-    },
-    {
-        field: "divergence_500mb",
-        stateKey: "divergence500",
-        toggleId: "divergence-500mb-toggle",
-        label: "500 mb Divergence"
-    },
-    {
-        field: "divergence_250mb",
-        stateKey: "divergence250",
-        toggleId: "divergence-250mb-toggle",
-        label: "250 mb Divergence"
-    },
-    {
-        field: "frontogenesis_850mb",
-        stateKey: "frontogenesis850",
-        toggleId: "frontogenesis-850mb-toggle",
-        label: "850 mb Frontogenesis"
-    },
-    {
-        field: "frontogenesis_700mb",
-        stateKey: "frontogenesis700",
-        toggleId: "frontogenesis-700mb-toggle",
-        label: "700 mb Frontogenesis"
-    }
+
 ];
 
 const thermodynamicContourToggles = {};
@@ -4352,6 +4367,16 @@ const DEWPOINT_RGB =
         hexToRgb
     );
 
+const THETAE_RGB =
+    THETAE_COLORS.map(
+        hexToRgb
+    );
+
+const RH_RGB =
+    RH_COLORS.map(
+        hexToRgb
+    );
+
 
 const MIDLEVEL_WIND_RGB =
     MIDLEVEL_WIND_COLORS.map(
@@ -4605,6 +4630,32 @@ function getBinnedWindColor(
 }
 
 
+
+function getRhColor(value) {
+
+    if (!Number.isFinite(value)) {
+        return null;
+    }
+
+    const clipped = Math.max(0, Math.min(100, value));
+    const bin = Math.max(0, Math.min(100, Math.floor(clipped)));
+
+    /*
+     * BoundaryNorm stretches region indices across the available color
+     * indices when ncolors exceeds the number of regions.
+     */
+    const colorIndex = Math.max(
+        0,
+        Math.min(
+            RH_RGB.length - 1,
+            Math.floor(bin * (RH_RGB.length - 1) / 100)
+        )
+    );
+
+    return RH_RGB[colorIndex];
+}
+
+
 /* =========================================================================================
    FIELD COLOR LOOKUP
    ========================================================================================= */
@@ -4732,6 +4783,33 @@ function getFieldColor(
     ) {
 
         return getDewpointColor(
+            value
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "thetae"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            239,
+            THETAE_BOUNDS,
+            THETAE_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "rh"
+    ) {
+
+        return getRhColor(
             value
         );
 
@@ -8798,6 +8876,54 @@ function updateLegend() {
 
 
     /*
+     * 2-m equivalent potential temperature.
+     */
+    else if (
+        field.type ===
+        "thetae"
+    ) {
+
+        drawColorLegend(
+            THETAE_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>239</span>" +
+            "<span>260</span>" +
+            "<span>280</span>" +
+            "<span>300</span>" +
+            "<span>320</span>" +
+            "<span>340</span>" +
+            "<span>360</span>" +
+            "<span>370</span>";
+
+    }
+
+
+    /*
+     * Relative humidity.
+     */
+    else if (
+        field.type ===
+        "rh"
+    ) {
+
+        drawColorLegend(
+            RH_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>0</span>" +
+            "<span>20</span>" +
+            "<span>40</span>" +
+            "<span>60</span>" +
+            "<span>80</span>" +
+            "<span>100</span>";
+
+    }
+
+
+    /*
      * Surface dewpoint.
      */
     else if (
@@ -9073,6 +9199,28 @@ async function updateCursor(
 
         cursorValue.textContent =
             `${value.toFixed(1)} °F`;
+
+    }
+
+
+    else if (
+        field.type ===
+        "thetae"
+    ) {
+
+        cursorValue.textContent =
+            `${value.toFixed(1)} K`;
+
+    }
+
+
+    else if (
+        field.type ===
+        "rh"
+    ) {
+
+        cursorValue.textContent =
+            `${value.toFixed(1)} %`;
 
     }
 
