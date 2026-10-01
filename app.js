@@ -482,6 +482,21 @@ const RH_COLORS = [
     "#a1744f", "#966d4b", "#8b6648", "#816044", "#765940", "#6c523c", "#624b38", "#574434", "#4c3d30", "#42362d", "#372f28", "#3b352a", "#413a2f", "#464035", "#4c453a", "#514b3f", "#575044", "#5c554a", "#625b4f", "#676054", "#6d6559", "#736b5f", "#787064", "#7e766a", "#837b6f", "#898074", "#8e867a", "#948b7f", "#999084", "#9f968a", "#a49b8f", "#aaa195", "#b0a69a", "#b5ab9f", "#bbb1a4", "#c0b6aa", "#c6bbaf", "#cbc1b4", "#d1c6b9", "#d6ccbf", "#dcd1c4", "#c9d7c0", "#c5d4bd", "#c1d1ba", "#bdceb7", "#b9cbb4", "#b5c9b1", "#b1c6ae", "#adc3ab", "#a9c0a8", "#a5bda5", "#a1baa2", "#9db79f", "#99b49c", "#95b29a", "#92af97", "#8eac94", "#8aa991", "#86a68e", "#82a38b", "#7d9f88", "#799c85", "#769a82", "#72977f", "#6e947c", "#6a9179", "#668e76", "#628b73", "#5f8870", "#5b856d", "#57836a", "#538067", "#4f7d64", "#4b7a61", "#47775e", "#43745b", "#407158", "#3c6e55", "#386c53", "#356950", "#31664d", "#2e634a", "#2a6047", "#275d44", "#235a41", "#1f573e", "#1c553b", "#195238", "#164f35", "#164f35", "#134c32", "#10492f", "#0c4023", "#11422e", "#144538", "#184743", "#1b494d", "#1f4c57", "#234e61", "#27506c", "#2b5276", "#2f5581", "#33578b"
 ];
 
+
+
+/* =========================================================================================
+   2-M TEMPERATURE COLOR TABLE
+   WeatherBell-style palette from Model_4Panel_Forcing.ipynb.
+   230 one-degree Fahrenheit bins: -100 through 130 °F.
+   ========================================================================================= */
+
+const TEMPERATURE_BOUNDS =
+    Array.from({ length: 231 }, (_, index) => -100 + index);
+
+const TEMPERATURE_COLORS = [
+    "#3f0390", "#46038f", "#4e038e", "#55038e", "#5d038d", "#64038c", "#6b038b", "#73038a", "#7a0389", "#810489", "#890488", "#900487", "#980486", "#9f0485", "#a60484", "#ae0484", "#b50483", "#bc0482", "#c00984", "#c50e87", "#c91389", "#cd188b", "#d11d8e", "#d52290", "#d92792", "#de2b94", "#e23097", "#e63599", "#ea3a9b", "#ee3f9e", "#f244a0", "#f749a2", "#fa4ea5", "#f854a8", "#f65aab", "#f461ae", "#f267b1", "#f06db4", "#ee73b7", "#ec79bb", "#ea7fbe", "#e886c1", "#e68cc4", "#e392c7", "#e198ca", "#df9ece", "#dda5d1", "#dbaad3", "#d7add5", "#d4b1d6", "#d0b4d8", "#cdb8d9", "#c9bbda", "#c6bfdc", "#c2c2dd", "#bfc6de", "#bbc9e0", "#b8cde1", "#b4d0e3", "#b1d4e4", "#add7e5", "#aadae7", "#a6dee8", "#a3e1e9", "#9fe5eb", "#9ce8ec", "#98ecee", "#95efef", "#90f0ee", "#88e6e4", "#80dbd9", "#78d1cf", "#70c7c5", "#67bdbb", "#5fb2b0", "#57a8a6", "#4f9e9c", "#479492", "#3f8987", "#367f7d", "#2e7573", "#266b69", "#1e605e", "#165654", "#165452", "#235c5b", "#306563", "#3d6e6c", "#4a7775", "#577f7e", "#648887", "#719190", "#7e9999", "#8ba2a1", "#98abaa", "#a5b4b3", "#b2bcbc", "#bfc5c5", "#cccece", "#897fb9", "#371e9a", "#3e1f93", "#46208c", "#4d2185", "#55227e", "#5c2376", "#64246f", "#6b2568", "#732561", "#7a265a", "#822753", "#89284c", "#902944", "#982a3d", "#9f2b36", "#a72c2f", "#ad3333", "#b23e3e", "#b64a4a", "#bb5656", "#c06161", "#c56d6d", "#ca7979", "#ce8484", "#d39090", "#d89c9c", "#dda7a7", "#e2b3b3", "#e6bfbf", "#ebcaca", "#f0d6d6", "#f5e2e2", "#eee6e7", "#dce5e8", "#cbe3e9", "#bae1ea", "#a9e0eb", "#9ed9e7", "#97cddf", "#91c2d8", "#8bb6d0", "#84abc8", "#7e9fc1", "#7793b9", "#7188b2", "#6b7caa", "#6471a2", "#5e659b", "#585a93", "#5e5e8f", "#6e6e8c", "#7d7d8a", "#8d8d88", "#9c9c86", "#acac84", "#bbbb82", "#cbcb7f", "#dada7d", "#eaea7b", "#f9f979", "#fcf875", "#f6ee70", "#f0e36b", "#ebd866", "#e5ce61", "#dfc35c", "#d9b857", "#d4ad52", "#cea34d", "#c89848", "#c38d43", "#bd833d", "#b77838", "#b26d33", "#ac632e", "#a65829", "#a14d24", "#9b421f", "#95381a", "#902d15", "#8a2210", "#84180b", "#7f0d06", "#790201", "#740807", "#6e120f", "#691c17", "#64261f", "#6b332b", "#743f38", "#7d4c44", "#865951", "#8e655d", "#97726a", "#a07f76", "#a98b83", "#b2988f", "#bba59c", "#b9a19a", "#b59b95", "#b19490", "#ad8d8c", "#a98787", "#a58082", "#a1797d", "#9d7278", "#996c74", "#95656f", "#915e6a", "#8d5865", "#895161", "#854a5c", "#824357", "#7e3d52", "#7a364d", "#762f49", "#722944", "#693144", "#603943", "#574043", "#4f4843", "#464f42", "#3d5742", "#345e42", "#2c6642", "#236e41", "#1a7541", "#117d41", "#098440", "#008c40"
+];
+
 /* =========================================================================================
    FIELD DEFINITIONS
    ========================================================================================= */
@@ -563,6 +578,13 @@ const WEATHER_FIELDS = {
         shortName: "Effective-Layer STP",
         units: "",
         type: "stp"
+    },
+
+    sfc_temperature: {
+        name: "2 m Temperature",
+        shortName: "2 m Temperature",
+        units: "°F",
+        type: "temperature"
     },
 
     sfc_dewpoint: {
@@ -1239,6 +1261,7 @@ function ensureFilledWindFieldOptions() {
         "wind_speed_250mb",
         "pwat",
         "stp_eff",
+        "sfc_temperature",
         "thetae_2m",
         "rh_2m",
         "rh_925mb",
@@ -4367,6 +4390,11 @@ const DEWPOINT_RGB =
         hexToRgb
     );
 
+const TEMPERATURE_RGB =
+    TEMPERATURE_COLORS.map(
+        hexToRgb
+    );
+
 const THETAE_RGB =
     THETAE_COLORS.map(
         hexToRgb
@@ -4772,6 +4800,21 @@ function getFieldColor(
             0,
             STP_BOUNDS,
             STP_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "temperature"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            -100,
+            TEMPERATURE_BOUNDS,
+            TEMPERATURE_RGB
         );
 
     }
@@ -8876,6 +8919,29 @@ function updateLegend() {
 
 
     /*
+     * 2-m temperature.
+     */
+    else if (
+        field.type ===
+        "temperature"
+    ) {
+
+        drawColorLegend(
+            TEMPERATURE_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>-100</span>" +
+            "<span>-50</span>" +
+            "<span>0</span>" +
+            "<span>50</span>" +
+            "<span>100</span>" +
+            "<span>130</span>";
+
+    }
+
+
+    /*
      * 2-m equivalent potential temperature.
      */
     else if (
@@ -9188,6 +9254,17 @@ async function updateCursor(
 
         cursorValue.textContent =
             `${Math.round(value)} J/kg`;
+
+    }
+
+
+    else if (
+        field.type ===
+        "temperature"
+    ) {
+
+        cursorValue.textContent =
+            `${value.toFixed(1)} °F`;
 
     }
 
