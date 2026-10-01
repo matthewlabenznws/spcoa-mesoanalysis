@@ -7305,14 +7305,20 @@ async function renderContourField(
 
     contourCtx.save();
 
+    const isMslpOrHeightContour =
+        field === "sfc_mslp" ||
+        field.startsWith("height_");
+
     contourCtx.lineWidth =
-        (
-            field === "dcape" ||
-            field === "warm_cloud_depth" ||
-            field === "lcl_height"
-        )
-            ? 1.25
-            : 1.15;
+        isMslpOrHeightContour
+            ? 2.0
+            : (
+                field === "dcape" ||
+                field === "warm_cloud_depth" ||
+                field === "lcl_height"
+            )
+                ? 1.25
+                : 1.15;
 
     contourCtx.lineJoin = "round";
     contourCtx.lineCap = "round";
@@ -7631,6 +7637,73 @@ async function renderContourField(
             continue;
         }
 
+        /*
+         * Matplotlib-style inline labels for MSLP and geopotential heights.
+         *
+         * Remove only the contour line underneath the text. Because contourCanvas
+         * is transparent, the filled weather field remains visible through the
+         * gap; this is not a white label box.
+         */
+        if (isMslpOrHeightContour) {
+
+            let gapAngle =
+                candidate.angle;
+
+            if (gapAngle > Math.PI / 2) {
+                gapAngle -= Math.PI;
+            }
+
+            if (gapAngle < -Math.PI / 2) {
+                gapAngle += Math.PI;
+            }
+
+            contourCtx.save();
+
+            contourCtx.translate(
+                candidate.x,
+                candidate.y
+            );
+
+            contourCtx.rotate(
+                gapAngle
+            );
+
+            contourCtx.font =
+                "bold 11px Arial, Helvetica, sans-serif";
+
+            const labelText =
+                String(
+                    Math.round(
+                        candidate.level
+                    )
+                );
+
+            const labelWidth =
+                contourCtx.measureText(
+                    labelText
+                ).width;
+
+            /*
+             * About 4 px of open contour on each side of the text, similar to
+             * Matplotlib clabel(inline=True, inline_spacing=...).
+             */
+            const horizontalPadding =
+                4;
+
+            const verticalPadding =
+                3;
+
+            contourCtx.clearRect(
+                -labelWidth / 2 - horizontalPadding,
+                -11 / 2 - verticalPadding,
+                labelWidth + horizontalPadding * 2,
+                11 + verticalPadding * 2
+            );
+
+            contourCtx.restore();
+
+        }
+
         drawMslpLabel(
             contourLabelCtx,
             candidate.x,
@@ -7638,9 +7711,13 @@ async function renderContourField(
             candidate.angle,
             candidate.level,
             candidate.color,
-            field === "warm_cloud_depth"
-                ? "rgba(0,0,0,0.92)"
-                : "rgba(255,255,255,0.88)"
+            isMslpOrHeightContour
+                ? "rgba(255,255,255,0.0)"
+                : (
+                    field === "warm_cloud_depth"
+                        ? "rgba(0,0,0,0.92)"
+                        : "rgba(255,255,255,0.88)"
+                )
         );
 
         acceptedLabels.push({
