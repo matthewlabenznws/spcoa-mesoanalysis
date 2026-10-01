@@ -498,6 +498,16 @@ const TEMPERATURE_COLORS = [
 ];
 
 /* =========================================================================================
+   SUPERCELL COMPOSITE PARAMETER COLOR TABLE
+   Exact bounds/colors supplied by Matthew. Used by both right- and left-moving SCP.
+   ========================================================================================= */
+
+const SCP_BOUNDS = [0, 0.5, 1, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48];
+
+const SCP_COLORS = ["#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3","#a5a5a5","#969696","#878787","#787878","#696969","#3b5269","#475f74","#546c7f","#60798a","#6d8695","#7993a1","#86a0ac","#92adb7","#9fbac2","#abc7ce","#e6de99","#e4d289","#e3c679","#e1b96a","#dfae5a","#dfa24b","#dd963c","#dc8a2f","#da7e24","#d9731c","#d3491f","#cb4323","#c23d27","#b9362b","#b13131","#a82b37","#9f253d","#971f44","#8e1a4a","#861550","#700e89","#7b1c93","#872b9e","#923aa8","#9e4ab2","#a95bbd","#b56ac7","#c07ad1","#cc8adc","#d79ae6"];
+
+
+/* =========================================================================================
    FIELD DEFINITIONS
    ========================================================================================= */
 
@@ -578,6 +588,20 @@ const WEATHER_FIELDS = {
         shortName: "Effective-Layer STP",
         units: "",
         type: "stp"
+    },
+
+    scp_right: {
+        name: "Right-Moving Supercell Composite Parameter",
+        shortName: "Right-Moving SCP",
+        units: "",
+        type: "scp"
+    },
+
+    scp_left: {
+        name: "Left-Moving Supercell Composite Parameter",
+        shortName: "Left-Moving SCP",
+        units: "",
+        type: "scp"
     },
 
     sfc_temperature: {
@@ -4433,6 +4457,12 @@ const STP_RGB =
     );
 
 
+const SCP_RGB =
+    SCP_COLORS.map(
+        hexToRgb
+    );
+
+
 /* =========================================================================================
    CAPE COLOR LOOKUP
    ========================================================================================= */
@@ -4800,6 +4830,21 @@ function getFieldColor(
             0,
             STP_BOUNDS,
             STP_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "scp"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            0,
+            SCP_BOUNDS,
+            SCP_RGB
         );
 
     }
@@ -8996,6 +9041,31 @@ function updateLegend() {
 
 
     /*
+     * Right- / Left-moving Supercell Composite Parameter.
+     */
+    else if (
+        field.type ===
+        "scp"
+    ) {
+
+        drawColorLegend(
+            SCP_COLORS
+        );
+
+        legendLabels.innerHTML =
+            "<span>0</span>" +
+            "<span>2</span>" +
+            "<span>5</span>" +
+            "<span>10</span>" +
+            "<span>20</span>" +
+            "<span>30</span>" +
+            "<span>40</span>" +
+            "<span>48+</span>";
+
+    }
+
+
+    /*
      * 2-m temperature.
      */
     else if (
@@ -9331,6 +9401,17 @@ async function updateCursor(
 
         cursorValue.textContent =
             `${Math.round(value)} J/kg`;
+
+    }
+
+
+    else if (
+        field.type ===
+        "scp"
+    ) {
+
+        cursorValue.textContent =
+            value.toFixed(1);
 
     }
 
