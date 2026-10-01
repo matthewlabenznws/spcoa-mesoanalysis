@@ -6955,7 +6955,21 @@ async function renderContourField(
             Math.round(rect.height)
         );
 
-    const step = 4;
+    /*
+     * Keep the existing 4-pixel contour grid for MSLP and pressure-level
+     * heights. Divergence and frontogenesis use a denser 2-pixel grid so
+     * marching squares has more spatial samples and produces smoother
+     * contours when zoomed in. The existing Gaussian smoothing below is
+     * preserved for all fields with smoothGeometry: true.
+     */
+    const useHighResolutionContourGrid =
+        field.startsWith("divergence_") ||
+        field.startsWith("frontogenesis_");
+
+    const step =
+        useHighResolutionContourGrid
+            ? 2
+            : 4;
 
     const columns =
         Math.ceil(width / step) + 1;
