@@ -8808,6 +8808,98 @@ function drawColorLegend(
 
 
 /* =========================================================================================
+   LEGEND LABEL HELPERS
+   ========================================================================================= */
+
+/*
+ * Return the horizontal position of a value on a discrete color bar.
+ *
+ * The legend itself draws every color bin at equal width. For palettes
+ * with non-uniform numerical bounds (CAPE, STP, SCP, etc.), positioning
+ * labels by raw min/max value would not line up with the displayed color
+ * bins. This helper therefore positions each label by its location in the
+ * boundary array, matching the color bar exactly.
+ */
+function getLegendBoundaryPosition(value, bounds) {
+
+    if (!Array.isArray(bounds) || bounds.length < 2) {
+        return 0;
+    }
+
+    const lastIndex = bounds.length - 1;
+
+    if (value <= bounds[0]) {
+        return 0;
+    }
+
+    if (value >= bounds[lastIndex]) {
+        return 100;
+    }
+
+    for (let index = 0; index < lastIndex; index++) {
+
+        const lower = bounds[index];
+        const upper = bounds[index + 1];
+
+        if (value >= lower && value <= upper) {
+
+            const fraction =
+                upper === lower
+                    ? 0
+                    : (value - lower) / (upper - lower);
+
+            return ((index + fraction) / lastIndex) * 100;
+        }
+    }
+
+    return 100;
+}
+
+
+function renderLegendLabels(ticks, bounds) {
+
+    if (!legendLabels) {
+        return;
+    }
+
+    legendLabels.innerHTML = "";
+
+    ticks.forEach((tick, tickIndex) => {
+
+        const value =
+            typeof tick === "object"
+                ? tick.value
+                : tick;
+
+        const label =
+            typeof tick === "object"
+                ? tick.label
+                : String(tick);
+
+        const span = document.createElement("span");
+        span.className = "legend-label";
+        span.textContent = label;
+
+        const position = getLegendBoundaryPosition(value, bounds);
+        span.style.left = `${position}%`;
+
+        /*
+         * Keep the first and last labels fully inside the legend card.
+         */
+        if (tickIndex === 0 || position <= 0.01) {
+            span.classList.add("legend-label-first");
+        }
+
+        if (tickIndex === ticks.length - 1 || position >= 99.99) {
+            span.classList.add("legend-label-last");
+        }
+
+        legendLabels.appendChild(span);
+    });
+}
+
+
+/* =========================================================================================
    UPDATE LEGEND
    ========================================================================================= */
 
@@ -8818,349 +8910,186 @@ function updateLegend() {
         !legendTitle ||
         !legendLabels
     ) {
-
         return;
-
     }
 
-
-    /*
-     * No filled field = no filled-field color legend.
-     *
-     * MSLP remains independent and does not require a color bar.
-     */
     if (
         !activeField ||
-        activeField ===
-            "none"
+        activeField === "none"
     ) {
-
-        legend.style.display =
-            "none";
-
-
+        legend.style.display = "none";
         return;
-
     }
 
-
-    const field =
-        WEATHER_FIELDS[
-            activeField
-        ];
-
+    const field = WEATHER_FIELDS[activeField];
 
     if (!field) {
-
-        legend.style.display =
-            "none";
-
-
+        legend.style.display = "none";
         return;
-
     }
 
-
-    legend.style.display =
-        "";
-
+    legend.style.display = "";
 
     legendTitle.textContent =
-        `${field.name} (${field.units})`;
+        field.units
+            ? `${field.name} (${field.units})`
+            : field.name;
 
 
-    /*
-     * CAPE family.
-     */
-    if (
-        field.type ===
-        "cape"
-    ) {
+    /* CAPE family. */
+    if (field.type === "cape") {
 
-        drawColorLegend(
-            CAPE_COLORS
+        drawColorLegend(CAPE_COLORS);
+
+        renderLegendLabels(
+            [100, 1000, 2000, 3000, 4000, 5000, { value: 6000, label: "6000+" }],
+            CAPE_BOUNDS
         );
-
-
-        legendLabels.innerHTML =
-            "<span>100</span>" +
-            "<span>1000</span>" +
-            "<span>2000</span>" +
-            "<span>3000</span>" +
-            "<span>4000</span>" +
-            "<span>5000</span>" +
-            "<span>6000+</span>";
-
     }
 
 
-    /*
-     * 0–3 km MLCAPE.
-     */
-    else if (
-        field.type ===
-        "cape_0_3km"
-    ) {
+    /* 0–3 km MLCAPE. */
+    else if (field.type === "cape_0_3km") {
 
-        drawColorLegend(
-            CAPE_03KM_COLORS.slice(1)
+        drawColorLegend(CAPE_03KM_COLORS.slice(1));
+
+        renderLegendLabels(
+            [10, 100, 200, 300, 400, 500, { value: 600, label: "600+" }],
+            CAPE_03KM_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>10</span>" +
-            "<span>100</span>" +
-            "<span>200</span>" +
-            "<span>300</span>" +
-            "<span>400</span>" +
-            "<span>500</span>" +
-            "<span>600+</span>";
-
     }
 
 
-    /*
-     * 925 / 850 / 700 mb wind speed.
-     */
-    else if (
-        field.type ===
-        "wind_midlevel"
-    ) {
+    /* 925 / 850 / 700 mb wind speed. */
+    else if (field.type === "wind_midlevel") {
 
-        drawColorLegend(
-            MIDLEVEL_WIND_COLORS
+        drawColorLegend(MIDLEVEL_WIND_COLORS);
+
+        renderLegendLabels(
+            [20, 30, 40, 50, 60, 70, { value: 80, label: "80+" }],
+            MIDLEVEL_WIND_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>20</span>" +
-            "<span>30</span>" +
-            "<span>40</span>" +
-            "<span>50</span>" +
-            "<span>60</span>" +
-            "<span>70</span>" +
-            "<span>80+</span>";
-
     }
 
 
-    /*
-     * 500 mb wind speed.
-     */
-    else if (
-        field.type ===
-        "wind_500"
-    ) {
+    /* 500 mb wind speed. */
+    else if (field.type === "wind_500") {
 
-        drawColorLegend(
-            WIND_500_COLORS
+        drawColorLegend(WIND_500_COLORS);
+
+        renderLegendLabels(
+            [20, 40, 60, 80, 100, 120, { value: 140, label: "140+" }],
+            WIND_500_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>20</span>" +
-            "<span>40</span>" +
-            "<span>60</span>" +
-            "<span>80</span>" +
-            "<span>100</span>" +
-            "<span>120</span>" +
-            "<span>140+</span>";
-
     }
 
 
-    /*
-     * 250 mb wind speed.
-     */
-    else if (
-        field.type ===
-        "wind_250"
-    ) {
+    /* 250 mb wind speed. */
+    else if (field.type === "wind_250") {
 
-        drawColorLegend(
-            WIND_250_COLORS
+        drawColorLegend(WIND_250_COLORS);
+
+        renderLegendLabels(
+            [50, 70, 90, 110, 130, 150, { value: 170, label: "170+" }],
+            WIND_250_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>50</span>" +
-            "<span>70</span>" +
-            "<span>90</span>" +
-            "<span>110</span>" +
-            "<span>130</span>" +
-            "<span>150</span>" +
-            "<span>170+</span>";
-
     }
 
 
-    /*
-     * Precipitable Water (inches).
-     */
-    else if (
-        field.type ===
-        "pwat"
-    ) {
+    /* Precipitable Water (inches). */
+    else if (field.type === "pwat") {
 
-        drawColorLegend(
-            PWAT_COLORS
+        drawColorLegend(PWAT_COLORS);
+
+        renderLegendLabels(
+            [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, { value: 3.0, label: "3.0+" }],
+            PWAT_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>0.0</span>" +
-            "<span>0.5</span>" +
-            "<span>1.0</span>" +
-            "<span>1.5</span>" +
-            "<span>2.0</span>" +
-            "<span>2.5</span>" +
-            "<span>3.0+</span>";
-
     }
 
 
-    /*
-     * Significant Tornado Parameter (Effective Layer).
-     */
-    else if (
-        field.type ===
-        "stp"
-    ) {
+    /* Significant Tornado Parameter (Effective Layer). */
+    else if (field.type === "stp") {
 
-        drawColorLegend(
-            STP_COLORS
+        drawColorLegend(STP_COLORS);
+
+        renderLegendLabels(
+            [0, 1, 2, 3, 4, 5, 6, 8, { value: 10.5, label: "10.5+" }],
+            STP_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>0</span>" +
-            "<span>1</span>" +
-            "<span>2</span>" +
-            "<span>3</span>" +
-            "<span>4</span>" +
-            "<span>5</span>" +
-            "<span>6</span>" +
-            "<span>8</span>" +
-            "<span>10.5+</span>";
-
     }
 
 
-    /*
-     * Right- / Left-moving Supercell Composite Parameter.
-     */
-    else if (
-        field.type ===
-        "scp"
-    ) {
+    /* Right- / Left-moving Supercell Composite Parameter. */
+    else if (field.type === "scp") {
 
-        drawColorLegend(
-            SCP_COLORS
+        drawColorLegend(SCP_COLORS);
+
+        renderLegendLabels(
+            [0, 2, 5, 10, 20, 30, 40, { value: 48, label: "48+" }],
+            SCP_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>0</span>" +
-            "<span>2</span>" +
-            "<span>5</span>" +
-            "<span>10</span>" +
-            "<span>20</span>" +
-            "<span>30</span>" +
-            "<span>40</span>" +
-            "<span>48+</span>";
-
     }
 
 
-    /*
-     * 2-m temperature.
-     */
-    else if (
-        field.type ===
-        "temperature"
-    ) {
+    /* 2-m temperature. */
+    else if (field.type === "temperature") {
 
-        drawColorLegend(
-            TEMPERATURE_COLORS
+        drawColorLegend(TEMPERATURE_COLORS);
+
+        renderLegendLabels(
+            [-100, -50, 0, 50, 100, 130],
+            TEMPERATURE_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>-100</span>" +
-            "<span>-50</span>" +
-            "<span>0</span>" +
-            "<span>50</span>" +
-            "<span>100</span>" +
-            "<span>130</span>";
-
     }
 
 
-    /*
-     * 2-m equivalent potential temperature.
-     */
-    else if (
-        field.type ===
-        "thetae"
-    ) {
+    /* 2-m equivalent potential temperature. */
+    else if (field.type === "thetae") {
 
-        drawColorLegend(
-            THETAE_COLORS
+        drawColorLegend(THETAE_COLORS);
+
+        renderLegendLabels(
+            [239, 260, 280, 300, 320, 340, 360, 370],
+            THETAE_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>239</span>" +
-            "<span>260</span>" +
-            "<span>280</span>" +
-            "<span>300</span>" +
-            "<span>320</span>" +
-            "<span>340</span>" +
-            "<span>360</span>" +
-            "<span>370</span>";
-
     }
 
 
-    /*
-     * Relative humidity.
-     */
-    else if (
-        field.type ===
-        "rh"
-    ) {
+    /* Relative humidity. */
+    else if (field.type === "rh") {
 
-        drawColorLegend(
-            RH_COLORS
+        drawColorLegend(RH_COLORS);
+
+        renderLegendLabels(
+            [0, 20, 40, 60, 80, 100],
+            RH_BOUNDS
         );
-
-        legendLabels.innerHTML =
-            "<span>0</span>" +
-            "<span>20</span>" +
-            "<span>40</span>" +
-            "<span>60</span>" +
-            "<span>80</span>" +
-            "<span>100</span>";
-
     }
 
 
-    /*
-     * Surface dewpoint.
-     */
-    else if (
-        field.type ===
-        "dewpoint"
-    ) {
+    /* Surface dewpoint. */
+    else if (field.type === "dewpoint") {
 
-        drawColorLegend(
-            DEWPOINT_COLORS
+        drawColorLegend(DEWPOINT_COLORS);
+
+        /*
+         * The supplied dewpoint palette contains one-degree bins spanning
+         * approximately -40 through 90 F. Build matching boundaries here
+         * solely for legend positioning; the existing dewpoint rendering
+         * and palette lookup are unchanged.
+         */
+        const dewpointLegendBounds =
+            Array.from(
+                { length: DEWPOINT_COLORS.length + 1 },
+                (_, index) => -40 + index
+            );
+
+        renderLegendLabels(
+            [-40, -20, 0, 20, 40, 60, 80, 90],
+            dewpointLegendBounds
         );
-
-
-        legendLabels.innerHTML =
-            "<span>-40</span>" +
-            "<span>-20</span>" +
-            "<span>0</span>" +
-            "<span>20</span>" +
-            "<span>40</span>" +
-            "<span>60</span>" +
-            "<span>80</span>" +
-            "<span>90</span>";
-
     }
-
 }
 
 
