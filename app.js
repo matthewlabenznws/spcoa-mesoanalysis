@@ -10669,17 +10669,17 @@ function renderFront(annotation, points) {
     const marks = resamplePolyline(points, style.spacing);
     marks.forEach((mark, index) => {
         if (annotation.type === "cold") {
-            drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#0047ff");
+            drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#0047ff");
         } else if (annotation.type === "warm") {
-            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#ed1010", true);
+            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#ed1010", true);
         } else if (annotation.type === "stationary") {
             if (index % 2 === 0) drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#0047ff");
             else drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#ed1010", true);
         } else if (annotation.type === "occluded") {
-            if (index % 2 === 0) drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#8d009f");
-            else drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#8d009f", true);
+            if (index % 2 === 0) drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#8d009f");
+            else drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#8d009f", true);
         } else if (annotation.type === "dryline") {
-            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#f28a00", true);
+            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#f28a00", true);
         }
     });
     annotationCtx.restore();
