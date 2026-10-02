@@ -498,6 +498,69 @@ const TEMPERATURE_COLORS = [
 ];
 
 /* =========================================================================================
+   PRESSURE-LEVEL TEMPERATURE COLOR TABLE
+
+   WeatherBell-style split palette selected for 925/850/700/500/250 mb temperature.
+
+   -50 to 0 C : 1 C bins, cold side of the WeatherBell palette ending in gray at 0 C.
+     0 to 40 C: 0.2 C bins, warm side begins with dark purple exactly at 0 C.
+
+   The map colors are sampled by actual temperature coordinate so increasing the warm-side
+   resolution does not move the 0 C transition.
+   ========================================================================================= */
+
+const PRESSURE_TEMPERATURE_CONTROL_POINTS = [
+    [0.000, "#3f0390"], [0.074, "#bc0482"], [0.139, "#fa4da4"],
+    [0.204, "#dca9d3"], [0.296, "#92f2f0"], [0.365, "#11504e"],
+    [0.430, "#d2d2d2"], [0.435, "#341e9d"], [0.504, "#aa2c2c"],
+    [0.574, "#f7e7e7"], [0.596, "#a1dfeb"], [0.648, "#555590"],
+    [0.696, "#ffff78"], [0.800, "#780000"], [0.817, "#632720"],
+    [0.861, "#bca79e"], [0.943, "#722944"], [1.000, "#008c40"]
+];
+
+function interpolateHexColor(colorA, colorB, fraction) {
+    const a = hexToRgb(colorA);
+    const b = hexToRgb(colorB);
+    const f = Math.max(0, Math.min(1, fraction));
+    const channel = key => Math.round(a[key] + (b[key] - a[key]) * f);
+    return `rgb(${channel("r")}, ${channel("g")}, ${channel("b")})`;
+}
+
+function samplePressureTemperatureMaster(position) {
+    const p = Math.max(0, Math.min(1, position));
+    for (let i = 0; i < PRESSURE_TEMPERATURE_CONTROL_POINTS.length - 1; i++) {
+        const [p0, c0] = PRESSURE_TEMPERATURE_CONTROL_POINTS[i];
+        const [p1, c1] = PRESSURE_TEMPERATURE_CONTROL_POINTS[i + 1];
+        if (p >= p0 && p <= p1) {
+            return interpolateHexColor(c0, c1, p1 === p0 ? 0 : (p - p0) / (p1 - p0));
+        }
+    }
+    return PRESSURE_TEMPERATURE_CONTROL_POINTS.at(-1)[1];
+}
+
+const PRESSURE_TEMPERATURE_BOUNDS = [
+    ...Array.from({ length: 51 }, (_, i) => -50 + i),
+    ...Array.from({ length: 200 }, (_, i) => Number(((i + 1) * 0.2).toFixed(1)))
+];
+
+const PRESSURE_TEMPERATURE_COLORS = (() => {
+    const colors = [];
+    for (let i = 0; i < PRESSURE_TEMPERATURE_BOUNDS.length - 1; i++) {
+        const midpoint = (PRESSURE_TEMPERATURE_BOUNDS[i] + PRESSURE_TEMPERATURE_BOUNDS[i + 1]) / 2;
+        let position;
+        if (midpoint < 0) {
+            const fraction = (midpoint + 50) / 50;
+            position = fraction * 0.430;
+        } else {
+            const fraction = midpoint / 40;
+            position = 0.435 + fraction * (1.000 - 0.435);
+        }
+        colors.push(samplePressureTemperatureMaster(position));
+    }
+    return colors;
+})();
+
+/* =========================================================================================
    SUPERCELL COMPOSITE PARAMETER COLOR TABLE
    Exact bounds/colors supplied by Matthew. Used by both right- and left-moving SCP.
    ========================================================================================= */
@@ -631,6 +694,12 @@ const WEATHER_FIELDS = {
         units: "%",
         type: "rh"
     },
+
+    temperature_925mb: { name: "925 mb Temperature", shortName: "925 mb Temperature", units: "°C", type: "pressure_temperature" },
+    temperature_850mb: { name: "850 mb Temperature", shortName: "850 mb Temperature", units: "°C", type: "pressure_temperature" },
+    temperature_700mb: { name: "700 mb Temperature", shortName: "700 mb Temperature", units: "°C", type: "pressure_temperature" },
+    temperature_500mb: { name: "500 mb Temperature", shortName: "500 mb Temperature", units: "°C", type: "pressure_temperature" },
+    temperature_250mb: { name: "250 mb Temperature", shortName: "250 mb Temperature", units: "°C", type: "pressure_temperature" },
 
     rh_925mb: { name: "925 mb Relative Humidity", shortName: "925 mb RH", units: "%", type: "rh" },
     rh_850mb: { name: "850 mb Relative Humidity", shortName: "850 mb RH", units: "%", type: "rh" },
@@ -1290,6 +1359,11 @@ function ensureFilledWindFieldOptions() {
         "sfc_temperature",
         "thetae_2m",
         "rh_2m",
+        "temperature_925mb",
+        "temperature_850mb",
+        "temperature_700mb",
+        "temperature_500mb",
+        "temperature_250mb",
         "rh_925mb",
         "rh_850mb",
         "rh_700mb",
@@ -4603,6 +4677,12 @@ const TEMPERATURE_RGB =
         hexToRgb
     );
 
+const PRESSURE_TEMPERATURE_RGB =
+    PRESSURE_TEMPERATURE_COLORS.map(color => {
+        const match = color.match(/\d+/g).map(Number);
+        return { r: match[0], g: match[1], b: match[2] };
+    });
+
 const THETAE_RGB =
     THETAE_COLORS.map(
         hexToRgb
@@ -5044,6 +5124,21 @@ function getFieldColor(
             -100,
             TEMPERATURE_BOUNDS,
             TEMPERATURE_RGB
+        );
+
+    }
+
+
+    if (
+        definition.type ===
+        "pressure_temperature"
+    ) {
+
+        return getBinnedWindColor(
+            value,
+            -50,
+            PRESSURE_TEMPERATURE_BOUNDS,
+            PRESSURE_TEMPERATURE_RGB
         );
 
     }
@@ -8991,6 +9086,43 @@ function drawColorLegend(
 }
 
 
+function drawProportionalColorLegend(colors, bounds) {
+    if (!legendCanvas || !legendCtx || !Array.isArray(bounds) || bounds.length < 2) return;
+    const rect = legendCanvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width || legendCanvas.clientWidth || 240));
+    const height = Math.max(1, Math.round(rect.height || legendCanvas.clientHeight || 18));
+    const dpr = window.devicePixelRatio || 1;
+    legendCanvas.width = Math.round(width * dpr);
+    legendCanvas.height = Math.round(height * dpr);
+    legendCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    legendCtx.clearRect(0, 0, width, height);
+    const min = bounds[0], max = bounds[bounds.length - 1], span = max - min;
+    for (let i = 0; i < colors.length; i++) {
+        const x0 = ((bounds[i] - min) / span) * width;
+        const x1 = ((bounds[i + 1] - min) / span) * width;
+        legendCtx.fillStyle = colors[i];
+        legendCtx.fillRect(x0, 0, Math.ceil(x1 - x0 + 0.5), height);
+    }
+}
+
+function renderProportionalLegendLabels(ticks, bounds) {
+    if (!legendLabels) return;
+    legendLabels.innerHTML = "";
+    const min = bounds[0], max = bounds[bounds.length - 1], span = max - min;
+    ticks.forEach((tick, index) => {
+        const value = typeof tick === "object" ? tick.value : tick;
+        const label = typeof tick === "object" ? tick.label : String(tick);
+        const position = Math.max(0, Math.min(100, ((value - min) / span) * 100));
+        const el = document.createElement("span");
+        el.className = "legend-label";
+        el.textContent = label;
+        el.style.left = `${position}%`;
+        if (index === 0 || position <= 0.01) el.classList.add("legend-label-first");
+        if (index === ticks.length - 1 || position >= 99.99) el.classList.add("legend-label-last");
+        legendLabels.appendChild(el);
+    });
+}
+
 /* =========================================================================================
    LEGEND LABEL HELPERS
    ========================================================================================= */
@@ -9228,6 +9360,18 @@ function updateLegend() {
     }
 
 
+    /* Pressure-level temperature. */
+    else if (field.type === "pressure_temperature") {
+
+        drawProportionalColorLegend(PRESSURE_TEMPERATURE_COLORS, PRESSURE_TEMPERATURE_BOUNDS);
+
+        renderProportionalLegendLabels(
+            [-50, -45, -40, -35, -30, -25, -20, -15, -10, -5, 0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39],
+            PRESSURE_TEMPERATURE_BOUNDS
+        );
+    }
+
+
     /* 2-m equivalent potential temperature. */
     else if (field.type === "thetae") {
 
@@ -9335,6 +9479,9 @@ function formatScalarSample(field, value) {
     }
     if (definition.type === "temperature" || definition.type === "dewpoint") {
         return `${value.toFixed(1)} °F`;
+    }
+    if (definition.type === "pressure_temperature") {
+        return `${value.toFixed(1)} °C`;
     }
     if (definition.type === "thetae") {
         return `${value.toFixed(1)} K`;
@@ -10826,4 +10973,5 @@ window.addEventListener("resize", () => requestAnimationFrame(renderAnnotations)
 
 setDrawingTool("pan");
 requestAnimationFrame(renderAnnotations);
+
 
