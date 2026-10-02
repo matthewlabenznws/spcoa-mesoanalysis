@@ -11377,3 +11377,4 @@ requestAnimationFrame(renderAnnotations);
 
 /* Timeline manifest refresh is intentionally lightweight; tiles remain demand-loaded. */
 setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
+
