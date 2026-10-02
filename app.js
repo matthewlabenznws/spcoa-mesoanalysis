@@ -1727,17 +1727,22 @@ const legendLabels =
 
 
 /* =========================================================================================
-   CURSOR PANEL
+   CURSOR SAMPLE PANEL
    ========================================================================================= */
 
-const cursorField =
-    document.getElementById("cursor-field");
+const cursorPanel =
+    document.getElementById("cursor-panel");
 
-const cursorValue =
-    document.getElementById("cursor-value");
+const cursorSampleRows =
+    document.getElementById("cursor-sample-rows");
 
-const cursorLocation =
-    document.getElementById("cursor-location");
+const cursorSampleToggle =
+    document.getElementById("cursor-sample-toggle");
+
+let cursorSampleEnabled =
+    cursorSampleToggle
+        ? cursorSampleToggle.checked
+        : false;
 
 
 /* =========================================================================================
@@ -9094,343 +9099,283 @@ function updateLegend() {
 
 
 /* =========================================================================================
-   CURSOR READOUT
+   CURSOR SAMPLE
    ========================================================================================= */
 
-let lastCursorUpdate =
-    0;
+let lastCursorUpdate = 0;
 
+function getActiveContourSamples() {
 
-async function updateCursor(
-    event
-) {
+    const samples = [];
 
-    /*
-     * Limit cursor sampling frequency.
-     */
-    const now =
-        performance.now();
-
-
-    if (
-        now -
-        lastCursorUpdate <
-        35
-    ) {
-
-        return;
-
-    }
-
-
-    lastCursorUpdate =
-        now;
-
-
-    const generation =
-        ++cursorGeneration;
-
-
-    /*
-     * Always show the cursor location.
-     */
-    if (cursorLocation) {
-
-        cursorLocation.textContent =
-            `${event.lngLat.lat.toFixed(3)}, ` +
-            `${event.lngLat.lng.toFixed(3)}`;
-
-    }
-
-
-    /*
-     * If there is no filled field, there is no scalar cursor value.
-     */
-    if (
-        !activeField ||
-        activeField ===
-            "none" ||
-        !WEATHER_FIELDS[
-            activeField
-        ]
-    ) {
-
-        if (cursorField) {
-
-            cursorField.textContent =
-                "No filled field";
-
+    const add = (enabled, field) => {
+        if (enabled && CONTOUR_FIELDS[field]) {
+            samples.push(field);
         }
+    };
 
+    add(activeOverlays.mslp, "sfc_mslp");
+    add(activeOverlays.dcape, "dcape");
+    add(activeOverlays.warmCloudDepth, "warm_cloud_depth");
+    add(activeOverlays.lclHeight, "lcl_height");
+    add(activeOverlays.stpEff, "stp_eff_contours");
 
-        if (cursorValue) {
-
-            cursorValue.textContent =
-                "--";
-
-        }
-
-
-        return;
-
+    for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
+        add(activeOverlays[config.stateKey], config.field);
     }
 
+    const divergenceFields = [
+        ["divergence925", "divergence_925mb"],
+        ["divergence850", "divergence_850mb"],
+        ["divergence700", "divergence_700mb"],
+        ["divergence500", "divergence_500mb"],
+        ["divergence250", "divergence_250mb"]
+    ];
 
-    const z =
-        getDataZoom();
-
-
-    const tileX =
-        Math.floor(
-
-            lonToTileX(
-
-                event.lngLat.lng,
-
-                z
-
-            )
-
-        );
-
-
-    const tileY =
-        Math.floor(
-
-            latToTileY(
-
-                event.lngLat.lat,
-
-                z
-
-            )
-
-        );
-
-
-    /*
-     * Load a small neighborhood around the cursor.
-     *
-     * Bilinear interpolation can cross tile boundaries, so neighboring
-     * tiles may be needed even when the cursor itself is inside one tile.
-     */
-    const cursorTileJobs =
-        [];
-
-
-    for (
-        let dx = -1;
-        dx <= 1;
-        dx++
-    ) {
-
-        for (
-            let dy = -1;
-            dy <= 1;
-            dy++
-        ) {
-
-            cursorTileJobs.push(
-
-                loadScalarTile(
-
-                    activeField,
-
-                    z,
-
-                    tileX + dx,
-
-                    tileY + dy
-
-                )
-
-            );
-
-        }
-
+    for (const [stateKey, field] of divergenceFields) {
+        add(activeOverlays[stateKey], field);
     }
 
-
-    await Promise.all(
-        cursorTileJobs
-    );
-
-
-    /*
-     * Ignore an old cursor request if the mouse has already moved and
-     * started a newer request.
-     */
-    if (
-        generation !==
-        cursorGeneration
-    ) {
-
-        return;
-
-    }
-
-
-    const value =
-        sampleScalar(
-
-            activeField,
-
-            event.lngLat.lng,
-
-            event.lngLat.lat,
-
-            z,
-
-            false
-
-        );
-
-
-    const field =
-        WEATHER_FIELDS[
-            activeField
-        ];
-
-
-    if (cursorField) {
-
-        cursorField.textContent =
-            field.name;
-
-    }
-
-
-    if (!cursorValue) {
-
-        return;
-
-    }
-
-
-    if (
-        value === null ||
-        !Number.isFinite(
-            value
-        )
-    ) {
-
-        cursorValue.textContent =
-            "N/A";
-
-
-        return;
-
-    }
-
-
-    if (
-        field.type ===
-        "cape"
-    ) {
-
-        cursorValue.textContent =
-            `${Math.round(value)} J/kg`;
-
-    }
-
-
-    else if (
-        field.type ===
-        "scp"
-    ) {
-
-        cursorValue.textContent =
-            value.toFixed(1);
-
-    }
-
-
-    else if (
-        field.type ===
-        "temperature"
-    ) {
-
-        cursorValue.textContent =
-            `${value.toFixed(1)} °F`;
-
-    }
-
-
-    else if (
-        field.type ===
-        "dewpoint"
-    ) {
-
-        cursorValue.textContent =
-            `${value.toFixed(1)} °F`;
-
-    }
-
-
-    else if (
-        field.type ===
-        "thetae"
-    ) {
-
-        cursorValue.textContent =
-            `${value.toFixed(1)} K`;
-
-    }
-
-
-    else if (
-        field.type ===
-        "rh"
-    ) {
-
-        cursorValue.textContent =
-            `${value.toFixed(1)} %`;
-
-    }
-
-
-    else {
-
-        cursorValue.textContent =
-            value.toFixed(1);
-
-    }
-
+    return samples;
 }
 
+function getActiveVectorSamples() {
+    return VECTOR_OVERLAY_CONFIG
+        .filter(config => activeOverlays[config.stateKey])
+        .map(config => config.field);
+}
 
-/* =========================================================================================
-   CLEAR CURSOR
-   ========================================================================================= */
+function formatScalarSample(field, value) {
+
+    if (!Number.isFinite(value)) return "N/A";
+
+    const definition = WEATHER_FIELDS[field] || {};
+
+    if (definition.type === "cape" || definition.type === "cape_0_3km") {
+        return `${Math.round(value)} J/kg`;
+    }
+    if (definition.type === "temperature" || definition.type === "dewpoint") {
+        return `${value.toFixed(1)} °F`;
+    }
+    if (definition.type === "thetae") {
+        return `${value.toFixed(1)} K`;
+    }
+    if (definition.type === "rh") {
+        return `${value.toFixed(0)} %`;
+    }
+    if (definition.type === "wind_midlevel" || definition.type === "wind_500" || definition.type === "wind_250") {
+        return `${Math.round(value)} kt`;
+    }
+    if (definition.type === "pwat") {
+        return `${value.toFixed(2)} in`;
+    }
+    if (definition.type === "stp" || definition.type === "scp") {
+        return value.toFixed(1);
+    }
+
+    const units = definition.units || "";
+    return `${value.toFixed(1)}${units ? ` ${units}` : ""}`;
+}
+
+function formatContourSample(field, value) {
+
+    if (!Number.isFinite(value)) return "N/A";
+
+    const definition = CONTOUR_FIELDS[field] || {};
+    const units = definition.units || "";
+
+    if (field === "sfc_mslp") return `${value.toFixed(1)} hPa`;
+    if (field.startsWith("hght_")) return `${Math.round(value)} m`;
+    if (field === "dcape") return `${Math.round(value)} J/kg`;
+    if (field === "lcl_height") return `${Math.round(value)} m AGL`;
+    if (field === "warm_cloud_depth") return `${Math.round(value)} m`;
+    if (field === "stp_eff_contours") return value.toFixed(1);
+    if (field.startsWith("divergence_")) return `${value.toFixed(1)} ${units}`;
+
+    return `${value.toFixed(1)}${units ? ` ${units}` : ""}`;
+}
+
+function formatVectorSample(vector) {
+    if (!vector || !Number.isFinite(vector.u) || !Number.isFinite(vector.v)) {
+        return "N/A";
+    }
+    return `${Math.round(Math.hypot(vector.u, vector.v))} kt`;
+}
+
+async function preloadCursorNeighborhood(kind, field, z, tileX, tileY) {
+
+    const jobs = [];
+
+    for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+            if (kind === "scalar") {
+                jobs.push(loadScalarTile(field, z, tileX + dx, tileY + dy));
+            }
+            else if (kind === "vector") {
+                jobs.push(loadVectorTile(field, z, tileX + dx, tileY + dy));
+            }
+            else if (kind === "contour") {
+                jobs.push(loadContourTile(field, z, tileX + dx, tileY + dy));
+            }
+        }
+    }
+
+    await Promise.all(jobs);
+}
+
+function positionCursorPanel(event) {
+
+    if (!cursorPanel) return;
+
+    const wrapper = document.getElementById("map-wrapper");
+    if (!wrapper) return;
+
+    const gap = 16;
+    const padding = 10;
+    const panelWidth = cursorPanel.offsetWidth || 230;
+    const panelHeight = cursorPanel.offsetHeight || 80;
+
+    let left = event.point.x + gap;
+    let top = event.point.y + gap;
+
+    if (left + panelWidth + padding > wrapper.clientWidth) {
+        left = event.point.x - panelWidth - gap;
+    }
+
+    if (top + panelHeight + padding > wrapper.clientHeight) {
+        top = event.point.y - panelHeight - gap;
+    }
+
+    cursorPanel.style.left = `${Math.max(padding, left)}px`;
+    cursorPanel.style.top = `${Math.max(padding, top)}px`;
+}
+
+function renderCursorSamples(rows, event) {
+
+    if (!cursorPanel || !cursorSampleRows) return;
+
+    cursorSampleRows.innerHTML = "";
+
+    if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "cursor-sample-empty";
+        empty.textContent = "No active weather layers";
+        cursorSampleRows.appendChild(empty);
+    }
+    else {
+        for (const row of rows) {
+            const line = document.createElement("div");
+            line.className = "cursor-sample-row";
+
+            const name = document.createElement("span");
+            name.className = "cursor-sample-name";
+            name.textContent = row.name;
+
+            const value = document.createElement("span");
+            value.className = "cursor-sample-value";
+            value.textContent = row.value;
+
+            line.appendChild(name);
+            line.appendChild(value);
+            cursorSampleRows.appendChild(line);
+        }
+    }
+
+    cursorPanel.classList.add("visible");
+    cursorPanel.setAttribute("aria-hidden", "false");
+    positionCursorPanel(event);
+}
+
+async function updateCursor(event) {
+
+    if (!cursorSampleEnabled) return;
+
+    const now = performance.now();
+    if (now - lastCursorUpdate < 70) return;
+    lastCursorUpdate = now;
+
+    const generation = ++cursorGeneration;
+    const z = getDataZoom();
+    const tileX = Math.floor(lonToTileX(event.lngLat.lng, z));
+    const tileY = Math.floor(latToTileY(event.lngLat.lat, z));
+
+    const scalarFields = [];
+    if (activeField && activeField !== "none" && WEATHER_FIELDS[activeField]) {
+        scalarFields.push(activeField);
+    }
+
+    const contourFields = getActiveContourSamples();
+    const vectorFields = getActiveVectorSamples();
+
+    const preloadJobs = [];
+
+    for (const field of scalarFields) {
+        preloadJobs.push(preloadCursorNeighborhood("scalar", field, z, tileX, tileY));
+    }
+    for (const field of contourFields) {
+        preloadJobs.push(preloadCursorNeighborhood("contour", field, z, tileX, tileY));
+    }
+    for (const field of vectorFields) {
+        preloadJobs.push(preloadCursorNeighborhood("vector", field, z, tileX, tileY));
+    }
+
+    await Promise.all(preloadJobs);
+
+    if (generation !== cursorGeneration || !cursorSampleEnabled) return;
+
+    const rows = [];
+
+    for (const field of scalarFields) {
+        const value = sampleScalar(field, event.lngLat.lng, event.lngLat.lat, z, false);
+        rows.push({
+            name: WEATHER_FIELDS[field].shortName || WEATHER_FIELDS[field].name,
+            value: formatScalarSample(field, value)
+        });
+    }
+
+    for (const field of contourFields) {
+        const value = sampleScalar(field, event.lngLat.lng, event.lngLat.lat, z, true);
+        const definition = CONTOUR_FIELDS[field];
+        rows.push({
+            name: definition.shortName || definition.name,
+            value: formatContourSample(field, value)
+        });
+    }
+
+    for (const field of vectorFields) {
+        const vector = sampleVector(field, event.lngLat.lng, event.lngLat.lat, z);
+        const definition = VECTOR_FIELDS[field];
+        rows.push({
+            name: definition.shortName || definition.name,
+            value: formatVectorSample(vector)
+        });
+    }
+
+    renderCursorSamples(rows, event);
+}
 
 function clearCursor() {
-
     cursorGeneration++;
-
-
-    if (cursorField) {
-
-        cursorField.textContent =
-            "--";
-
+    if (cursorPanel) {
+        cursorPanel.classList.remove("visible");
+        cursorPanel.setAttribute("aria-hidden", "true");
     }
+}
 
+function setCursorSampleEnabled(enabled) {
+    cursorSampleEnabled = Boolean(enabled);
+    clearCursor();
 
-    if (cursorValue) {
-
-        cursorValue.textContent =
-            "--";
-
+    const canvas = map && map.getCanvas ? map.getCanvas() : null;
+    if (canvas) {
+        canvas.style.cursor = cursorSampleEnabled ? "crosshair" : "";
     }
+}
 
-
-    if (cursorLocation) {
-
-        cursorLocation.textContent =
-            "--";
-
-    }
-
+if (cursorSampleToggle) {
+    cursorSampleToggle.addEventListener("change", event => {
+        setCursorSampleEnabled(event.target.checked);
+    });
 }
 
 
@@ -9751,12 +9696,7 @@ if (fieldSelect) {
             cursorGeneration++;
 
 
-            if (cursorValue) {
-
-                cursorValue.textContent =
-                    "--";
-
-            }
+            clearCursor();
 
 
             updateLegend();
