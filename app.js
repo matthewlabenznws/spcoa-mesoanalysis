@@ -1004,6 +1004,8 @@ const CONTOUR_FIELDS = {
 
 let currentRun = null;
 
+let currentAnalysisTime = null;
+
 let runMetadata = null;
 
 let activeField = "sbcape";
@@ -1777,13 +1779,14 @@ function getActiveLayerDescriptions() {
 
         const field = WEATHER_FIELDS[activeField];
 
-        descriptions.push(
-            formatActiveLayer(
+        descriptions.push({
+            text: formatActiveLayer(
                 field.shortName || field.name,
                 field.units || "",
                 "fill"
-            )
-        );
+            ),
+            color: null
+        });
     }
 
     const contourConfigs = [
@@ -1812,13 +1815,14 @@ function getActiveLayerDescriptions() {
             continue;
         }
 
-        descriptions.push(
-            formatActiveLayer(
+        descriptions.push({
+            text: formatActiveLayer(
                 field.shortName || field.name,
                 config.units !== undefined ? config.units : (field.units || ""),
                 "contour"
-            )
-        );
+            ),
+            color: null
+        });
     }
 
     for (const config of VECTOR_OVERLAY_CONFIG) {
@@ -1833,13 +1837,14 @@ function getActiveLayerDescriptions() {
             continue;
         }
 
-        descriptions.push(
-            formatActiveLayer(
+        descriptions.push({
+            text: formatActiveLayer(
                 field.shortName || field.name,
                 "kt",
                 "barbs"
-            )
-        );
+            ),
+            color: vectorColors[config.field] || field.defaultColor || "#000000"
+        });
     }
 
     return descriptions;
@@ -1876,19 +1881,40 @@ function updateActiveLayersStrip() {
 
     activeLayersText.replaceChildren();
 
+    function appendSeparator() {
+        const separator = document.createElement("span");
+        separator.className = "active-layer-separator";
+        separator.textContent = "|";
+        activeLayersText.appendChild(separator);
+    }
+
     descriptions.forEach((description, index) => {
 
         if (index > 0) {
-            const separator = document.createElement("span");
-            separator.className = "active-layer-separator";
-            separator.textContent = "|";
-            activeLayersText.appendChild(separator);
+            appendSeparator();
+        }
+
+        if (description.color) {
+            const indicator = document.createElement("span");
+            indicator.className = "active-layer-color-indicator";
+            indicator.style.backgroundColor = description.color;
+            indicator.setAttribute("aria-hidden", "true");
+            activeLayersText.appendChild(indicator);
         }
 
         activeLayersText.appendChild(
-            document.createTextNode(description)
+            document.createTextNode(description.text)
         );
     });
+
+    if (descriptions.length > 0) {
+        appendSeparator();
+    }
+
+    const valid = document.createElement("span");
+    valid.className = "active-layer-valid-time";
+    valid.textContent = `Valid: ${formatAnalysisTime(currentAnalysisTime)}`;
+    activeLayersText.appendChild(valid);
 
     requestAnimationFrame(fitActiveLayersStrip);
 }
@@ -2374,10 +2400,14 @@ async function loadLatestRun() {
         currentRun;
 
 
+    currentAnalysisTime = latest.analysis_time || null;
+
     analysisTimeElement.textContent =
         formatAnalysisTime(
-            latest.analysis_time
+            currentAnalysisTime
         );
+
+    requestAnimationFrame(updateActiveLayersStrip);
 
 
     runMetadata =
@@ -9983,6 +10013,8 @@ for (const config of VECTOR_OVERLAY_CONFIG) {
                 vectorColors[config.field] =
                     event.target.value || "#000000";
 
+                requestAnimationFrame(updateActiveLayersStrip);
+
                 if (activeOverlays[config.stateKey]) {
                     vectorRenderGeneration++;
                     resetNumericalCanvasTransforms();
@@ -10596,10 +10628,22 @@ function drawSemicircle(ctx, x, y, angle, side, size, color, filled = true) {
     ctx.translate(x, y);
     ctx.rotate(angle);
     ctx.beginPath();
-    const start = side > 0 ? Math.PI : 0;
-    const end = side > 0 ? 0 : Math.PI;
-    ctx.arc(0, 0, size, start, end, side < 0);
+
+    /*
+     * In screen coordinates (+y downward), the right side of a path points
+     * toward +local-y.  Build the semicircle explicitly so side=+1 always
+     * means the right-hand side of the direction the front was drawn.
+     */
+    const steps = 18;
+    ctx.moveTo(-size, 0);
+    for (let i = 0; i <= steps; i++) {
+        const theta = Math.PI - (Math.PI * i / steps);
+        const px = size * Math.cos(theta);
+        const py = side * size * Math.sin(theta);
+        ctx.lineTo(px, py);
+    }
     ctx.closePath();
+
     ctx.strokeStyle = color;
     ctx.lineWidth = 2.2;
     if (filled) {
@@ -10609,6 +10653,7 @@ function drawSemicircle(ctx, x, y, angle, side, size, color, filled = true) {
     ctx.stroke();
     ctx.restore();
 }
+
 
 function renderFront(annotation, points) {
     const style = ANNOTATION_STYLE[annotation.type];
@@ -10634,7 +10679,7 @@ function renderFront(annotation, points) {
             if (index % 2 === 0) drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#8d009f");
             else drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#8d009f", true);
         } else if (annotation.type === "dryline") {
-            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#f28a00", false);
+            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#f28a00", true);
         }
     });
     annotationCtx.restore();
@@ -10781,3 +10826,4 @@ window.addEventListener("resize", () => requestAnimationFrame(renderAnnotations)
 
 setDrawingTool("pan");
 requestAnimationFrame(renderAnnotations);
+
