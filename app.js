@@ -1746,6 +1746,155 @@ let cursorSampleEnabled =
 
 
 /* =========================================================================================
+   ACTIVE-LAYER INFORMATION STRIP
+   ========================================================================================= */
+
+const activeLayersStrip =
+    document.getElementById("active-layers-strip");
+
+const activeLayersText =
+    document.getElementById("active-layers-text");
+
+function formatActiveLayer(name, units, displayType) {
+
+    const unitText =
+        units && String(units).trim()
+            ? `${units}, `
+            : "";
+
+    return `${name} (${unitText}${displayType})`;
+}
+
+function getActiveLayerDescriptions() {
+
+    const descriptions = [];
+
+    if (
+        activeField &&
+        activeField !== "none" &&
+        WEATHER_FIELDS[activeField]
+    ) {
+
+        const field = WEATHER_FIELDS[activeField];
+
+        descriptions.push(
+            formatActiveLayer(
+                field.shortName || field.name,
+                field.units || "",
+                "fill"
+            )
+        );
+    }
+
+    const contourConfigs = [
+        { field: "sfc_mslp", stateKey: "mslp", units: "mb" },
+        { field: "dcape", stateKey: "dcape" },
+        { field: "warm_cloud_depth", stateKey: "warmCloudDepth" },
+        ...GEOPOTENTIAL_HEIGHT_OVERLAYS.map(config => ({
+            field: config.field,
+            stateKey: config.stateKey
+        })),
+        ...THERMODYNAMIC_CONTOUR_OVERLAYS.map(config => ({
+            field: config.field,
+            stateKey: config.stateKey
+        }))
+    ];
+
+    for (const config of contourConfigs) {
+
+        if (!activeOverlays[config.stateKey]) {
+            continue;
+        }
+
+        const field = CONTOUR_FIELDS[config.field];
+
+        if (!field) {
+            continue;
+        }
+
+        descriptions.push(
+            formatActiveLayer(
+                field.shortName || field.name,
+                config.units !== undefined ? config.units : (field.units || ""),
+                "contour"
+            )
+        );
+    }
+
+    for (const config of VECTOR_OVERLAY_CONFIG) {
+
+        if (!activeOverlays[config.stateKey]) {
+            continue;
+        }
+
+        const field = VECTOR_FIELDS[config.field];
+
+        if (!field) {
+            continue;
+        }
+
+        descriptions.push(
+            formatActiveLayer(
+                field.shortName || field.name,
+                "kt",
+                "barbs"
+            )
+        );
+    }
+
+    return descriptions;
+}
+
+function fitActiveLayersStrip() {
+
+    if (!activeLayersStrip || !activeLayersText) {
+        return;
+    }
+
+    let fontSize = 13;
+    const minimumFontSize = 9.5;
+
+    activeLayersStrip.style.fontSize = `${fontSize}px`;
+
+    while (
+        activeLayersText.scrollWidth > activeLayersStrip.clientWidth - 28 &&
+        fontSize > minimumFontSize
+    ) {
+        fontSize -= 0.5;
+        activeLayersStrip.style.fontSize = `${fontSize}px`;
+    }
+}
+
+function updateActiveLayersStrip() {
+
+    if (!activeLayersText) {
+        return;
+    }
+
+    const descriptions =
+        getActiveLayerDescriptions();
+
+    activeLayersText.replaceChildren();
+
+    descriptions.forEach((description, index) => {
+
+        if (index > 0) {
+            const separator = document.createElement("span");
+            separator.className = "active-layer-separator";
+            separator.textContent = "|";
+            activeLayersText.appendChild(separator);
+        }
+
+        activeLayersText.appendChild(
+            document.createTextNode(description)
+        );
+    });
+
+    requestAnimationFrame(fitActiveLayersStrip);
+}
+
+
+/* =========================================================================================
    MAP
    ========================================================================================= */
 
@@ -8586,11 +8735,11 @@ function renderGeography() {
 
 
     geographyCtx.strokeStyle =
-        "rgba(145,145,145,0.58)";
+        "rgba(45,45,45,0.80)";
 
 
     geographyCtx.lineWidth =
-        0.55;
+        0.75;
 
 
     for (
@@ -8621,11 +8770,11 @@ function renderGeography() {
 
 
     geographyCtx.strokeStyle =
-        "rgba(65,65,65,0.92)";
+        "rgba(0,0,0,1.0)";
 
 
     geographyCtx.lineWidth =
-        1.25;
+        1.75;
 
 
     for (
@@ -10022,6 +10171,20 @@ for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
 
 
 /* =========================================================================================
+   ACTIVE-LAYER STRIP EVENTS
+   ========================================================================================= */
+
+document.addEventListener(
+    "change",
+    () => {
+        requestAnimationFrame(updateActiveLayersStrip);
+    }
+);
+
+updateActiveLayersStrip();
+
+
+/* =========================================================================================
    WINDOW RESIZE
    ========================================================================================= */
 
@@ -10285,3 +10448,8 @@ map.on(
     }
 
 );
+
+/* Keep the active-layer description fitted to one line if the browser width changes. */
+window.addEventListener("resize", () => {
+    requestAnimationFrame(fitActiveLayersStrip);
+});
