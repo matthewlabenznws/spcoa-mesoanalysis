@@ -10453,3 +10453,331 @@ map.on(
 window.addEventListener("resize", () => {
     requestAnimationFrame(fitActiveLayersStrip);
 });
+
+/* =========================================================================================
+   MAP ANNOTATION / FRONTAL ANALYSIS TOOLS
+   ========================================================================================= */
+
+const annotationCanvas = document.getElementById("annotation-canvas");
+const annotationCtx = annotationCanvas ? annotationCanvas.getContext("2d") : null;
+const drawingToolbar = document.getElementById("drawing-toolbar");
+const drawColorInput = document.getElementById("draw-color");
+const drawWidthInput = document.getElementById("draw-width");
+const drawUndoButton = document.getElementById("draw-undo");
+const drawClearButton = document.getElementById("draw-clear");
+const drawHint = document.getElementById("draw-hint");
+
+const ANNOTATION_STYLE = {
+    cold:       { line: "#0047ff", width: 3.2, spacing: 38, size: 10 },
+    warm:       { line: "#ed1010", width: 3.2, spacing: 38, size: 10 },
+    stationary: { line: "#111111", width: 3.0, spacing: 40, size: 10 },
+    occluded:   { line: "#8d009f", width: 3.2, spacing: 38, size: 10 },
+    dryline:    { line: "#f28a00", width: 3.0, spacing: 34, size: 9 },
+    trough:     { line: "#8b4a12", width: 3.0 }
+};
+
+let activeDrawingTool = "pan";
+let annotations = [];
+let currentAnnotation = null;
+let annotationPointerId = null;
+
+function resizeAnnotationCanvas() {
+    if (!annotationCanvas || !annotationCtx) return;
+    const rect = mapWrapper.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (annotationCanvas.width !== w || annotationCanvas.height !== h) {
+        annotationCanvas.width = w;
+        annotationCanvas.height = h;
+    }
+    annotationCanvas.style.width = `${rect.width}px`;
+    annotationCanvas.style.height = `${rect.height}px`;
+    annotationCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    annotationCtx.lineCap = "round";
+    annotationCtx.lineJoin = "round";
+}
+
+function setDrawingTool(tool) {
+    activeDrawingTool = tool;
+    document.querySelectorAll(".draw-tool[data-tool]").forEach(button => {
+        button.classList.toggle("active", button.dataset.tool === tool);
+    });
+    if (annotationCanvas) {
+        annotationCanvas.classList.toggle("drawing-active", tool !== "pan" && tool !== "eraser");
+        annotationCanvas.classList.toggle("erasing-active", tool === "eraser");
+    }
+    if (drawHint) {
+        const labels = {
+            pan: "Pan mode", pen: "Drag to draw", cold: "Drag a cold front", warm: "Drag a warm front",
+            stationary: "Drag a stationary front", occluded: "Drag an occluded front", dryline: "Drag a dryline",
+            trough: "Drag a surface trough", high: "Click to place H", low: "Click to place L", eraser: "Click an annotation to erase"
+        };
+        drawHint.textContent = labels[tool] || "";
+    }
+    if (map && map.dragPan) {
+        if (tool === "pan") map.dragPan.enable();
+        else map.dragPan.disable();
+    }
+}
+
+function eventLngLat(event) {
+    const rect = annotationCanvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const ll = map.unproject([x, y]);
+    return [ll.lng, ll.lat];
+}
+
+function annotationScreenPoints(annotation) {
+    return (annotation.points || []).map(ll => {
+        const p = map.project(ll);
+        return { x: p.x, y: p.y };
+    });
+}
+
+function drawSmoothPath(ctx, points) {
+    if (!points.length) return;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    if (points.length === 1) return;
+    if (points.length === 2) {
+        ctx.lineTo(points[1].x, points[1].y);
+        return;
+    }
+    for (let i = 1; i < points.length - 1; i++) {
+        const midX = (points[i].x + points[i + 1].x) / 2;
+        const midY = (points[i].y + points[i + 1].y) / 2;
+        ctx.quadraticCurveTo(points[i].x, points[i].y, midX, midY);
+    }
+    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+}
+
+function resamplePolyline(points, spacing) {
+    const out = [];
+    if (points.length < 2) return out;
+    let carry = spacing * 0.65;
+    for (let i = 1; i < points.length; i++) {
+        let ax = points[i - 1].x, ay = points[i - 1].y;
+        const bx = points[i].x, by = points[i].y;
+        let dx = bx - ax, dy = by - ay;
+        let seg = Math.hypot(dx, dy);
+        if (seg < 0.01) continue;
+        const ux = dx / seg, uy = dy / seg;
+        while (carry <= seg) {
+            const x = ax + ux * carry, y = ay + uy * carry;
+            out.push({ x, y, angle: Math.atan2(uy, ux) });
+            ax = x; ay = y; seg -= carry;
+            carry = spacing;
+        }
+        carry -= seg;
+    }
+    return out;
+}
+
+function drawTriangle(ctx, x, y, angle, side, size, color) {
+    const nx = -Math.sin(angle) * side, ny = Math.cos(angle) * side;
+    const tx = Math.cos(angle), ty = Math.sin(angle);
+    const baseX = x + nx * 1.5, baseY = y + ny * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(baseX - tx * size * 0.72, baseY - ty * size * 0.72);
+    ctx.lineTo(baseX + tx * size * 0.72, baseY + ty * size * 0.72);
+    ctx.lineTo(x + nx * size * 1.35, y + ny * size * 1.35);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+}
+
+function drawSemicircle(ctx, x, y, angle, side, size, color, filled = true) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    const start = side > 0 ? Math.PI : 0;
+    const end = side > 0 ? 0 : Math.PI;
+    ctx.arc(0, 0, size, start, end, side < 0);
+    ctx.closePath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.2;
+    if (filled) {
+        ctx.fillStyle = color;
+        ctx.fill();
+    }
+    ctx.stroke();
+    ctx.restore();
+}
+
+function renderFront(annotation, points) {
+    const style = ANNOTATION_STYLE[annotation.type];
+    if (!style || points.length < 2) return;
+    annotationCtx.save();
+    annotationCtx.strokeStyle = style.line;
+    annotationCtx.lineWidth = style.width;
+    annotationCtx.setLineDash(annotation.type === "trough" ? [11, 8] : []);
+    drawSmoothPath(annotationCtx, points);
+    annotationCtx.stroke();
+    annotationCtx.setLineDash([]);
+    if (annotation.type === "trough") { annotationCtx.restore(); return; }
+    const marks = resamplePolyline(points, style.spacing);
+    marks.forEach((mark, index) => {
+        if (annotation.type === "cold") {
+            drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#0047ff");
+        } else if (annotation.type === "warm") {
+            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#ed1010", true);
+        } else if (annotation.type === "stationary") {
+            if (index % 2 === 0) drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#0047ff");
+            else drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#ed1010", true);
+        } else if (annotation.type === "occluded") {
+            if (index % 2 === 0) drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#8d009f");
+            else drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#8d009f", true);
+        } else if (annotation.type === "dryline") {
+            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, 1, style.size, "#f28a00", false);
+        }
+    });
+    annotationCtx.restore();
+}
+
+function renderAnnotation(annotation) {
+    if (!annotationCtx) return;
+    if (annotation.type === "high" || annotation.type === "low") {
+        const p = map.project(annotation.points[0]);
+        annotationCtx.save();
+        annotationCtx.font = '800 58px Inter, "Segoe UI", Arial, sans-serif';
+        annotationCtx.textAlign = "center";
+        annotationCtx.textBaseline = "middle";
+        annotationCtx.lineWidth = 3;
+        annotationCtx.strokeStyle = "rgba(255,255,255,.9)";
+        annotationCtx.fillStyle = annotation.type === "high" ? "#003cff" : "#ed0000";
+        const letter = annotation.type === "high" ? "H" : "L";
+        annotationCtx.strokeText(letter, p.x, p.y);
+        annotationCtx.fillText(letter, p.x, p.y);
+        annotationCtx.restore();
+        return;
+    }
+    const points = annotationScreenPoints(annotation);
+    if (annotation.type === "pen") {
+        annotationCtx.save();
+        annotationCtx.strokeStyle = annotation.color || "#ff3030";
+        annotationCtx.lineWidth = annotation.width || 4;
+        drawSmoothPath(annotationCtx, points);
+        annotationCtx.stroke();
+        annotationCtx.restore();
+        return;
+    }
+    renderFront(annotation, points);
+}
+
+function renderAnnotations() {
+    if (!annotationCanvas || !annotationCtx) return;
+    resizeAnnotationCanvas();
+    const rect = mapWrapper.getBoundingClientRect();
+    annotationCtx.clearRect(0, 0, rect.width, rect.height);
+    annotations.forEach(renderAnnotation);
+    if (currentAnnotation) renderAnnotation(currentAnnotation);
+}
+
+function pointSegmentDistance(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (!len2) return Math.hypot(px - ax, py - ay);
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function annotationDistance(annotation, x, y) {
+    const pts = annotationScreenPoints(annotation);
+    if (!pts.length) return Infinity;
+    if (annotation.type === "high" || annotation.type === "low") return Math.hypot(x - pts[0].x, y - pts[0].y);
+    let best = Infinity;
+    for (let i = 1; i < pts.length; i++) best = Math.min(best, pointSegmentDistance(x, y, pts[i-1].x, pts[i-1].y, pts[i].x, pts[i].y));
+    return best;
+}
+
+function eraseAt(event) {
+    const rect = annotationCanvas.getBoundingClientRect();
+    const x = event.clientX - rect.left, y = event.clientY - rect.top;
+    let bestIndex = -1, bestDistance = 18;
+    annotations.forEach((a, i) => {
+        const d = annotationDistance(a, x, y);
+        if (d < bestDistance) { bestDistance = d; bestIndex = i; }
+    });
+    if (bestIndex >= 0) {
+        annotations.splice(bestIndex, 1);
+        renderAnnotations();
+    }
+}
+
+if (drawingToolbar && annotationCanvas) {
+    drawingToolbar.querySelectorAll(".draw-tool[data-tool]").forEach(button => {
+        button.addEventListener("click", () => setDrawingTool(button.dataset.tool));
+    });
+
+    annotationCanvas.addEventListener("pointerdown", event => {
+        if (activeDrawingTool === "pan") return;
+        event.preventDefault();
+        if (activeDrawingTool === "eraser") { eraseAt(event); return; }
+        const ll = eventLngLat(event);
+        if (activeDrawingTool === "high" || activeDrawingTool === "low") {
+            annotations.push({ type: activeDrawingTool, points: [ll] });
+            renderAnnotations();
+            return;
+        }
+        annotationPointerId = event.pointerId;
+        annotationCanvas.setPointerCapture(event.pointerId);
+        currentAnnotation = {
+            type: activeDrawingTool,
+            points: [ll],
+            color: drawColorInput ? drawColorInput.value : "#ff3030",
+            width: drawWidthInput ? Math.max(1, Math.min(12, Number(drawWidthInput.value) || 4)) : 4
+        };
+        renderAnnotations();
+    });
+
+    annotationCanvas.addEventListener("pointermove", event => {
+        if (!currentAnnotation || event.pointerId !== annotationPointerId) return;
+        event.preventDefault();
+        const ll = eventLngLat(event);
+        const last = currentAnnotation.points[currentAnnotation.points.length - 1];
+        const lp = map.project(last), np = map.project(ll);
+        if (Math.hypot(np.x - lp.x, np.y - lp.y) >= 3) {
+            currentAnnotation.points.push(ll);
+            renderAnnotations();
+        }
+    });
+
+    const finishAnnotation = event => {
+        if (!currentAnnotation || event.pointerId !== annotationPointerId) return;
+        event.preventDefault();
+        if (currentAnnotation.points.length >= 2) annotations.push(currentAnnotation);
+        currentAnnotation = null;
+        annotationPointerId = null;
+        try { annotationCanvas.releasePointerCapture(event.pointerId); } catch (_) {}
+        renderAnnotations();
+    };
+    annotationCanvas.addEventListener("pointerup", finishAnnotation);
+    annotationCanvas.addEventListener("pointercancel", finishAnnotation);
+}
+
+if (drawUndoButton) drawUndoButton.addEventListener("click", () => {
+    if (annotations.length) annotations.pop();
+    renderAnnotations();
+});
+
+if (drawClearButton) drawClearButton.addEventListener("click", () => {
+    annotations = [];
+    currentAnnotation = null;
+    renderAnnotations();
+});
+
+/* Keep annotations geographically anchored during map navigation and resizing. */
+map.on("move", renderAnnotations);
+map.on("zoom", renderAnnotations);
+map.on("resize", renderAnnotations);
+window.addEventListener("resize", () => requestAnimationFrame(renderAnnotations));
+
+setDrawingTool("pan");
+requestAnimationFrame(renderAnnotations);
