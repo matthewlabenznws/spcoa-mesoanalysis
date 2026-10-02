@@ -561,6 +561,32 @@ const PRESSURE_TEMPERATURE_COLORS = (() => {
 })();
 
 /* =========================================================================================
+   PRESSURE-LEVEL TEMPERATURE ADVECTION COLOR TABLE
+   Based on the supplied Model_4Panel_Forcing notebook.
+   Range: -16 to +16 C / 3 hr in 1-degree bins.
+   ========================================================================================= */
+
+const TEMPERATURE_ADVECTION_BOUNDS = Array.from({ length: 33 }, (_, i) => -16 + i);
+const TEMPERATURE_ADVECTION_CONTROL_POINTS = [
+    [0.00, "#bdb7e8"], [0.05, "#14029c"], [0.30, "#03b6fc"],
+    [0.49, "#ffffff"], [0.51, "#ffffff"], [0.70, "#fca503"],
+    [0.95, "#b30000"], [1.00, "#fc587f"]
+];
+function sampleTemperatureAdvectionColor(position) {
+    const p = Math.max(0, Math.min(1, position));
+    for (let i = 0; i < TEMPERATURE_ADVECTION_CONTROL_POINTS.length - 1; i++) {
+        const [p0, c0] = TEMPERATURE_ADVECTION_CONTROL_POINTS[i];
+        const [p1, c1] = TEMPERATURE_ADVECTION_CONTROL_POINTS[i + 1];
+        if (p >= p0 && p <= p1) return interpolateHexColor(c0, c1, p1 === p0 ? 0 : (p - p0) / (p1 - p0));
+    }
+    return TEMPERATURE_ADVECTION_CONTROL_POINTS.at(-1)[1];
+}
+const TEMPERATURE_ADVECTION_COLORS = TEMPERATURE_ADVECTION_BOUNDS.slice(0, -1).map((lower, i) => {
+    const midpoint = (lower + TEMPERATURE_ADVECTION_BOUNDS[i + 1]) / 2;
+    return sampleTemperatureAdvectionColor((midpoint + 16) / 32);
+});
+
+/* =========================================================================================
    SUPERCELL COMPOSITE PARAMETER COLOR TABLE
    Exact bounds/colors supplied by Matthew. Used by both right- and left-moving SCP.
    ========================================================================================= */
@@ -700,6 +726,10 @@ const WEATHER_FIELDS = {
     temperature_700mb: { name: "700 mb Temperature", shortName: "700 mb Temperature", units: "°C", type: "pressure_temperature" },
     temperature_500mb: { name: "500 mb Temperature", shortName: "500 mb Temperature", units: "°C", type: "pressure_temperature" },
     temperature_250mb: { name: "250 mb Temperature", shortName: "250 mb Temperature", units: "°C", type: "pressure_temperature" },
+
+    temperature_advection_925mb: { name: "925 mb Temperature Advection", shortName: "925 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
+    temperature_advection_850mb: { name: "850 mb Temperature Advection", shortName: "850 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
+    temperature_advection_700mb: { name: "700 mb Temperature Advection", shortName: "700 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
 
     rh_925mb: { name: "925 mb Relative Humidity", shortName: "925 mb RH", units: "%", type: "rh" },
     rh_850mb: { name: "850 mb Relative Humidity", shortName: "850 mb RH", units: "%", type: "rh" },
@@ -973,6 +1003,12 @@ const CONTOUR_FIELDS = {
         smoothIterations: 4
     },
 
+    temperature_contours_925mb: { name: "925 mb Temperature", shortName: "925 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_850mb: { name: "850 mb Temperature", shortName: "850 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_700mb: { name: "700 mb Temperature", shortName: "700 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_500mb: { name: "500 mb Temperature", shortName: "500 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_250mb: { name: "250 mb Temperature", shortName: "250 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+
     divergence_925mb: {
         name: "925 mb Divergence",
         shortName: "925 mb Divergence",
@@ -1108,6 +1144,11 @@ const activeOverlays = {
     hght700: false,
     hght500: false,
     hght250: false,
+    tempContour925: false,
+    tempContour850: false,
+    tempContour700: false,
+    tempContour500: false,
+    tempContour250: false,
     lclHeight: false,
     stpEff: false,
     divergence925: false,
@@ -1632,6 +1673,19 @@ const GEOPOTENTIAL_HEIGHT_OVERLAYS = [
 
 const geopotentialHeightToggles = {};
 
+const PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS = [
+    { field: "temperature_contours_925mb", stateKey: "tempContour925", toggleId: "temperature-contours-925mb-toggle", label: "925 mb Temperature Contours" },
+    { field: "temperature_contours_850mb", stateKey: "tempContour850", toggleId: "temperature-contours-850mb-toggle", label: "850 mb Temperature Contours" },
+    { field: "temperature_contours_700mb", stateKey: "tempContour700", toggleId: "temperature-contours-700mb-toggle", label: "700 mb Temperature Contours" },
+    { field: "temperature_contours_500mb", stateKey: "tempContour500", toggleId: "temperature-contours-500mb-toggle", label: "500 mb Temperature Contours" },
+    { field: "temperature_contours_250mb", stateKey: "tempContour250", toggleId: "temperature-contours-250mb-toggle", label: "250 mb Temperature Contours" }
+];
+const pressureTemperatureContourToggles = {};
+for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
+    const toggle = document.getElementById(config.toggleId);
+    if (toggle) pressureTemperatureContourToggles[config.stateKey] = toggle;
+}
+
 {
     const overlayAnchor =
         warmCloudDepthToggle
@@ -1868,6 +1922,10 @@ function getActiveLayerDescriptions() {
         { field: "dcape", stateKey: "dcape" },
         { field: "warm_cloud_depth", stateKey: "warmCloudDepth" },
         ...GEOPOTENTIAL_HEIGHT_OVERLAYS.map(config => ({
+            field: config.field,
+            stateKey: config.stateKey
+        })),
+        ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS.map(config => ({
             field: config.field,
             stateKey: config.stateKey
         })),
@@ -4683,6 +4741,15 @@ const PRESSURE_TEMPERATURE_RGB =
         return { r: match[0], g: match[1], b: match[2] };
     });
 
+const TEMPERATURE_ADVECTION_RGB =
+    TEMPERATURE_ADVECTION_COLORS.map(color => {
+        if (color.startsWith("rgb(")) {
+            const match = color.match(/\d+/g).map(Number);
+            return { r: match[0], g: match[1], b: match[2] };
+        }
+        return hexToRgb(color);
+    });
+
 const THETAE_RGB =
     THETAE_COLORS.map(
         hexToRgb
@@ -5141,6 +5208,11 @@ function getFieldColor(
             PRESSURE_TEMPERATURE_RGB
         );
 
+    }
+
+
+    if (definition.type === "temperature_advection") {
+        return getBinnedWindColor(value, -16, TEMPERATURE_ADVECTION_BOUNDS, TEMPERATURE_ADVECTION_RGB);
     }
 
 
@@ -7633,6 +7705,10 @@ async function renderContourField(
         field === "sfc_mslp" ||
         field.startsWith("hght_");
 
+    const isPressureTemperatureContour =
+        field.startsWith("temperature_contours_") ||
+        colorScheme === "pressure_temperature_isotherms";
+
     contourCtx.lineWidth =
         isMslpOrHeightContour
             ? 2.0
@@ -7654,7 +7730,9 @@ async function renderContourField(
     ) {
 
         const contourColor =
-            colorScheme === "dcape"
+            colorScheme === "pressure_temperature_isotherms"
+                ? (level > 0 ? "#d7191c" : "#0066ff")
+                : colorScheme === "dcape"
                 ? getDcapeColor(level)
                 : (
                     colorScheme === "wcd"
@@ -7674,8 +7752,14 @@ async function renderContourField(
                         )
                 );
 
-        contourCtx.strokeStyle =
-            contourColor;
+        contourCtx.strokeStyle = contourColor;
+        if (isPressureTemperatureContour) {
+            const isFreezing = Math.abs(level) < 0.001;
+            contourCtx.lineWidth = isFreezing ? 1.9 : 1.15;
+            contourCtx.setLineDash(isFreezing ? [] : [8, 6]);
+        } else {
+            contourCtx.setLineDash([]);
+        }
 
         contourCtx.beginPath();
 
@@ -8096,9 +8180,10 @@ async function renderContours() {
     }
 
     for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
-        if (activeOverlays[config.stateKey]) {
-            fields.push(config.field);
-        }
+        if (activeOverlays[config.stateKey]) fields.push(config.field);
+    }
+    for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
+        if (activeOverlays[config.stateKey]) fields.push(config.field);
     }
 
     for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
@@ -9372,6 +9457,13 @@ function updateLegend() {
     }
 
 
+    /* Pressure-level temperature advection. */
+    else if (field.type === "temperature_advection") {
+        drawColorLegend(TEMPERATURE_ADVECTION_COLORS);
+        renderLegendLabels([-16, -12, -8, -4, 0, 4, 8, 12, 16], TEMPERATURE_ADVECTION_BOUNDS);
+    }
+
+
     /* 2-m equivalent potential temperature. */
     else if (field.type === "thetae") {
 
@@ -9446,6 +9538,9 @@ function getActiveContourSamples() {
     for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
         add(activeOverlays[config.stateKey], config.field);
     }
+    for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
+        add(activeOverlays[config.stateKey], config.field);
+    }
 
     const divergenceFields = [
         ["divergence925", "divergence_925mb"],
@@ -9483,6 +9578,9 @@ function formatScalarSample(field, value) {
     if (definition.type === "pressure_temperature") {
         return `${value.toFixed(1)} °C`;
     }
+    if (definition.type === "temperature_advection") {
+        return `${value.toFixed(1)} °C/3 hr`;
+    }
     if (definition.type === "thetae") {
         return `${value.toFixed(1)} K`;
     }
@@ -9512,6 +9610,7 @@ function formatContourSample(field, value) {
 
     if (field === "sfc_mslp") return `${value.toFixed(1)} hPa`;
     if (field.startsWith("hght_")) return `${Math.round(value)} m`;
+    if (field.startsWith("temperature_contours_")) return `${value.toFixed(1)} °C`;
     if (field === "dcape") return `${Math.round(value)} J/kg`;
     if (field === "lcl_height") return `${Math.round(value)} m AGL`;
     if (field === "warm_cloud_depth") return `${Math.round(value)} m`;
@@ -10316,6 +10415,24 @@ for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
 
 
 /* =========================================================================================
+   PRESSURE-LEVEL TEMPERATURE CONTOUR TOGGLE EVENTS
+   ========================================================================================= */
+for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
+    const toggle = pressureTemperatureContourToggles[config.stateKey];
+    if (!toggle) continue;
+    toggle.addEventListener("change", async event => {
+        activeOverlays[config.stateKey] = event.target.checked;
+        contourRenderGeneration++;
+        resetNumericalCanvasTransforms();
+        await renderContours();
+        renderGeography();
+        captureCanvasCamera();
+        updateActiveLayersStrip();
+    });
+}
+
+
+/* =========================================================================================
    LCL HEIGHT CONTOUR TOGGLE EVENTS
    ========================================================================================= */
 
@@ -10516,6 +10633,11 @@ async function initialize() {
 
         }
 
+
+        for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
+            const toggle = pressureTemperatureContourToggles[config.stateKey];
+            if (toggle) activeOverlays[config.stateKey] = toggle.checked;
+        }
 
         for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
 
@@ -10973,5 +11095,3 @@ window.addEventListener("resize", () => requestAnimationFrame(renderAnnotations)
 
 setDrawingTool("pan");
 requestAnimationFrame(renderAnnotations);
-
-
