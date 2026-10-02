@@ -2812,9 +2812,11 @@ function bindTimelineControls() {
     if (timelinePrevButton) timelinePrevButton.addEventListener("click", () => advanceTimeline(-1));
     if (timelineNextButton) timelineNextButton.addEventListener("click", () => advanceTimeline(1));
     if (timelineSlider) timelineSlider.addEventListener("input", async event => {
+        // Capture the requested slider position BEFORE setPlaying(false) refreshes the UI.
+        const requestedIndex = Number(event.target.value);
         setPlaying(false);
         const runs = filteredTimelineRuns();
-        const item = runs[Number(event.target.value)];
+        const item = runs[requestedIndex];
         if (item) await applyRun(item);
     });
     if (timelineLoopToggle) timelineLoopToggle.addEventListener("change", event => { timelineState.looping = event.target.checked; updateTimelineUi(); });
@@ -2824,8 +2826,10 @@ function bindTimelineControls() {
         if (item) await applyRun(item);
     });
     if (timelineHistorySelect) timelineHistorySelect.addEventListener("change", async event => {
+        // Capture the user's choice BEFORE setPlaying(false) refreshes the select element.
+        const requestedHours = Number(event.target.value) || 12;
         setPlaying(false);
-        timelineState.historyHours = Number(event.target.value) || 12;
+        timelineState.historyHours = requestedHours;
         const runs = filteredTimelineRuns();
         if (!runs.some(item => item.run === currentRun) && runs.length) await applyRun(runs[0]);
         else updateTimelineUi();
@@ -11377,4 +11381,3 @@ requestAnimationFrame(renderAnnotations);
 
 /* Timeline manifest refresh is intentionally lightweight; tiles remain demand-loaded. */
 setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
-
