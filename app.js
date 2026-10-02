@@ -7755,7 +7755,7 @@ async function renderContourField(
         contourCtx.strokeStyle = contourColor;
         if (isPressureTemperatureContour) {
             const isFreezing = Math.abs(level) < 0.001;
-            contourCtx.lineWidth = isFreezing ? 1.9 : 1.15;
+            contourCtx.lineWidth = isFreezing ? 2.25 : 2.0;
             contourCtx.setLineDash(isFreezing ? [] : [8, 6]);
         } else {
             contourCtx.setLineDash([]);
@@ -8052,7 +8052,7 @@ async function renderContourField(
          * is transparent, the filled weather field remains visible through the
          * gap; this is not a white label box.
          */
-        if (isMslpOrHeightContour) {
+        if (isMslpOrHeightContour || isPressureTemperatureContour) {
 
             let gapAngle =
                 candidate.angle;
@@ -8119,7 +8119,7 @@ async function renderContourField(
             candidate.angle,
             candidate.level,
             candidate.color,
-            isMslpOrHeightContour
+            (isMslpOrHeightContour || isPressureTemperatureContour)
                 ? "rgba(255,255,255,0.0)"
                 : (
                     field === "warm_cloud_depth"
