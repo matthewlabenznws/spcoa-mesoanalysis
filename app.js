@@ -1009,6 +1009,10 @@ const CONTOUR_FIELDS = {
     temperature_contours_500mb: { name: "500 mb Temperature", shortName: "500 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
     temperature_contours_250mb: { name: "250 mb Temperature", shortName: "250 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
 
+    frontogenesis_925mb: { name: "925 mb Frontogenesis", shortName: "925 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
+    frontogenesis_850mb: { name: "850 mb Frontogenesis", shortName: "850 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
+    frontogenesis_700mb: { name: "700 mb Frontogenesis", shortName: "700 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
+
     divergence_925mb: {
         name: "925 mb Divergence",
         shortName: "925 mb Divergence",
@@ -1149,6 +1153,9 @@ const activeOverlays = {
     tempContour700: false,
     tempContour500: false,
     tempContour250: false,
+    frontogenesis925: false,
+    frontogenesis850: false,
+    frontogenesis700: false,
     lclHeight: false,
     stpEff: false,
     divergence925: false,
@@ -1686,6 +1693,17 @@ for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
     if (toggle) pressureTemperatureContourToggles[config.stateKey] = toggle;
 }
 
+const FRONTOGENESIS_CONTOUR_OVERLAYS = [
+    { field: "frontogenesis_925mb", stateKey: "frontogenesis925", toggleId: "frontogenesis-925mb-toggle", label: "925 mb Frontogenesis" },
+    { field: "frontogenesis_850mb", stateKey: "frontogenesis850", toggleId: "frontogenesis-850mb-toggle", label: "850 mb Frontogenesis" },
+    { field: "frontogenesis_700mb", stateKey: "frontogenesis700", toggleId: "frontogenesis-700mb-toggle", label: "700 mb Frontogenesis" }
+];
+const frontogenesisContourToggles = {};
+for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
+    const toggle = document.getElementById(config.toggleId);
+    if (toggle) frontogenesisContourToggles[config.stateKey] = toggle;
+}
+
 {
     const overlayAnchor =
         warmCloudDepthToggle
@@ -1926,6 +1944,10 @@ function getActiveLayerDescriptions() {
             stateKey: config.stateKey
         })),
         ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS.map(config => ({
+            field: config.field,
+            stateKey: config.stateKey
+        })),
+        ...FRONTOGENESIS_CONTOUR_OVERLAYS.map(config => ({
             field: config.field,
             stateKey: config.stateKey
         })),
@@ -7709,9 +7731,16 @@ async function renderContourField(
         field.startsWith("temperature_contours_") ||
         colorScheme === "pressure_temperature_isotherms";
 
+    const isFrontogenesisContour =
+        field.startsWith("frontogenesis_");
+
     contourCtx.lineWidth =
         isMslpOrHeightContour
             ? 2.0
+            : isPressureTemperatureContour
+                ? 2.0
+                : isFrontogenesisContour
+                    ? 2.0
             : (
                 field === "dcape" ||
                 field === "warm_cloud_depth" ||
@@ -8052,7 +8081,7 @@ async function renderContourField(
          * is transparent, the filled weather field remains visible through the
          * gap; this is not a white label box.
          */
-        if (isMslpOrHeightContour || isPressureTemperatureContour) {
+        if (isMslpOrHeightContour || isPressureTemperatureContour || isFrontogenesisContour) {
 
             let gapAngle =
                 candidate.angle;
@@ -8119,7 +8148,7 @@ async function renderContourField(
             candidate.angle,
             candidate.level,
             candidate.color,
-            (isMslpOrHeightContour || isPressureTemperatureContour)
+            (isMslpOrHeightContour || isPressureTemperatureContour || isFrontogenesisContour)
                 ? "rgba(255,255,255,0.0)"
                 : (
                     field === "warm_cloud_depth"
@@ -8183,6 +8212,9 @@ async function renderContours() {
         if (activeOverlays[config.stateKey]) fields.push(config.field);
     }
     for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
+        if (activeOverlays[config.stateKey]) fields.push(config.field);
+    }
+    for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
         if (activeOverlays[config.stateKey]) fields.push(config.field);
     }
 
@@ -9541,6 +9573,9 @@ function getActiveContourSamples() {
     for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
         add(activeOverlays[config.stateKey], config.field);
     }
+    for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
+        add(activeOverlays[config.stateKey], config.field);
+    }
 
     const divergenceFields = [
         ["divergence925", "divergence_925mb"],
@@ -10433,6 +10468,24 @@ for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
 
 
 /* =========================================================================================
+   FRONTOGENESIS CONTOUR TOGGLE EVENTS
+   ========================================================================================= */
+for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
+    const toggle = frontogenesisContourToggles[config.stateKey];
+    if (!toggle) continue;
+    toggle.addEventListener("change", async event => {
+        activeOverlays[config.stateKey] = event.target.checked;
+        contourRenderGeneration++;
+        resetNumericalCanvasTransforms();
+        await renderContours();
+        renderGeography();
+        captureCanvasCamera();
+        updateActiveLayersStrip();
+    });
+}
+
+
+/* =========================================================================================
    LCL HEIGHT CONTOUR TOGGLE EVENTS
    ========================================================================================= */
 
@@ -10636,6 +10689,11 @@ async function initialize() {
 
         for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
             const toggle = pressureTemperatureContourToggles[config.stateKey];
+            if (toggle) activeOverlays[config.stateKey] = toggle.checked;
+        }
+
+        for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
+            const toggle = frontogenesisContourToggles[config.stateKey];
             if (toggle) activeOverlays[config.stateKey] = toggle.checked;
         }
 
