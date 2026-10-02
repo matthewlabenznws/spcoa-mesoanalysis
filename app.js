@@ -7949,9 +7949,20 @@ async function renderContourField(
                     continue;
                 }
 
-                // The scalar grid was already Gaussian-smoothed before
-                // marching squares. Keep the stitched contour itself intact.
-                const line = rawLine;
+                /*
+                 * Frontogenesis is sampled on a 1-pixel screen grid and the
+                 * scalar field is Gaussian-smoothed before marching squares.
+                 * When zoomed in, however, the stitched marching-squares
+                 * vertices can still reveal tiny straight/grid-aligned steps.
+                 * Apply Catmull-Rom interpolation ONLY to frontogenesis paths
+                 * so the rendered purple contours remain visually smooth at
+                 * close zoom levels without changing the underlying values.
+                 * All other contour products retain their existing geometry.
+                 */
+                const line =
+                    field.startsWith("frontogenesis_")
+                        ? smoothContourPolyline(rawLine, 6)
+                        : rawLine;
 
                 if (!line || line.length < 2) {
                     continue;
