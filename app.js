@@ -1115,6 +1115,30 @@ let currentRun = null;
 
 let currentAnalysisTime = null;
 
+/* =========================================================================================
+   TIMELINE / ANIMATION STATE
+   ========================================================================================= */
+
+const timelineState = {
+    availableRuns: [],
+    historyHours: 12,
+    currentIndex: -1,
+    latestRun: null,
+    playing: false,
+    looping: true,
+    playbackSpeed: 1.0,
+    isLive: true,
+    switching: false,
+    playTimer: null
+};
+
+const runMetadataCache = new Map();
+const runProductMetadataCache = new Map();
+const adjacentPreloadControllers = new Map();
+
+const PLAYBACK_BASE_MS = 700;
+const LIVE_MANIFEST_REFRESH_MS = 180000;
+
 let runMetadata = null;
 
 let activeField = "sbcape";
@@ -1216,6 +1240,19 @@ const mapContainer =
 
 const mapWrapper =
     document.getElementById("map-wrapper");
+
+const timelineBar = document.getElementById("timeline-bar");
+const timelinePlayButton = document.getElementById("timeline-play");
+const timelinePrevButton = document.getElementById("timeline-prev");
+const timelineNextButton = document.getElementById("timeline-next");
+const timelineSpeedDownButton = document.getElementById("timeline-speed-down");
+const timelineSpeedUpButton = document.getElementById("timeline-speed-up");
+const timelineSpeedLabel = document.getElementById("timeline-speed-label");
+const timelineTimeLabel = document.getElementById("timeline-time-label");
+const timelineSlider = document.getElementById("timeline-slider");
+const timelineLoopToggle = document.getElementById("timeline-loop");
+const timelineLiveButton = document.getElementById("timeline-live");
+const timelineHistorySelect = document.getElementById("timeline-history");
 
 const weatherCanvas =
     document.getElementById("weather-canvas");
@@ -2532,126 +2569,280 @@ async function fetchJSON(
    LOAD RUN
    ========================================================================================= */
 
-async function loadLatestRun() {
-
-    statusElement.textContent =
-        "Loading latest run...";
-
-
-    const latest =
-        await fetchJSON(
-
-            `${S3_BASE_URL}/latest.json?t=${Date.now()}`
-
-        );
-
-
-    currentRun =
-        latest.run;
-
-
-    runIdElement.textContent =
-        currentRun;
-
-
-    currentAnalysisTime = latest.analysis_time || null;
-
-    analysisTimeElement.textContent =
-        formatAnalysisTime(
-            currentAnalysisTime
-        );
-
-    requestAnimationFrame(updateActiveLayersStrip);
-
-
-    runMetadata =
-        await fetchJSON(
-
-            `${S3_BASE_URL}/runs/${currentRun}/metadata.json`
-
-        );
-
-
-    fieldMetadata = {};
-
-
-    for (
-        const fieldKey
-        of
-        latest.fields || []
-    ) {
-
-        fieldMetadata[fieldKey] =
-            await fetchJSON(
-
-                `${S3_BASE_URL}/runs/${currentRun}/${fieldKey}/metadata.json`
-
-            );
-
-    }
-
-
-    vectorMetadata = {};
-
-    contourMetadata = {};
-
-
-    /*
-     * latest.overlays contains both vector fields and scalar
-     * contour overlays.
-     *
-     * We inspect each metadata file rather than assuming that
-     * everything under overlays/ is a vector field.
-     */
-    for (
-        const overlayKey
-        of
-        latest.overlays || []
-    ) {
-
-        const metadata =
-            await fetchJSON(
-
-                `${S3_BASE_URL}/runs/${currentRun}/overlays/${overlayKey}/metadata.json`
-
-            );
-
-
-        const isContour =
-            metadata.type ===
-                "scalar_contour" ||
-
-            (
-                metadata.display &&
-                metadata.display.type ===
-                    "contour"
-            );
-
-
-        if (isContour) {
-
-            contourMetadata[
-                overlayKey
-            ] =
-                metadata;
-
-        }
-        else {
-
-            vectorMetadata[
-                overlayKey
-            ] =
-                metadata;
-
-        }
-
-    }
-
-
-    statusElement.textContent =
-        `Loaded ${currentRun}`;
-
+async function loadAvailableTimesManifest() {
+    const manifest = await fetchJSON(`${S3_BASE_URL}/available_times.json?t=${Date.now()}`);
+    const runs = Array.isArray(manifest.runs) ? manifest.runs : [];
+    timelineState.availableRuns = runs
+        .filter(item => item && item.run)
+        .map(item => ({
+            run: item.run,
+            analysis_time: item.analysis_time || null,
+            path: item.path || `runs/${item.run}/`
+        }))
+        .sort((a, b) => String(a.run).localeCompare(String(b.run)));
+    timelineState.latestRun = manifest.latest || (timelineState.availableRuns.at(-1)?.run ?? null);
+    return manifest;
 }
+
+function filteredTimelineRuns() {
+    const runs = timelineState.availableRuns;
+    if (!runs.length) return [];
+    const latest = runs.at(-1);
+    const latestMs = Date.parse(latest.analysis_time || runIdToIso(latest.run));
+    const cutoff = latestMs - timelineState.historyHours * 3600000;
+    return runs.filter(item => Date.parse(item.analysis_time || runIdToIso(item.run)) >= cutoff);
+}
+
+function runIdToIso(runId) {
+    const match = /^(\d{4})(\d{2})(\d{2})_(\d{2})$/.exec(String(runId || ""));
+    return match ? `${match[1]}-${match[2]}-${match[3]}T${match[4]}:00:00Z` : null;
+}
+
+function formatTimelineUtc(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return new Intl.DateTimeFormat("en-US", {
+        weekday: "short", month: "short", day: "numeric", year: "numeric",
+        timeZone: "UTC", hour: "2-digit", hour12: false
+    }).format(date).replace(/, (\d{2})$/, ", $1Z");
+}
+
+async function loadRunMetadata(runId) {
+    if (runMetadataCache.has(runId)) return runMetadataCache.get(runId);
+    const promise = (async () => {
+        const metadata = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/metadata.json`);
+        const fields = {};
+        const vectors = {};
+        const contours = {};
+        await Promise.all((metadata.fields || []).map(async fieldKey => {
+            fields[fieldKey] = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/${fieldKey}/metadata.json`);
+        }));
+        await Promise.all((metadata.overlays || []).map(async overlayKey => {
+            const item = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/overlays/${overlayKey}/metadata.json`);
+            const isContour = item.type === "scalar_contour" || (item.display && item.display.type === "contour");
+            if (isContour) contours[overlayKey] = item; else vectors[overlayKey] = item;
+        }));
+        return { metadata, fields, vectors, contours };
+    })();
+    runMetadataCache.set(runId, promise);
+    try {
+        const resolved = await promise;
+        runMetadataCache.set(runId, resolved);
+        return resolved;
+    } catch (error) {
+        runMetadataCache.delete(runId);
+        throw error;
+    }
+}
+
+async function applyRun(runItem, { render = true, preload = true } = {}) {
+    if (!runItem || !runItem.run || timelineState.switching) return false;
+    if (runItem.run === currentRun && runMetadata) {
+        updateTimelineUi();
+        if (preload) scheduleAdjacentPreload();
+        return true;
+    }
+    timelineState.switching = true;
+    stopPlaybackTimer();
+    if (statusElement) statusElement.textContent = `Loading ${runItem.run}...`;
+    try {
+        const bundle = await loadRunMetadata(runItem.run);
+        invalidateNumericalRenders();
+        currentRun = runItem.run;
+        currentAnalysisTime = runItem.analysis_time || bundle.metadata.analysis_time || runIdToIso(runItem.run);
+        runMetadata = bundle.metadata;
+        fieldMetadata = bundle.fields;
+        vectorMetadata = bundle.vectors;
+        contourMetadata = bundle.contours;
+        if (runIdElement) runIdElement.textContent = currentRun;
+        if (analysisTimeElement) analysisTimeElement.textContent = formatAnalysisTime(currentAnalysisTime);
+        const windowRuns = filteredTimelineRuns();
+        timelineState.currentIndex = windowRuns.findIndex(item => item.run === currentRun);
+        timelineState.isLive = currentRun === timelineState.latestRun;
+        updateTimelineUi();
+        requestAnimationFrame(updateActiveLayersStrip);
+        if (render) await renderAll();
+        if (statusElement) statusElement.textContent = `Loaded ${currentRun}`;
+        if (preload) scheduleAdjacentPreload();
+        return true;
+    } catch (error) {
+        console.error(`Failed to load run ${runItem.run}:`, error);
+        if (statusElement) statusElement.textContent = `Could not load ${runItem.run}`;
+        return false;
+    } finally {
+        timelineState.switching = false;
+        if (timelineState.playing) scheduleNextPlaybackFrame();
+    }
+}
+
+async function loadLatestRun() {
+    if (statusElement) statusElement.textContent = "Loading timeline...";
+    let manifest;
+    try {
+        manifest = await loadAvailableTimesManifest();
+    } catch (error) {
+        console.warn("available_times.json unavailable; falling back to latest.json", error);
+        const latest = await fetchJSON(`${S3_BASE_URL}/latest.json?t=${Date.now()}`);
+        timelineState.availableRuns = [{ run: latest.run, analysis_time: latest.analysis_time || runIdToIso(latest.run) }];
+        timelineState.latestRun = latest.run;
+    }
+    const latestItem = timelineState.availableRuns.find(item => item.run === timelineState.latestRun) || timelineState.availableRuns.at(-1);
+    if (!latestItem) throw new Error("No SPCOA analyses are available.");
+    await applyRun(latestItem, { render: false, preload: false });
+}
+
+function updateTimelineUi() {
+    const runs = filteredTimelineRuns();
+    const index = Math.max(0, runs.findIndex(item => item.run === currentRun));
+    timelineState.currentIndex = runs.length ? index : -1;
+    timelineState.isLive = currentRun === timelineState.latestRun;
+    if (timelineSlider) {
+        timelineSlider.min = "0";
+        timelineSlider.max = String(Math.max(0, runs.length - 1));
+        timelineSlider.step = "1";
+        timelineSlider.value = String(Math.max(0, timelineState.currentIndex));
+        timelineSlider.disabled = runs.length <= 1;
+    }
+    if (timelinePrevButton) timelinePrevButton.disabled = timelineState.currentIndex <= 0;
+    if (timelineNextButton) timelineNextButton.disabled = timelineState.currentIndex < 0 || timelineState.currentIndex >= runs.length - 1;
+    if (timelinePlayButton) {
+        timelinePlayButton.textContent = timelineState.playing ? "❚❚" : "▶";
+        timelinePlayButton.title = timelineState.playing ? "Pause animation" : "Play animation";
+    }
+    if (timelineSpeedLabel) timelineSpeedLabel.textContent = `${timelineState.playbackSpeed.toFixed(timelineState.playbackSpeed % 1 ? 2 : 1)}×`;
+    if (timelineTimeLabel) timelineTimeLabel.textContent = formatTimelineUtc(currentAnalysisTime);
+    if (timelineLoopToggle) timelineLoopToggle.checked = timelineState.looping;
+    if (timelineLiveButton) timelineLiveButton.classList.toggle("active", timelineState.isLive);
+    if (timelineHistorySelect) timelineHistorySelect.value = String(timelineState.historyHours);
+}
+
+function stopPlaybackTimer() {
+    if (timelineState.playTimer) clearTimeout(timelineState.playTimer);
+    timelineState.playTimer = null;
+}
+
+function playbackDelayMs() {
+    const newest = currentRun === timelineState.latestRun;
+    return Math.round((PLAYBACK_BASE_MS / timelineState.playbackSpeed) * (newest ? 1.45 : 1));
+}
+
+function scheduleNextPlaybackFrame() {
+    stopPlaybackTimer();
+    if (!timelineState.playing || timelineState.switching) return;
+    timelineState.playTimer = setTimeout(() => advanceTimeline(1, true), playbackDelayMs());
+}
+
+function setPlaying(value) {
+    timelineState.playing = Boolean(value);
+    stopPlaybackTimer();
+    updateTimelineUi();
+    if (timelineState.playing) scheduleNextPlaybackFrame();
+}
+
+async function advanceTimeline(direction, fromPlayback = false) {
+    const runs = filteredTimelineRuns();
+    if (!runs.length || timelineState.switching) return;
+    let index = runs.findIndex(item => item.run === currentRun);
+    if (index < 0) index = runs.length - 1;
+    let next = index + direction;
+    if (next >= runs.length) {
+        if (fromPlayback && timelineState.looping) next = 0;
+        else { if (fromPlayback) setPlaying(false); return; }
+    }
+    if (next < 0) return;
+    if (!fromPlayback) setPlaying(false);
+    await applyRun(runs[next]);
+}
+
+function selectedProductKeys() {
+    const scalar = activeField && activeField !== "none" ? [activeField] : [];
+    const vectors = VECTOR_OVERLAY_CONFIG.filter(c => activeOverlays[c.stateKey]).map(c => c.field);
+    const contours = [
+        ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
+        ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
+        ...FRONTOGENESIS_CONTOUR_OVERLAYS,
+        ...THERMODYNAMIC_CONTOUR_OVERLAYS
+    ].filter(c => activeOverlays[c.stateKey]).map(c => c.field);
+    if (activeOverlays.mslp) contours.push("sfc_mslp");
+    if (activeOverlays.dcape) contours.push("dcape");
+    if (activeOverlays.warmCloudDepth) contours.push("warm_cloud_depth");
+    return { scalar: [...new Set(scalar)], vectors: [...new Set(vectors)], contours: [...new Set(contours)] };
+}
+
+async function preloadRunProducts(runItem) {
+    if (!runItem || !runItem.run || runItem.run === currentRun) return;
+    const run = runItem.run;
+    const z = getDataZoom();
+    const products = selectedProductKeys();
+    const jobs = [];
+    for (const field of products.scalar) jobs.push(preloadScalarTiles(field, z, run));
+    for (const field of products.vectors) jobs.push(preloadVectorTiles(field, z, run));
+    for (const field of products.contours) jobs.push(preloadContourTiles(field, z, run));
+    await Promise.allSettled(jobs);
+}
+
+function scheduleAdjacentPreload() {
+    const runs = filteredTimelineRuns();
+    const index = runs.findIndex(item => item.run === currentRun);
+    if (index < 0) return;
+    const candidates = timelineState.playing
+        ? [runs[index + 1], runs[index + 2], runs[index - 1]]
+        : [runs[index + 1], runs[index - 1]];
+    setTimeout(() => candidates.filter(Boolean).forEach(item => preloadRunProducts(item)), 60);
+}
+
+async function refreshAvailableTimes() {
+    try {
+        const wasLive = timelineState.isLive;
+        const oldLatest = timelineState.latestRun;
+        await loadAvailableTimesManifest();
+        updateTimelineUi();
+        if (wasLive && timelineState.latestRun && timelineState.latestRun !== oldLatest) {
+            const latest = timelineState.availableRuns.find(item => item.run === timelineState.latestRun);
+            if (latest) await applyRun(latest);
+        }
+    } catch (error) {
+        console.warn("Timeline manifest refresh failed:", error);
+    }
+}
+
+function bindTimelineControls() {
+    if (timelinePlayButton) timelinePlayButton.addEventListener("click", () => setPlaying(!timelineState.playing));
+    if (timelinePrevButton) timelinePrevButton.addEventListener("click", () => advanceTimeline(-1));
+    if (timelineNextButton) timelineNextButton.addEventListener("click", () => advanceTimeline(1));
+    if (timelineSlider) timelineSlider.addEventListener("input", async event => {
+        setPlaying(false);
+        const runs = filteredTimelineRuns();
+        const item = runs[Number(event.target.value)];
+        if (item) await applyRun(item);
+    });
+    if (timelineLoopToggle) timelineLoopToggle.addEventListener("change", event => { timelineState.looping = event.target.checked; updateTimelineUi(); });
+    if (timelineLiveButton) timelineLiveButton.addEventListener("click", async () => {
+        setPlaying(false);
+        const item = timelineState.availableRuns.find(x => x.run === timelineState.latestRun) || timelineState.availableRuns.at(-1);
+        if (item) await applyRun(item);
+    });
+    if (timelineHistorySelect) timelineHistorySelect.addEventListener("change", async event => {
+        setPlaying(false);
+        timelineState.historyHours = Number(event.target.value) || 12;
+        const runs = filteredTimelineRuns();
+        if (!runs.some(item => item.run === currentRun) && runs.length) await applyRun(runs[0]);
+        else updateTimelineUi();
+        scheduleAdjacentPreload();
+    });
+    const speeds = [0.25, 0.5, 1.0, 1.5, 2.0];
+    const changeSpeed = delta => {
+        let i = speeds.indexOf(timelineState.playbackSpeed);
+        if (i < 0) i = 2;
+        timelineState.playbackSpeed = speeds[Math.max(0, Math.min(speeds.length - 1, i + delta))];
+        updateTimelineUi();
+        if (timelineState.playing) scheduleNextPlaybackFrame();
+    };
+    if (timelineSpeedDownButton) timelineSpeedDownButton.addEventListener("click", () => changeSpeed(-1));
+    if (timelineSpeedUpButton) timelineSpeedUpButton.addEventListener("click", () => changeSpeed(1));
+}
+
 /* =========================================================================================
    FORMAT ANALYSIS TIME
    ========================================================================================= */
@@ -3060,10 +3251,11 @@ async function loadScalarTile(
     field,
     z,
     x,
-    y
+    y,
+    run = run
 ) {
 
-    if (!currentRun) {
+    if (!run) {
 
         return null;
 
@@ -3096,7 +3288,7 @@ async function loadScalarTile(
 
             field,
 
-            currentRun,
+            run,
 
             z,
 
@@ -3124,7 +3316,7 @@ async function loadScalarTile(
         (async () => {
 
             const url =
-                `${S3_BASE_URL}/runs/${currentRun}/${field}/` +
+                `${S3_BASE_URL}/runs/${run}/${field}/` +
                 `z${z}/${wrappedX}/${y}.bin`;
 
 
@@ -3249,10 +3441,11 @@ async function loadVectorTile(
     field,
     z,
     x,
-    y
+    y,
+    run = run
 ) {
 
-    if (!currentRun) {
+    if (!run) {
 
         return null;
 
@@ -3285,7 +3478,7 @@ async function loadVectorTile(
 
             field,
 
-            currentRun,
+            run,
 
             z,
 
@@ -3313,7 +3506,7 @@ async function loadVectorTile(
         (async () => {
 
             const url =
-                `${S3_BASE_URL}/runs/${currentRun}/overlays/${field}/` +
+                `${S3_BASE_URL}/runs/${run}/overlays/${field}/` +
                 `z${z}/${wrappedX}/${y}.bin`;
 
 
@@ -3441,10 +3634,11 @@ async function loadContourTile(
     field,
     z,
     x,
-    y
+    y,
+    run = run
 ) {
 
-    if (!currentRun) {
+    if (!run) {
 
         return null;
 
@@ -3477,7 +3671,7 @@ async function loadContourTile(
 
             field,
 
-            currentRun,
+            run,
 
             z,
 
@@ -3505,7 +3699,7 @@ async function loadContourTile(
         (async () => {
 
             const url =
-                `${S3_BASE_URL}/runs/${currentRun}/overlays/${field}/` +
+                `${S3_BASE_URL}/runs/${run}/overlays/${field}/` +
                 `z${z}/${wrappedX}/${y}.bin`;
 
 
@@ -3630,7 +3824,8 @@ async function loadContourTile(
 
 async function preloadScalarTiles(
     field,
-    z
+    z,
+    run = currentRun
 ) {
 
     const range =
@@ -3665,7 +3860,9 @@ async function preloadScalarTiles(
 
                     x,
 
-                    y
+                    y,
+
+                    run
 
                 )
 
@@ -3689,7 +3886,8 @@ async function preloadScalarTiles(
 
 async function preloadVectorTiles(
     field,
-    z
+    z,
+    run = currentRun
 ) {
 
     const range =
@@ -3724,7 +3922,9 @@ async function preloadVectorTiles(
 
                     x,
 
-                    y
+                    y,
+
+                    run
 
                 )
 
@@ -3748,7 +3948,8 @@ async function preloadVectorTiles(
 
 async function preloadContourTiles(
     field,
-    z
+    z,
+    run = currentRun
 ) {
 
     const range =
@@ -3783,7 +3984,9 @@ async function preloadContourTiles(
 
                     x,
 
-                    y
+                    y,
+
+                    run
 
                 )
 
@@ -10587,6 +10790,9 @@ window.addEventListener(
 
 async function initialize() {
 
+    bindTimelineControls();
+    updateTimelineUi();
+
     try {
 
         if (statusElement) {
@@ -10777,6 +10983,9 @@ async function initialize() {
                         `Loaded ${currentRun}`;
 
                 }
+
+                updateTimelineUi();
+                scheduleAdjacentPreload();
 
             }
 
@@ -11164,3 +11373,7 @@ window.addEventListener("resize", () => requestAnimationFrame(renderAnnotations)
 
 setDrawingTool("pan");
 requestAnimationFrame(renderAnnotations);
+
+
+/* Timeline manifest refresh is intentionally lightweight; tiles remain demand-loaded. */
+setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
