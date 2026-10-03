@@ -11384,9 +11384,10 @@ async function saveCurrentMapPng4k() {
         /* 4K-width export while preserving the exact current map aspect ratio. */
         const outW = 3840;
         const headerH = 176;
-        const footerH = 92;
+        const footerH = 118;
         const mapH = Math.max(1, Math.round(outW * srcH / srcW));
         const outH = headerH + mapH + footerH;
+        const exportScale = outW / srcW;
 
         const out = document.createElement("canvas");
         out.width = outW;
@@ -11433,44 +11434,58 @@ async function saveCurrentMapPng4k() {
             ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, mapY, outW, mapH);
         }
 
-        /* Compact export legend: same palette, smaller footprint than the web UI. */
+        /*
+         * Export the legend with the SAME proportions and placement it has in
+         * the live viewer.  This deliberately avoids maintaining a second,
+         * export-only legend design.
+         */
         if (legend && legend.style.display !== "none" && activeField && activeField !== "none") {
-            const cardW = Math.min(1480, Math.round(outW * 0.385));
-            const cardH = 158;
-            const cardX = 64;
-            const cardY = mapY + mapH - cardH - 58;
-            const innerX = cardX + 28;
-            const innerW = cardW - 56;
+            const legendRect = legend.getBoundingClientRect();
+            const cardX = Math.round((legendRect.left - rect.left) * exportScale);
+            const cardY = Math.round(mapY + (legendRect.top - rect.top) * exportScale);
+            const cardW = Math.round(legendRect.width * exportScale);
+            const cardH = Math.round(legendRect.height * exportScale);
+            const padX = Math.max(22, Math.round(14 * exportScale));
+            const padTop = Math.max(18, Math.round(11 * exportScale));
+            const titleFont = Math.max(20, Math.round(12 * exportScale));
+            const labelFont = Math.max(16, Math.round(10 * exportScale));
+            const barH = Math.max(30, Math.round(18 * exportScale));
+            const titleY = cardY + padTop + titleFont * 0.45;
+            const barY = titleY + Math.round(12 * exportScale) + titleFont * 0.55;
+            const innerX = cardX + padX;
+            const innerW = cardW - padX * 2;
+            const labelY = Math.min(cardY + cardH - Math.round(10 * exportScale), barY + barH + Math.round(16 * exportScale));
 
             ctx.fillStyle = "rgba(20,40,57,.96)";
             ctx.fillRect(cardX, cardY, cardW, cardH);
             ctx.strokeStyle = "#41647d";
-            ctx.lineWidth = 2;
+            ctx.lineWidth = Math.max(2, Math.round(exportScale));
             ctx.strokeRect(cardX, cardY, cardW, cardH);
 
             ctx.fillStyle = "#f4f8fb";
-            ctx.font = '650 24px Inter, "Segoe UI", Arial, sans-serif';
-            ctx.fillText(legendTitle ? legendTitle.textContent : "", innerX, cardY + 31);
+            ctx.font = `600 ${titleFont}px Inter, "Segoe UI", Arial, sans-serif`;
+            ctx.textAlign = "left";
+            ctx.fillText(legendTitle ? legendTitle.textContent : "", innerX, titleY);
 
             if (legendCanvas && legendCanvas.width && legendCanvas.height) {
-                ctx.drawImage(legendCanvas, innerX, cardY + 51, innerW, 40);
+                ctx.drawImage(legendCanvas, innerX, barY, innerW, barH);
             }
 
             if (legendLabels) {
                 const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
-                ctx.font = '500 18px Inter, "Segoe UI", Arial, sans-serif';
+                ctx.font = `500 ${labelFont}px Inter, "Segoe UI", Arial, sans-serif`;
                 ctx.fillStyle = "#c7d6e1";
                 labels.forEach((el, i) => {
                     const pct = labels.length <= 1 ? 0 : i / (labels.length - 1);
                     const x = innerX + pct * innerW;
                     ctx.textAlign = i === 0 ? "left" : (i === labels.length - 1 ? "right" : "center");
-                    ctx.fillText(el.textContent || "", x, cardY + 126);
+                    ctx.fillText(el.textContent || "", x, labelY);
                 });
                 ctx.textAlign = "left";
             }
         }
 
-        /* Footer / active-layer strip with deliberate separator spacing. */
+        /* Footer / active-layer strip.  Keep vector-color indicators in PNG. */
         const footerY = headerH + mapH;
         ctx.fillStyle = "#f7f8fa";
         ctx.fillRect(0, footerY, outW, footerH);
@@ -11481,15 +11496,52 @@ async function saveCurrentMapPng4k() {
         ctx.lineTo(outW, footerY + 1);
         ctx.stroke();
 
-        const descriptions = getActiveLayerDescriptions().map(item => item.text);
-        descriptions.push(`Valid: ${formatAnalysisTime(currentAnalysisTime)}`);
-        const footerText = descriptions.join("   |   ");
+        const descriptions = getActiveLayerDescriptions();
+        const items = [
+            ...descriptions.map(item => ({ ...item })),
+            { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
+        ];
 
-        ctx.fillStyle = "#17232d";
         ctx.font = '650 29px Inter, "Segoe UI", Arial, sans-serif';
-        ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(footerText, outW / 2, footerY + footerH / 2, outW - 100);
+        const separator = "   |   ";
+        const indicatorW = 34;
+        const indicatorGap = 12;
+        const indicatorLineW = 7;
+
+        const widths = items.map(item => {
+            const textW = ctx.measureText(item.text).width;
+            return textW + (item.color ? indicatorW + indicatorGap : 0);
+        });
+        const sepW = ctx.measureText(separator).width;
+        const totalW = widths.reduce((a, b) => a + b, 0) + sepW * Math.max(0, items.length - 1);
+        let x = Math.max(50, (outW - totalW) / 2);
+        const y = footerY + footerH / 2;
+
+        items.forEach((item, index) => {
+            if (item.color) {
+                ctx.strokeStyle = item.color;
+                ctx.lineWidth = indicatorLineW;
+                ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x + indicatorW, y);
+                ctx.stroke();
+                ctx.lineCap = "butt";
+                x += indicatorW + indicatorGap;
+            }
+
+            ctx.fillStyle = "#17232d";
+            ctx.textAlign = "left";
+            ctx.fillText(item.text, x, y);
+            x += ctx.measureText(item.text).width;
+
+            if (index < items.length - 1) {
+                ctx.fillStyle = "#8b969f";
+                ctx.fillText(separator, x, y);
+                x += sepW;
+            }
+        });
         ctx.textAlign = "left";
 
         const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
@@ -11506,7 +11558,6 @@ async function saveCurrentMapPng4k() {
         }
     }
 }
-
 if (savePngButton) {
     savePngButton.addEventListener("click", saveCurrentMapPng4k);
 }
