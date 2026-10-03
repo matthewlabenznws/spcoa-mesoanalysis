@@ -2121,6 +2121,9 @@ const map = new maplibregl.Map({
 
     container: "map",
 
+    /* Keep the WebGL framebuffer available for Save PNG capture. */
+    preserveDrawingBuffer: true,
+
     style: {
 
         version: 8,
@@ -11366,13 +11369,17 @@ async function saveCurrentMapPng4k() {
     const oldText = savePngButton ? savePngButton.textContent : "";
     if (savePngButton) {
         savePngButton.disabled = true;
-        savePngButton.textContent = "Preparing 4K…";
+        savePngButton.textContent = "Preparing…";
     }
 
     try {
-        /* Make sure every visible numerical/annotation layer is current before capture. */
-        await renderAll();
+        /*
+         * Export the already-rendered view. Re-running renderAll() here can trigger
+         * network tile work and make the button appear unresponsive. The normal
+         * viewer renderer keeps these canvases current as the map/analysis changes.
+         */
         renderAnnotations();
+        if (statusElement) statusElement.textContent = "Preparing PNG...";
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
         const rect = mapWrapper.getBoundingClientRect();
@@ -11475,7 +11482,8 @@ async function saveCurrentMapPng4k() {
 
         const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
         if (!blob) throw new Error("PNG encoding failed.");
-        downloadBlob(blob, `SPCOA_Mesoanalysis_${exportFileTimeStamp(currentAnalysisTime)}_4K.png`);
+        downloadBlob(blob, `SPCOA_Mesoanalysis_${exportFileTimeStamp(currentAnalysisTime)}.png`);
+        if (statusElement) statusElement.textContent = "PNG saved";
     } catch (error) {
         console.error("4K PNG export failed:", error);
         if (statusElement) statusElement.textContent = "PNG export failed";
