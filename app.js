@@ -11373,11 +11373,6 @@ async function saveCurrentMapPng4k() {
     }
 
     try {
-        /*
-         * Export the already-rendered view. Re-running renderAll() here can trigger
-         * network tile work and make the button appear unresponsive. The normal
-         * viewer renderer keeps these canvases current as the map/analysis changes.
-         */
         renderAnnotations();
         if (statusElement) statusElement.textContent = "Preparing PNG...";
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -11388,7 +11383,7 @@ async function saveCurrentMapPng4k() {
 
         /* 4K-width export while preserving the exact current map aspect ratio. */
         const outW = 3840;
-        const headerH = 118;
+        const headerH = 176;
         const footerH = 92;
         const mapH = Math.max(1, Math.round(outW * srcH / srcW));
         const outH = headerH + mapH + footerH;
@@ -11403,17 +11398,24 @@ async function saveCurrentMapPng4k() {
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, outW, outH);
 
-        /* Header */
+        /* Header: title + development/credit lines + valid time. */
         ctx.fillStyle = "#102433";
         ctx.fillRect(0, 0, outW, headerH);
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "left";
         ctx.fillStyle = "#ffffff";
         ctx.font = '800 48px Inter, "Segoe UI", Arial, sans-serif';
-        ctx.textBaseline = "middle";
-        ctx.fillText("SPCOA Mesoanalysis", 42, headerH / 2);
+        ctx.fillText("SPCOA Mesoanalysis", 42, 48);
+
+        ctx.font = '600 24px Inter, "Segoe UI", Arial, sans-serif';
+        ctx.fillStyle = "#d7e7f2";
+        ctx.fillText("Developed by: Matthew Labenz · NWS North Platte, NE", 42, 101);
+        ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", 42, 139);
+
         ctx.textAlign = "right";
         ctx.font = '650 31px Inter, "Segoe UI", Arial, sans-serif';
-        ctx.fillStyle = "#d7e7f2";
-        ctx.fillText(`Valid: ${formatAnalysisTime(currentAnalysisTime)}`, outW - 42, headerH / 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(`Valid: ${formatAnalysisTime(currentAnalysisTime)}`, outW - 42, 48);
         ctx.textAlign = "left";
 
         const mapY = headerH;
@@ -11431,38 +11433,44 @@ async function saveCurrentMapPng4k() {
             ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, mapY, outW, mapH);
         }
 
-        /* Rebuild the visible legend at export resolution. */
+        /* Compact export legend: same palette, smaller footprint than the web UI. */
         if (legend && legend.style.display !== "none" && activeField && activeField !== "none") {
-            const cardW = Math.min(1840, Math.round(outW * 0.48));
-            const cardH = 210;
-            const cardX = 70;
-            const cardY = mapY + mapH - cardH - 70;
+            const cardW = Math.min(1480, Math.round(outW * 0.385));
+            const cardH = 158;
+            const cardX = 64;
+            const cardY = mapY + mapH - cardH - 58;
+            const innerX = cardX + 28;
+            const innerW = cardW - 56;
+
             ctx.fillStyle = "rgba(20,40,57,.96)";
             ctx.fillRect(cardX, cardY, cardW, cardH);
             ctx.strokeStyle = "#41647d";
-            ctx.lineWidth = 3;
+            ctx.lineWidth = 2;
             ctx.strokeRect(cardX, cardY, cardW, cardH);
+
             ctx.fillStyle = "#f4f8fb";
-            ctx.font = '650 30px Inter, "Segoe UI", Arial, sans-serif';
-            ctx.fillText(legendTitle ? legendTitle.textContent : "", cardX + 34, cardY + 46);
+            ctx.font = '650 24px Inter, "Segoe UI", Arial, sans-serif';
+            ctx.fillText(legendTitle ? legendTitle.textContent : "", innerX, cardY + 31);
+
             if (legendCanvas && legendCanvas.width && legendCanvas.height) {
-                ctx.drawImage(legendCanvas, cardX + 34, cardY + 72, cardW - 68, 54);
+                ctx.drawImage(legendCanvas, innerX, cardY + 51, innerW, 40);
             }
+
             if (legendLabels) {
                 const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
-                ctx.font = '500 23px Inter, "Segoe UI", Arial, sans-serif';
+                ctx.font = '500 18px Inter, "Segoe UI", Arial, sans-serif';
                 ctx.fillStyle = "#c7d6e1";
                 labels.forEach((el, i) => {
                     const pct = labels.length <= 1 ? 0 : i / (labels.length - 1);
-                    const x = cardX + 34 + pct * (cardW - 68);
+                    const x = innerX + pct * innerW;
                     ctx.textAlign = i === 0 ? "left" : (i === labels.length - 1 ? "right" : "center");
-                    ctx.fillText(el.textContent || "", x, cardY + 166);
+                    ctx.fillText(el.textContent || "", x, cardY + 126);
                 });
                 ctx.textAlign = "left";
             }
         }
 
-        /* Footer / active-layer strip. */
+        /* Footer / active-layer strip with deliberate separator spacing. */
         const footerY = headerH + mapH;
         ctx.fillStyle = "#f7f8fa";
         ctx.fillRect(0, footerY, outW, footerH);
@@ -11472,11 +11480,15 @@ async function saveCurrentMapPng4k() {
         ctx.moveTo(0, footerY + 1);
         ctx.lineTo(outW, footerY + 1);
         ctx.stroke();
+
+        const descriptions = getActiveLayerDescriptions().map(item => item.text);
+        descriptions.push(`Valid: ${formatAnalysisTime(currentAnalysisTime)}`);
+        const footerText = descriptions.join("   |   ");
+
         ctx.fillStyle = "#17232d";
         ctx.font = '650 29px Inter, "Segoe UI", Arial, sans-serif';
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        const footerText = activeLayersText ? activeLayersText.textContent.replace(/\s+/g, " ").trim() : `Valid: ${formatAnalysisTime(currentAnalysisTime)}`;
         ctx.fillText(footerText, outW / 2, footerY + footerH / 2, outW - 100);
         ctx.textAlign = "left";
 
