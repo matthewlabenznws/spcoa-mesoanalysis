@@ -1141,7 +1141,7 @@ const LIVE_MANIFEST_REFRESH_MS = 180000;
 
 let runMetadata = null;
 
-let activeField = "sbcape";
+let activeField = "none";
 
 const activeOverlays = {
     surfaceWind: false,
@@ -2789,7 +2789,12 @@ function scheduleAdjacentPreload() {
     const candidates = timelineState.playing
         ? [runs[index + 1], runs[index + 2], runs[index - 1]]
         : [runs[index + 1], runs[index - 1]];
-    setTimeout(() => candidates.filter(Boolean).forEach(item => preloadRunProducts(item)), 60);
+    const startPreload = () => candidates.filter(Boolean).forEach(item => preloadRunProducts(item));
+    if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(startPreload, { timeout: 350 });
+    } else {
+        setTimeout(startPreload, 120);
+    }
 }
 
 async function refreshAvailableTimes() {
@@ -2811,14 +2816,36 @@ function bindTimelineControls() {
     if (timelinePlayButton) timelinePlayButton.addEventListener("click", () => setPlaying(!timelineState.playing));
     if (timelinePrevButton) timelinePrevButton.addEventListener("click", () => advanceTimeline(-1));
     if (timelineNextButton) timelineNextButton.addEventListener("click", () => advanceTimeline(1));
-    if (timelineSlider) timelineSlider.addEventListener("input", async event => {
-        // Capture the requested slider position BEFORE setPlaying(false) refreshes the UI.
-        const requestedIndex = Number(event.target.value);
-        setPlaying(false);
-        const runs = filteredTimelineRuns();
-        const item = runs[requestedIndex];
-        if (item) await applyRun(item);
-    });
+    if (timelineSlider) {
+        // Scrubbing should feel immediate without starting a full tile/render cycle for
+        // every pointer movement. While dragging, update only the UTC readout.
+        timelineSlider.addEventListener("input", event => {
+            const requestedIndex = Number(event.target.value);
+            const runs = filteredTimelineRuns();
+            const item = runs[requestedIndex];
+            if (timelineState.playing) {
+                timelineState.playing = false;
+                stopPlaybackTimer();
+                if (timelinePlayButton) {
+                    timelinePlayButton.textContent = "▶";
+                    timelinePlayButton.title = "Play animation";
+                }
+            }
+            if (item && timelineTimeLabel) {
+                timelineTimeLabel.textContent = formatTimelineUtc(item.analysis_time || runIdToIso(item.run));
+            }
+        });
+
+        // Load/render once the user commits the scrub position (mouse/touch release
+        // or keyboard change), rather than repeatedly while the thumb is moving.
+        timelineSlider.addEventListener("change", async event => {
+            const requestedIndex = Number(event.target.value);
+            const runs = filteredTimelineRuns();
+            const item = runs[requestedIndex];
+            if (item) await applyRun(item);
+            else updateTimelineUi();
+        });
+    }
     if (timelineLoopToggle) timelineLoopToggle.addEventListener("change", event => { timelineState.looping = event.target.checked; updateTimelineUi(); });
     if (timelineLiveButton) timelineLiveButton.addEventListener("click", async () => {
         setPlaying(false);
@@ -10837,7 +10864,7 @@ async function initialize() {
 
             activeField =
                 fieldSelect.value ||
-                "sbcape";
+                "none";
 
         }
 
