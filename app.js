@@ -1910,6 +1910,8 @@ const legendCtx =
 const legendLabels =
     document.getElementById("legend-labels");
 
+if (legend) legend.style.display = "none";
+
 
 /* =========================================================================================
    CURSOR SAMPLE PANEL
@@ -11075,6 +11077,7 @@ const drawColorInput = document.getElementById("draw-color");
 const drawWidthInput = document.getElementById("draw-width");
 const drawUndoButton = document.getElementById("draw-undo");
 const drawClearButton = document.getElementById("draw-clear");
+const savePngButton = document.getElementById("save-png");
 const drawHint = document.getElementById("draw-hint");
 
 const ANNOTATION_STYLE = {
@@ -11332,6 +11335,160 @@ function eraseAt(event) {
         annotations.splice(bestIndex, 1);
         renderAnnotations();
     }
+}
+
+
+/* =========================================================================================
+   4K PNG EXPORT
+   ========================================================================================= */
+
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function exportFileTimeStamp(value) {
+    const d = value ? new Date(value) : new Date();
+    if (Number.isNaN(d.getTime())) return "analysis";
+    const p = n => String(n).padStart(2, "0");
+    return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}_${p(d.getUTCHours())}Z`;
+}
+
+async function saveCurrentMapPng4k() {
+    if (!map || !mapWrapper) return;
+
+    const oldText = savePngButton ? savePngButton.textContent : "";
+    if (savePngButton) {
+        savePngButton.disabled = true;
+        savePngButton.textContent = "Preparing 4K…";
+    }
+
+    try {
+        /* Make sure every visible numerical/annotation layer is current before capture. */
+        await renderAll();
+        renderAnnotations();
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+        const rect = mapWrapper.getBoundingClientRect();
+        const srcW = Math.max(1, Math.round(rect.width));
+        const srcH = Math.max(1, Math.round(rect.height));
+
+        /* 4K-width export while preserving the exact current map aspect ratio. */
+        const outW = 3840;
+        const headerH = 118;
+        const footerH = 92;
+        const mapH = Math.max(1, Math.round(outW * srcH / srcW));
+        const outH = headerH + mapH + footerH;
+
+        const out = document.createElement("canvas");
+        out.width = outW;
+        out.height = outH;
+        const ctx = out.getContext("2d", { alpha: false });
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, outW, outH);
+
+        /* Header */
+        ctx.fillStyle = "#102433";
+        ctx.fillRect(0, 0, outW, headerH);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = '800 48px Inter, "Segoe UI", Arial, sans-serif';
+        ctx.textBaseline = "middle";
+        ctx.fillText("SPCOA Mesoanalysis", 42, headerH / 2);
+        ctx.textAlign = "right";
+        ctx.font = '650 31px Inter, "Segoe UI", Arial, sans-serif';
+        ctx.fillStyle = "#d7e7f2";
+        ctx.fillText(`Valid: ${formatAnalysisTime(currentAnalysisTime)}`, outW - 42, headerH / 2);
+        ctx.textAlign = "left";
+
+        const mapY = headerH;
+        const layers = [
+            map.getCanvas(),
+            weatherCanvas,
+            vectorCanvas,
+            contourCanvas,
+            geographyCanvas,
+            contourLabelCanvas,
+            annotationCanvas
+        ].filter(Boolean);
+
+        for (const layer of layers) {
+            ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, mapY, outW, mapH);
+        }
+
+        /* Rebuild the visible legend at export resolution. */
+        if (legend && legend.style.display !== "none" && activeField && activeField !== "none") {
+            const cardW = Math.min(1840, Math.round(outW * 0.48));
+            const cardH = 210;
+            const cardX = 70;
+            const cardY = mapY + mapH - cardH - 70;
+            ctx.fillStyle = "rgba(20,40,57,.96)";
+            ctx.fillRect(cardX, cardY, cardW, cardH);
+            ctx.strokeStyle = "#41647d";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(cardX, cardY, cardW, cardH);
+            ctx.fillStyle = "#f4f8fb";
+            ctx.font = '650 30px Inter, "Segoe UI", Arial, sans-serif';
+            ctx.fillText(legendTitle ? legendTitle.textContent : "", cardX + 34, cardY + 46);
+            if (legendCanvas && legendCanvas.width && legendCanvas.height) {
+                ctx.drawImage(legendCanvas, cardX + 34, cardY + 72, cardW - 68, 54);
+            }
+            if (legendLabels) {
+                const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
+                ctx.font = '500 23px Inter, "Segoe UI", Arial, sans-serif';
+                ctx.fillStyle = "#c7d6e1";
+                labels.forEach((el, i) => {
+                    const pct = labels.length <= 1 ? 0 : i / (labels.length - 1);
+                    const x = cardX + 34 + pct * (cardW - 68);
+                    ctx.textAlign = i === 0 ? "left" : (i === labels.length - 1 ? "right" : "center");
+                    ctx.fillText(el.textContent || "", x, cardY + 166);
+                });
+                ctx.textAlign = "left";
+            }
+        }
+
+        /* Footer / active-layer strip. */
+        const footerY = headerH + mapH;
+        ctx.fillStyle = "#f7f8fa";
+        ctx.fillRect(0, footerY, outW, footerH);
+        ctx.strokeStyle = "#aeb7bf";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, footerY + 1);
+        ctx.lineTo(outW, footerY + 1);
+        ctx.stroke();
+        ctx.fillStyle = "#17232d";
+        ctx.font = '650 29px Inter, "Segoe UI", Arial, sans-serif';
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const footerText = activeLayersText ? activeLayersText.textContent.replace(/\s+/g, " ").trim() : `Valid: ${formatAnalysisTime(currentAnalysisTime)}`;
+        ctx.fillText(footerText, outW / 2, footerY + footerH / 2, outW - 100);
+        ctx.textAlign = "left";
+
+        const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
+        if (!blob) throw new Error("PNG encoding failed.");
+        downloadBlob(blob, `SPCOA_Mesoanalysis_${exportFileTimeStamp(currentAnalysisTime)}_4K.png`);
+    } catch (error) {
+        console.error("4K PNG export failed:", error);
+        if (statusElement) statusElement.textContent = "PNG export failed";
+    } finally {
+        if (savePngButton) {
+            savePngButton.disabled = false;
+            savePngButton.textContent = oldText || "Save PNG";
+        }
+    }
+}
+
+if (savePngButton) {
+    savePngButton.addEventListener("click", saveCurrentMapPng4k);
 }
 
 if (drawingToolbar && annotationCanvas) {
