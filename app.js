@@ -11324,6 +11324,7 @@ const drawWidthInput = document.getElementById("draw-width");
 const drawUndoButton = document.getElementById("draw-undo");
 const drawClearButton = document.getElementById("draw-clear");
 const savePngButton = document.getElementById("save-png");
+const saveGifButton = document.getElementById("save-gif");
 const drawHint = document.getElementById("draw-hint");
 
 const ANNOTATION_STYLE = {
@@ -11828,6 +11829,300 @@ async function saveCurrentMapPng4k() {
 }
 if (savePngButton) {
     savePngButton.addEventListener("click", saveCurrentMapPng4k);
+}
+
+
+/* =========================================================================================
+   GIF EXPORT
+   ========================================================================================= */
+
+async function buildGifFrameCanvas(outW = 1920) {
+    renderAnnotations();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    const rect = mapWrapper.getBoundingClientRect();
+    const srcW = Math.max(1, Math.round(rect.width));
+    const srcH = Math.max(1, Math.round(rect.height));
+
+    /* GIF frame width while preserving the exact current map aspect ratio. */
+    const headerH = 92;
+    const footerH = 118;
+    const mapH = Math.max(1, Math.round(outW * srcH / srcW));
+    const outH = headerH + mapH + footerH;
+    const exportScale = outW / srcW;
+
+    const out = document.createElement("canvas");
+    out.width = outW;
+    out.height = outH;
+    const ctx = out.getContext("2d", { alpha: false });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, outW, outH);
+
+    /* Compact one-line export header. */
+    ctx.fillStyle = "#102433";
+    ctx.fillRect(0, 0, outW, headerH);
+    ctx.textBaseline = "middle";
+
+    /* Left: clearly credits the visualization/viewer, not the source data. */
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#d7e7f2";
+    ctx.font = '600 25px Inter, "Segoe UI", Arial, sans-serif';
+    ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42, headerH / 2);
+
+    /* Right: product/data title only. Valid time remains in the footer strip. */
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = '700 29px Inter, "Segoe UI", Arial, sans-serif';
+    ctx.fillText("3-km Mesoscale Analysis Data", outW - 42, headerH / 2);
+    ctx.textAlign = "left";
+
+    const mapY = headerH;
+    const layers = [
+        map.getCanvas(),
+        weatherCanvas,
+        vectorCanvas,
+        contourCanvas,
+        geographyCanvas,
+        contourLabelCanvas,
+        annotationCanvas
+    ].filter(Boolean);
+
+    for (const layer of layers) {
+        ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, mapY, outW, mapH);
+    }
+
+    /*
+     * Export the legend with the SAME proportions and placement it has in
+     * the live viewer.  This deliberately avoids maintaining a second,
+     * export-only legend design.
+     */
+    if (legend && legend.style.display !== "none" && activeField && activeField !== "none") {
+        const legendRect = legend.getBoundingClientRect();
+        const cardX = Math.round((legendRect.left - rect.left) * exportScale);
+        const cardY = Math.round(mapY + (legendRect.top - rect.top) * exportScale);
+        const cardW = Math.round(legendRect.width * exportScale);
+        const cardH = Math.round(legendRect.height * exportScale);
+        const padX = Math.max(22, Math.round(14 * exportScale));
+        const padTop = Math.max(18, Math.round(11 * exportScale));
+        const titleFont = Math.max(20, Math.round(12 * exportScale));
+        const labelFont = Math.max(16, Math.round(10 * exportScale));
+        const barH = Math.max(30, Math.round(18 * exportScale));
+        const titleY = cardY + padTop + titleFont * 0.45;
+        const barY = titleY + Math.round(12 * exportScale) + titleFont * 0.55;
+        const innerX = cardX + padX;
+        const innerW = cardW - padX * 2;
+        const labelY = Math.min(cardY + cardH - Math.round(10 * exportScale), barY + barH + Math.round(16 * exportScale));
+
+        ctx.fillStyle = "rgba(20,40,57,.96)";
+        ctx.fillRect(cardX, cardY, cardW, cardH);
+        ctx.strokeStyle = "#41647d";
+        ctx.lineWidth = Math.max(2, Math.round(exportScale));
+        ctx.strokeRect(cardX, cardY, cardW, cardH);
+
+        ctx.fillStyle = "#f4f8fb";
+        ctx.font = `600 ${titleFont}px Inter, "Segoe UI", Arial, sans-serif`;
+        ctx.textAlign = "left";
+        ctx.fillText(legendTitle ? legendTitle.textContent : "", innerX, titleY);
+
+        if (legendCanvas && legendCanvas.width && legendCanvas.height) {
+            ctx.drawImage(legendCanvas, innerX, barY, innerW, barH);
+        }
+
+        if (legendLabels) {
+            const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
+            ctx.font = `500 ${labelFont}px Inter, "Segoe UI", Arial, sans-serif`;
+            ctx.fillStyle = "#c7d6e1";
+            const labelsRect = legendLabels.getBoundingClientRect();
+            labels.forEach((el, i) => {
+                const elRect = el.getBoundingClientRect();
+
+                // Preserve the exact anchor position used by the live DOM legend.
+                // First/last labels are edge-anchored; interior labels are centered.
+                let liveAnchorX;
+                if (el.classList.contains("legend-label-first")) {
+                    liveAnchorX = elRect.left;
+                    ctx.textAlign = "left";
+                }
+                else if (el.classList.contains("legend-label-last")) {
+                    liveAnchorX = elRect.right;
+                    ctx.textAlign = "right";
+                }
+                else {
+                    liveAnchorX = elRect.left + elRect.width / 2;
+                    ctx.textAlign = "center";
+                }
+
+                const livePct = labelsRect.width > 0
+                    ? (liveAnchorX - labelsRect.left) / labelsRect.width
+                    : 0;
+                const x = innerX + livePct * innerW;
+                ctx.fillText(el.textContent || "", x, labelY);
+            });
+            ctx.textAlign = "left";
+        }
+    }
+
+    /* Footer / active-layer strip.  Keep vector-color indicators in PNG. */
+    const footerY = headerH + mapH;
+    ctx.fillStyle = "#f7f8fa";
+    ctx.fillRect(0, footerY, outW, footerH);
+    ctx.strokeStyle = "#aeb7bf";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, footerY + 1);
+    ctx.lineTo(outW, footerY + 1);
+    ctx.stroke();
+
+    const descriptions = getActiveLayerDescriptions();
+    const items = [
+        ...descriptions.map(item => ({ ...item })),
+        { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
+    ];
+
+    ctx.font = '650 29px Inter, "Segoe UI", Arial, sans-serif';
+    ctx.textBaseline = "middle";
+    const separator = "   |   ";
+    const indicatorW = 34;
+    const indicatorGap = 12;
+    const indicatorLineW = 7;
+
+    const widths = items.map(item => {
+        const textW = ctx.measureText(item.text).width;
+        return textW + (item.color ? indicatorW + indicatorGap : 0);
+    });
+    const sepW = ctx.measureText(separator).width;
+    const totalW = widths.reduce((a, b) => a + b, 0) + sepW * Math.max(0, items.length - 1);
+    let x = Math.max(50, (outW - totalW) / 2);
+    const y = footerY + 43;
+
+    items.forEach((item, index) => {
+        if (item.color) {
+            ctx.strokeStyle = item.color;
+            ctx.lineWidth = indicatorLineW;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + indicatorW, y);
+            ctx.stroke();
+            ctx.lineCap = "butt";
+            x += indicatorW + indicatorGap;
+        }
+
+        ctx.fillStyle = "#17232d";
+        ctx.textAlign = "left";
+        ctx.fillText(item.text, x, y);
+        x += ctx.measureText(item.text).width;
+
+        if (index < items.length - 1) {
+            ctx.fillStyle = "#8b969f";
+            ctx.fillText(separator, x, y);
+            x += sepW;
+        }
+    });
+    ctx.textAlign = "left";
+
+    /* Secondary credit stays in the white footer so the navy header remains compact. */
+    ctx.fillStyle = "#66727c";
+    ctx.font = '500 21px Inter, "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", outW / 2, footerY + 88);
+    ctx.textAlign = "left";
+
+    return out;
+}
+
+async function getGifWorkerUrl() {
+    const workerSourceUrl = "https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js";
+    const response = await fetch(workerSourceUrl, { mode: "cors" });
+    if (!response.ok) throw new Error(`Could not load GIF worker (${response.status}).`);
+    const source = await response.text();
+    return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+}
+
+async function saveTimelineGif() {
+    if (!map || !mapWrapper || typeof GIF === "undefined") {
+        if (statusElement) statusElement.textContent = "GIF encoder unavailable";
+        return;
+    }
+
+    const oldText = saveGifButton ? saveGifButton.textContent : "";
+    const originalRun = currentRun;
+    const originalPlaying = timelineState.playing;
+    const runs = filteredTimelineRuns();
+    if (!runs.length) return;
+
+    let workerUrl = null;
+    setPlaying(false);
+    if (saveGifButton) {
+        saveGifButton.disabled = true;
+        saveGifButton.textContent = "Preparing…";
+    }
+    if (savePngButton) savePngButton.disabled = true;
+
+    try {
+        workerUrl = await getGifWorkerUrl();
+        const gif = new GIF({
+            workers: 2,
+            quality: 10,
+            repeat: 0,
+            workerScript: workerUrl
+        });
+
+        const normalDelay = Math.max(120, Math.round(PLAYBACK_BASE_MS / timelineState.playbackSpeed));
+        const newestDelay = Math.round(normalDelay * 1.45);
+
+        for (let i = 0; i < runs.length; i++) {
+            const item = runs[i];
+            if (statusElement) statusElement.textContent = `GIF frame ${i + 1} of ${runs.length}: ${formatTimelineUtc(item.analysis_time || runIdToIso(item.run))}`;
+            if (saveGifButton) saveGifButton.textContent = `${i + 1}/${runs.length}`;
+
+            const ok = await applyRun(item, { render: true, preload: false });
+            if (!ok) throw new Error(`Could not render ${item.run}.`);
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+            const frameCanvas = await buildGifFrameCanvas(1920);
+            gif.addFrame(frameCanvas, {
+                copy: true,
+                delay: item.run === timelineState.latestRun ? newestDelay : normalDelay
+            });
+        }
+
+        if (statusElement) statusElement.textContent = "Encoding GIF...";
+        if (saveGifButton) saveGifButton.textContent = "Encoding…";
+
+        const gifBlob = await new Promise((resolve, reject) => {
+            gif.on("finished", resolve);
+            gif.on("abort", () => reject(new Error("GIF encoding aborted.")));
+            gif.render();
+        });
+
+        const firstTime = runs[0]?.analysis_time || runIdToIso(runs[0]?.run);
+        const lastTime = runs.at(-1)?.analysis_time || runIdToIso(runs.at(-1)?.run);
+        downloadBlob(gifBlob, `3km_Mesoscale_Analysis_${exportFileTimeStamp(firstTime)}_to_${exportFileTimeStamp(lastTime)}.gif`);
+        if (statusElement) statusElement.textContent = `GIF saved (${runs.length} frames)`;
+    } catch (error) {
+        console.error("GIF export failed:", error);
+        if (statusElement) statusElement.textContent = "GIF export failed";
+    } finally {
+        if (originalRun && currentRun !== originalRun) {
+            const originalItem = timelineState.availableRuns.find(item => item.run === originalRun);
+            if (originalItem) await applyRun(originalItem, { render: true, preload: true });
+        }
+        if (workerUrl) URL.revokeObjectURL(workerUrl);
+        if (saveGifButton) {
+            saveGifButton.disabled = false;
+            saveGifButton.textContent = oldText || "Save GIF";
+        }
+        if (savePngButton) savePngButton.disabled = false;
+        if (originalPlaying) setPlaying(true);
+    }
+}
+
+if (saveGifButton) {
+    saveGifButton.addEventListener("click", saveTimelineGif);
 }
 
 if (drawingToolbar && annotationCanvas) {
