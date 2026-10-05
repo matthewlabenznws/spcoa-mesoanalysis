@@ -11383,7 +11383,7 @@ async function saveCurrentMapPng4k() {
 
         /* 4K-width export while preserving the exact current map aspect ratio. */
         const outW = 3840;
-        const headerH = 176;
+        const headerH = 92;
         const footerH = 118;
         const mapH = Math.max(1, Math.round(outW * srcH / srcW));
         const outH = headerH + mapH + footerH;
@@ -11399,24 +11399,22 @@ async function saveCurrentMapPng4k() {
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, outW, outH);
 
-        /* Header: title + development/credit lines + valid time. */
+        /* Compact one-line export header. */
         ctx.fillStyle = "#102433";
         ctx.fillRect(0, 0, outW, headerH);
         ctx.textBaseline = "middle";
+
+        /* Left: clearly credits the visualization/viewer, not the source data. */
         ctx.textAlign = "left";
-        ctx.fillStyle = "#ffffff";
-        ctx.font = '800 48px Inter, "Segoe UI", Arial, sans-serif';
-        ctx.fillText("SPCOA Mesoanalysis", 42, 48);
-
-        ctx.font = '600 24px Inter, "Segoe UI", Arial, sans-serif';
         ctx.fillStyle = "#d7e7f2";
-        ctx.fillText("Developed by: Matthew Labenz · NWS North Platte, NE", 42, 101);
-        ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", 42, 139);
+        ctx.font = '600 25px Inter, "Segoe UI", Arial, sans-serif';
+        ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42, headerH / 2);
 
+        /* Right: product/data title only. Valid time remains in the footer strip. */
         ctx.textAlign = "right";
-        ctx.font = '650 31px Inter, "Segoe UI", Arial, sans-serif';
         ctx.fillStyle = "#ffffff";
-        ctx.fillText(`Valid: ${formatAnalysisTime(currentAnalysisTime)}`, outW - 42, 48);
+        ctx.font = '700 29px Inter, "Segoe UI", Arial, sans-serif';
+        ctx.fillText("3-km Mesoscale Analysis Data", outW - 42, headerH / 2);
         ctx.textAlign = "left";
 
         const mapY = headerH;
@@ -11536,7 +11534,7 @@ async function saveCurrentMapPng4k() {
         const sepW = ctx.measureText(separator).width;
         const totalW = widths.reduce((a, b) => a + b, 0) + sepW * Math.max(0, items.length - 1);
         let x = Math.max(50, (outW - totalW) / 2);
-        const y = footerY + footerH / 2;
+        const y = footerY + 43;
 
         items.forEach((item, index) => {
             if (item.color) {
@@ -11564,9 +11562,16 @@ async function saveCurrentMapPng4k() {
         });
         ctx.textAlign = "left";
 
+        /* Secondary credit stays in the white footer so the navy header remains compact. */
+        ctx.fillStyle = "#66727c";
+        ctx.font = '500 21px Inter, "Segoe UI", Arial, sans-serif';
+        ctx.textAlign = "center";
+        ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", outW / 2, footerY + 88);
+        ctx.textAlign = "left";
+
         const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
         if (!blob) throw new Error("PNG encoding failed.");
-        downloadBlob(blob, `SPCOA_Mesoanalysis_${exportFileTimeStamp(currentAnalysisTime)}.png`);
+        downloadBlob(blob, `3km_Mesoscale_Analysis_${exportFileTimeStamp(currentAnalysisTime)}.png`);
         if (statusElement) statusElement.textContent = "PNG saved";
     } catch (error) {
         console.error("4K PNG export failed:", error);
