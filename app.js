@@ -11845,8 +11845,10 @@ async function buildGifFrameCanvas(outW = 1920) {
     const srcH = Math.max(1, Math.round(rect.height));
 
     /* GIF frame width while preserving the exact current map aspect ratio. */
-    const headerH = 92;
-    const footerH = 118;
+    // Match the PNG export layout exactly, scaled from the 3840px PNG baseline.
+    const layoutScale = outW / 3840;
+    const headerH = Math.max(1, Math.round(92 * layoutScale));
+    const footerH = Math.max(1, Math.round(118 * layoutScale));
     const mapH = Math.max(1, Math.round(outW * srcH / srcW));
     const outH = headerH + mapH + footerH;
     const exportScale = outW / srcW;
@@ -11869,14 +11871,14 @@ async function buildGifFrameCanvas(outW = 1920) {
     /* Left: clearly credits the visualization/viewer, not the source data. */
     ctx.textAlign = "left";
     ctx.fillStyle = "#d7e7f2";
-    ctx.font = '600 25px Inter, "Segoe UI", Arial, sans-serif';
-    ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42, headerH / 2);
+    ctx.font = `600 ${Math.max(1, Math.round(25 * layoutScale))}px Inter, \"Segoe UI\", Arial, sans-serif`;
+    ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", Math.round(42 * layoutScale), headerH / 2);
 
     /* Right: product/data title only. Valid time remains in the footer strip. */
     ctx.textAlign = "right";
     ctx.fillStyle = "#ffffff";
-    ctx.font = '700 29px Inter, "Segoe UI", Arial, sans-serif';
-    ctx.fillText("3-km Mesoscale Analysis Data", outW - 42, headerH / 2);
+    ctx.font = `700 ${Math.max(1, Math.round(29 * layoutScale))}px Inter, \"Segoe UI\", Arial, sans-serif`;
+    ctx.fillText("3-km Mesoscale Analysis Data", outW - Math.round(42 * layoutScale), headerH / 2);
     ctx.textAlign = "left";
 
     const mapY = headerH;
@@ -11905,21 +11907,22 @@ async function buildGifFrameCanvas(outW = 1920) {
         const cardY = Math.round(mapY + (legendRect.top - rect.top) * exportScale);
         const cardW = Math.round(legendRect.width * exportScale);
         const cardH = Math.round(legendRect.height * exportScale);
-        const padX = Math.max(22, Math.round(14 * exportScale));
-        const padTop = Math.max(18, Math.round(11 * exportScale));
-        const titleFont = Math.max(20, Math.round(12 * exportScale));
-        const labelFont = Math.max(16, Math.round(10 * exportScale));
-        const barH = Math.max(30, Math.round(18 * exportScale));
+        const pngScale = 3840 / srcW;
+        const padX = Math.max(1, Math.round(Math.max(22, 14 * pngScale) * layoutScale));
+        const padTop = Math.max(1, Math.round(Math.max(18, 11 * pngScale) * layoutScale));
+        const titleFont = Math.max(1, Math.round(Math.max(20, 12 * pngScale) * layoutScale));
+        const labelFont = Math.max(1, Math.round(Math.max(16, 10 * pngScale) * layoutScale));
+        const barH = Math.max(1, Math.round(Math.max(30, 18 * pngScale) * layoutScale));
         const titleY = cardY + padTop + titleFont * 0.45;
-        const barY = titleY + Math.round(12 * exportScale) + titleFont * 0.55;
+        const barY = titleY + Math.round(12 * pngScale * layoutScale) + titleFont * 0.55;
         const innerX = cardX + padX;
         const innerW = cardW - padX * 2;
-        const labelY = Math.min(cardY + cardH - Math.round(10 * exportScale), barY + barH + Math.round(16 * exportScale));
+        const labelY = Math.min(cardY + cardH - Math.round(10 * pngScale * layoutScale), barY + barH + Math.round(16 * pngScale * layoutScale));
 
         ctx.fillStyle = "rgba(20,40,57,.96)";
         ctx.fillRect(cardX, cardY, cardW, cardH);
         ctx.strokeStyle = "#41647d";
-        ctx.lineWidth = Math.max(2, Math.round(exportScale));
+        ctx.lineWidth = Math.max(1, Math.round(Math.max(2, 3840 / srcW) * layoutScale));
         ctx.strokeRect(cardX, cardY, cardW, cardH);
 
         ctx.fillStyle = "#f4f8fb";
@@ -11970,7 +11973,7 @@ async function buildGifFrameCanvas(outW = 1920) {
     ctx.fillStyle = "#f7f8fa";
     ctx.fillRect(0, footerY, outW, footerH);
     ctx.strokeStyle = "#aeb7bf";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = Math.max(1, Math.round(2 * layoutScale));
     ctx.beginPath();
     ctx.moveTo(0, footerY + 1);
     ctx.lineTo(outW, footerY + 1);
@@ -11982,12 +11985,12 @@ async function buildGifFrameCanvas(outW = 1920) {
         { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
     ];
 
-    ctx.font = '650 29px Inter, "Segoe UI", Arial, sans-serif';
+    ctx.font = `650 ${Math.max(1, Math.round(29 * layoutScale))}px Inter, \"Segoe UI\", Arial, sans-serif`;
     ctx.textBaseline = "middle";
     const separator = "   |   ";
-    const indicatorW = 34;
-    const indicatorGap = 12;
-    const indicatorLineW = 7;
+    const indicatorW = Math.max(1, Math.round(34 * layoutScale));
+    const indicatorGap = Math.max(1, Math.round(12 * layoutScale));
+    const indicatorLineW = Math.max(1, Math.round(7 * layoutScale));
 
     const widths = items.map(item => {
         const textW = ctx.measureText(item.text).width;
@@ -11995,8 +11998,8 @@ async function buildGifFrameCanvas(outW = 1920) {
     });
     const sepW = ctx.measureText(separator).width;
     const totalW = widths.reduce((a, b) => a + b, 0) + sepW * Math.max(0, items.length - 1);
-    let x = Math.max(50, (outW - totalW) / 2);
-    const y = footerY + 43;
+    let x = Math.max(Math.round(50 * layoutScale), (outW - totalW) / 2);
+    const y = footerY + Math.round(43 * layoutScale);
 
     items.forEach((item, index) => {
         if (item.color) {
@@ -12026,9 +12029,9 @@ async function buildGifFrameCanvas(outW = 1920) {
 
     /* Secondary credit stays in the white footer so the navy header remains compact. */
     ctx.fillStyle = "#66727c";
-    ctx.font = '500 21px Inter, "Segoe UI", Arial, sans-serif';
+    ctx.font = `500 ${Math.max(1, Math.round(21 * layoutScale))}px Inter, \"Segoe UI\", Arial, sans-serif`;
     ctx.textAlign = "center";
-    ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", outW / 2, footerY + 88);
+    ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", outW / 2, footerY + Math.round(88 * layoutScale));
     ctx.textAlign = "left";
 
     return out;
@@ -12066,7 +12069,8 @@ async function saveTimelineGif() {
         workerUrl = await getGifWorkerUrl();
         const gif = new GIF({
             workers: 2,
-            quality: 10,
+            quality: 1,
+            dither: "FloydSteinberg-serpentine",
             repeat: 0,
             workerScript: workerUrl
         });
