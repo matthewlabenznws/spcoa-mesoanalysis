@@ -3288,7 +3288,7 @@ async function loadScalarTile(
     z,
     x,
     y,
-    run = run
+    run = currentRun
 ) {
 
     if (!run) {
@@ -3478,7 +3478,7 @@ async function loadVectorTile(
     z,
     x,
     y,
-    run = run
+    run = currentRun
 ) {
 
     if (!run) {
@@ -3671,7 +3671,7 @@ async function loadContourTile(
     z,
     x,
     y,
-    run = run
+    run = currentRun
 ) {
 
     if (!run) {
@@ -11475,10 +11475,30 @@ async function saveCurrentMapPng4k() {
                 const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
                 ctx.font = `500 ${labelFont}px Inter, "Segoe UI", Arial, sans-serif`;
                 ctx.fillStyle = "#c7d6e1";
+                const labelsRect = legendLabels.getBoundingClientRect();
                 labels.forEach((el, i) => {
-                    const pct = labels.length <= 1 ? 0 : i / (labels.length - 1);
-                    const x = innerX + pct * innerW;
-                    ctx.textAlign = i === 0 ? "left" : (i === labels.length - 1 ? "right" : "center");
+                    const elRect = el.getBoundingClientRect();
+
+                    // Preserve the exact anchor position used by the live DOM legend.
+                    // First/last labels are edge-anchored; interior labels are centered.
+                    let liveAnchorX;
+                    if (el.classList.contains("legend-label-first")) {
+                        liveAnchorX = elRect.left;
+                        ctx.textAlign = "left";
+                    }
+                    else if (el.classList.contains("legend-label-last")) {
+                        liveAnchorX = elRect.right;
+                        ctx.textAlign = "right";
+                    }
+                    else {
+                        liveAnchorX = elRect.left + elRect.width / 2;
+                        ctx.textAlign = "center";
+                    }
+
+                    const livePct = labelsRect.width > 0
+                        ? (liveAnchorX - labelsRect.left) / labelsRect.width
+                        : 0;
+                    const x = innerX + livePct * innerW;
                     ctx.fillText(el.textContent || "", x, labelY);
                 });
                 ctx.textAlign = "left";
