@@ -593,7 +593,7 @@ const TEMPERATURE_ADVECTION_COLORS = TEMPERATURE_ADVECTION_BOUNDS.slice(0, -1).m
    ========================================================================================= */
 
 const LAPSE_RATE_BOUNDS = [
-    0, 1, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0,
+    0, 0.6, 1.2, 1.8, 2.4, 3.0, 3.6, 4.2, 4.8, 5.4, 6.0,
     6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9, 7.0, 7.1,
     7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 8.0, 8.1, 8.2, 8.3,
     8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 9.0, 9.1, 9.2, 9.3, 9.4, 9.5,
@@ -608,8 +608,26 @@ const LAPSE_RATE_COLORS = [
     "#700e89","#7b1c93","#872b9e","#923aa8","#9e4ab2","#a95bbd","#b56ac7","#c07ad1","#cc8adc","#d79ae6"
 ];
 
+
 if (LAPSE_RATE_COLORS.length !== LAPSE_RATE_BOUNDS.length - 1) {
     throw new Error("Lapse-rate palette length does not match bounds.");
+}
+
+/* =========================================================================================
+   SRH / EHI COLOR TABLES
+   Exact user-supplied bins/colors.
+   ========================================================================================= */
+
+const SRH_BOUNDS = [0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,250,260,270,280,290,300,310,320,330,340,350,360,370,380,390,400,410,420,430,440,450,460,470,480,490,500,510,520,530,540,550,560,570,580,590,600,650,700,750,800,850,900,950,1000,1050];
+const SRH_COLORS = ["#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3","#a5a5a5","#969696","#878787","#787878","#696969","#3b5269","#475f74","#546c7f","#60798a","#6d8695","#7993a1","#86a0ac","#92adb7","#9fbac2","#abc7ce","#e6de99","#e4d289","#e3c679","#e1b96a","#dfae5a","#dfa24b","#dd963c","#dc8a2f","#da7e24","#d9731c","#d3491f","#cb4323","#c23d27","#b9362b","#b13131","#a82b37","#9f253d","#971f44","#8e1a4a","#861550","#700e89","#7b1c93","#872b9e","#923aa8","#9e4ab2","#a95bbd","#b56ac7","#c07ad1","#cc8adc","#d79ae6","#e6bfc3","#dfb1b7","#d9a4ad","#d297a1","#cc8a95","#c57c8a","#be707e","#b86272","#b25667","#ac485b","#844049","#8a4953","#91545c","#985e66","#9e6970","#a57279","#ab7d83","#b2878c","#b99295"];
+if (SRH_COLORS.length !== SRH_BOUNDS.length - 1) {
+    throw new Error("SRH palette length does not match bounds.");
+}
+
+const EHI_BOUNDS = [0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0,2.2,2.4,2.6,2.8,3.0,3.2,3.4,3.6,3.8,4.0,4.2,4.4,4.6,4.8,5.0,5.2,5.4,5.6,5.8,6.0,6.2,6.4,6.6,6.8,7.0,7.2,7.4,7.6,7.8,8.0,8.4,8.8,9.2,9.6,10.0,10.4,10.8,11.2,11.6,12.0,12.4,12.8,13.2,13.6,14.0,14.4,14.8,15.2,15.6,16.0];
+const EHI_COLORS = ["#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3","#a5a5a5","#969696","#878787","#787878","#696969","#3b5269","#475f74","#546c7f","#60798a","#6d8695","#7993a1","#86a0ac","#92adb7","#9fbac2","#abc7ce","#e6de99","#e4d289","#e3c679","#e1b96a","#dfae5a","#dfa24b","#dd963c","#dc8a2f","#da7e24","#d9731c","#d3491f","#cb4323","#c23d27","#b9362b","#b13131","#a82b37","#9f253d","#971f44","#8e1a4a","#861550","#700e89","#7b1c93","#872b9e","#923aa8","#9e4ab2","#a95bbd","#b56ac7","#c07ad1","#cc8adc","#d79ae6","#e6bfc3","#dfb1b7","#d9a4ad","#d297a1","#cc8a95","#c57c8a","#be707e","#b86272","#b25667","#ac485b","#844049","#8a4953","#91545c","#985e66","#9e6970","#a57279","#ab7d83","#b2878c","#b99295","#b99297"];
+if (EHI_COLORS.length !== EHI_BOUNDS.length - 1) {
+    throw new Error("EHI palette length does not match bounds.");
 }
 
 /* =========================================================================================
@@ -762,6 +780,13 @@ const WEATHER_FIELDS = {
     lapse_rate_0_1km: { name: "0–1 km AGL Lapse Rate", shortName: "0–1 km Lapse Rate", units: "°C/km", type: "lapse_rate" },
     lapse_rate_3_6km: { name: "3–6 km AGL Lapse Rate", shortName: "3–6 km Lapse Rate", units: "°C/km", type: "lapse_rate" },
     lapse_rate_2_6km_max: { name: "Maximum 2-km Lapse Rate in 2–6 km AGL", shortName: "2–6 km Max 2-km Lapse Rate", units: "°C/km", type: "lapse_rate" },
+
+    srh_0_500m: { name: "0–500 m Storm-Relative Helicity", shortName: "0–500 m SRH", units: "m²/s²", type: "srh" },
+    srh_0_1km: { name: "0–1 km Storm-Relative Helicity", shortName: "0–1 km SRH", units: "m²/s²", type: "srh" },
+    srh_0_3km: { name: "0–3 km Storm-Relative Helicity", shortName: "0–3 km SRH", units: "m²/s²", type: "srh" },
+    srh_eff: { name: "Effective Storm-Relative Helicity", shortName: "Effective SRH", units: "m²/s²", type: "srh" },
+    ehi_0_1km: { name: "0–1 km Energy Helicity Index", shortName: "0–1 km EHI", units: "", type: "ehi" },
+    ehi_0_3km: { name: "0–3 km Energy Helicity Index", shortName: "0–3 km EHI", units: "", type: "ehi" },
 
     rh_925mb: { name: "925 mb Relative Humidity", shortName: "925 mb RH", units: "%", type: "rh" },
     rh_850mb: { name: "850 mb Relative Humidity", shortName: "850 mb RH", units: "%", type: "rh" },
@@ -5048,6 +5073,16 @@ const LAPSE_RATE_RGB =
         hexToRgb
     );
 
+const SRH_RGB =
+    SRH_COLORS.map(
+        hexToRgb
+    );
+
+const EHI_RGB =
+    EHI_COLORS.map(
+        hexToRgb
+    );
+
 const THETAE_RGB =
     THETAE_COLORS.map(
         hexToRgb
@@ -5521,6 +5556,14 @@ function getFieldColor(
             LAPSE_RATE_BOUNDS,
             LAPSE_RATE_RGB
         );
+    }
+
+    if (definition.type === "srh") {
+        return getBinnedWindColor(value, 0, SRH_BOUNDS, SRH_RGB);
+    }
+
+    if (definition.type === "ehi") {
+        return getBinnedWindColor(value, 0, EHI_BOUNDS, EHI_RGB);
     }
 
 
@@ -9799,8 +9842,28 @@ function updateLegend() {
         drawProportionalColorLegend(LAPSE_RATE_COLORS, LAPSE_RATE_BOUNDS);
 
         renderProportionalLegendLabels(
-            [0, 1, 2, 3, 4, 5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10],
+            [0, 3, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10],
             LAPSE_RATE_BOUNDS
+        );
+    }
+
+
+    /* Storm-relative helicity. */
+    else if (field.type === "srh") {
+        drawProportionalColorLegend(SRH_COLORS, SRH_BOUNDS);
+        renderProportionalLegendLabels(
+            [0, 100, 200, 300, 400, 500, 600, 800, 1000],
+            SRH_BOUNDS
+        );
+    }
+
+
+    /* Energy Helicity Index. */
+    else if (field.type === "ehi") {
+        drawProportionalColorLegend(EHI_COLORS, EHI_BOUNDS);
+        renderProportionalLegendLabels(
+            [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16],
+            EHI_BOUNDS
         );
     }
 
@@ -9927,6 +9990,12 @@ function formatScalarSample(field, value) {
     }
     if (definition.type === "lapse_rate") {
         return `${value.toFixed(1)} °C/km`;
+    }
+    if (definition.type === "srh") {
+        return `${Math.round(value)} m²/s²`;
+    }
+    if (definition.type === "ehi") {
+        return value.toFixed(1);
     }
     if (definition.type === "thetae") {
         return `${value.toFixed(1)} K`;
