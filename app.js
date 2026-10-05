@@ -644,6 +644,27 @@ const SCP_COLORS = ["#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3","#a5a5a5",
    FIELD DEFINITIONS
    ========================================================================================= */
 
+
+/* =========================================================================================
+   PRESSURE-LEVEL RELATIVE VORTICITY COLOR TABLE
+
+   Based on Model_4Panel.ipynb: -40 to +50 by 2 x 10^-5 s^-1, with Greys_r
+   for negative vorticity, a white near-zero transition, and YlOrRd for
+   positive vorticity.
+   ========================================================================================= */
+const RELATIVE_VORTICITY_BOUNDS = [
+    -40,-38,-36,-34,-32,-30,-28,-26,-24,-22,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,0,
+    2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50
+];
+
+const RELATIVE_VORTICITY_COLORS = [
+    "#000000","#0f0f0f","#1e1e1e","#303030","#434343","#555555","#636363","#717171","#7f7f7f","#8f8f8f",
+    "#9e9e9e","#afafaf","#bebebe","#cbcbcb","#d6d6d6","#e1e1e1","#eaeaea","#f3f3f3","#f9f9f9","#ffffff",
+    "#ffffff",
+    "#ffffcc","#fff9bd","#fff3ae","#ffec9f","#ffe590","#fede82","#fed673","#fec965","#feba55","#fead4a","#fea044",
+    "#fd933f","#fd8239","#fc6c33","#fc572c","#f74327","#ed3022","#e51e1d","#d9131f","#cb0a22","#be0126","#aa0026","#950026","#800026"
+];
+
 const WEATHER_FIELDS = {
 
     sbcape: {
@@ -795,6 +816,12 @@ const WEATHER_FIELDS = {
     temperature_advection_925mb: { name: "925 mb Temperature Advection", shortName: "925 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
     temperature_advection_850mb: { name: "850 mb Temperature Advection", shortName: "850 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
     temperature_advection_700mb: { name: "700 mb Temperature Advection", shortName: "700 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
+
+    relative_vorticity_925mb: { name: "925 mb Relative Vorticity", shortName: "925 mb Rel Vort", units: "10⁻⁵ s⁻¹", type: "relative_vorticity" },
+    relative_vorticity_850mb: { name: "850 mb Relative Vorticity", shortName: "850 mb Rel Vort", units: "10⁻⁵ s⁻¹", type: "relative_vorticity" },
+    relative_vorticity_700mb: { name: "700 mb Relative Vorticity", shortName: "700 mb Rel Vort", units: "10⁻⁵ s⁻¹", type: "relative_vorticity" },
+    relative_vorticity_500mb: { name: "500 mb Relative Vorticity", shortName: "500 mb Rel Vort", units: "10⁻⁵ s⁻¹", type: "relative_vorticity" },
+    relative_vorticity_250mb: { name: "250 mb Relative Vorticity", shortName: "250 mb Rel Vort", units: "10⁻⁵ s⁻¹", type: "relative_vorticity" },
 
     lapse_rate_700_500hPa: { name: "700–500 mb Lapse Rate", shortName: "700–500 mb Lapse Rate", units: "°C/km", type: "lapse_rate" },
     lapse_rate_0_3km: { name: "0–3 km AGL Lapse Rate", shortName: "0–3 km Lapse Rate", units: "°C/km", type: "lapse_rate" },
@@ -979,7 +1006,7 @@ const vectorColors = Object.fromEntries(
 const CONTOUR_FIELDS = {
 
     theta_2m_contours: { name: "2 m Potential Temperature", shortName: "2 m Theta", units: "K", interval: 2, minimum: null, colorScheme: "theta", color: "#d7191c", smoothGeometry: true, smoothIterations: 4 },
-    thetae_2m_contours: { name: "2 m Equivalent Potential Temperature", shortName: "2 m Theta-e", units: "K", interval: 4, minimum: 310, anchor: 310, colorScheme: "thetae", color: null, smoothGeometry: true, smoothIterations: 4 },
+    thetae_2m_contours: { name: "2 m Equivalent Potential Temperature", shortName: "2 m Theta-e", units: "K", interval: 2, minimum: 310, anchor: 310, colorScheme: "thetae", color: null, smoothGeometry: true, smoothIterations: 4 },
 
     lcl_height: {
         name: "LCL Height",
@@ -1530,6 +1557,11 @@ function ensureFilledWindFieldOptions() {
         "wetbulb_2m",
         "thetae_2m",
         "rh_2m",
+        "relative_vorticity_925mb",
+        "relative_vorticity_850mb",
+        "relative_vorticity_700mb",
+        "relative_vorticity_500mb",
+        "relative_vorticity_250mb",
         "temperature_925mb",
         "temperature_850mb",
         "temperature_700mb",
@@ -5124,6 +5156,11 @@ const EHI_RGB =
         hexToRgb
     );
 
+const RELATIVE_VORTICITY_RGB =
+    RELATIVE_VORTICITY_COLORS.map(
+        hexToRgb
+    );
+
 const THETAE_RGB =
     THETAE_COLORS.map(
         hexToRgb
@@ -5605,6 +5642,15 @@ function getFieldColor(
 
     if (definition.type === "ehi") {
         return getBinnedWindColor(value, 0, EHI_BOUNDS, EHI_RGB);
+    }
+
+    if (definition.type === "relative_vorticity") {
+        return getBinnedWindColor(
+            value,
+            -40,
+            RELATIVE_VORTICITY_BOUNDS,
+            RELATIVE_VORTICITY_RGB
+        );
     }
 
 
@@ -9920,6 +9966,15 @@ function updateLegend() {
         );
     }
 
+    /* Pressure-level relative vorticity. */
+    else if (field.type === "relative_vorticity") {
+        drawProportionalColorLegend(RELATIVE_VORTICITY_COLORS, RELATIVE_VORTICITY_BOUNDS);
+        renderProportionalLegendLabels(
+            [-40, -30, -20, -10, 0, 10, 20, 30, 40, 50],
+            RELATIVE_VORTICITY_BOUNDS
+        );
+    }
+
 
     /* 2-m equivalent potential temperature. */
     else if (field.type === "thetae") {
@@ -10049,6 +10104,9 @@ function formatScalarSample(field, value) {
     }
     if (definition.type === "ehi") {
         return value.toFixed(1);
+    }
+    if (definition.type === "relative_vorticity") {
+        return `${value.toFixed(1)} ×10⁻⁵ s⁻¹`;
     }
     if (definition.type === "thetae") {
         return `${value.toFixed(1)} K`;
