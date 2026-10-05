@@ -587,6 +587,32 @@ const TEMPERATURE_ADVECTION_COLORS = TEMPERATURE_ADVECTION_BOUNDS.slice(0, -1).m
 });
 
 /* =========================================================================================
+   LAPSE RATE COLOR TABLE
+   Native fields are K/km; displayed as °C/km (numerically identical for lapse rates).
+   Exact user-supplied bins, with the 8.3 typo corrected.
+   ========================================================================================= */
+
+const LAPSE_RATE_BOUNDS = [
+    0, 1, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0,
+    6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9, 7.0, 7.1,
+    7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 8.0, 8.1, 8.2, 8.3,
+    8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 9.0, 9.1, 9.2, 9.3, 9.4, 9.5,
+    9.6, 9.7, 9.8, 9.9, 10.0
+];
+
+const LAPSE_RATE_COLORS = [
+    "#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3","#a5a5a5","#969696","#878787","#787878","#696969",
+    "#3b5269","#475f74","#546c7f","#60798a","#6d8695","#7993a1","#86a0ac","#92adb7","#9fbac2","#abc7ce",
+    "#e6de99","#e4d289","#e3c679","#e1b96a","#dfae5a","#dfa24b","#dd963c","#dc8a2f","#da7e24","#d9731c",
+    "#d3491f","#cb4323","#c23d27","#b9362b","#b13131","#a82b37","#9f253d","#971f44","#8e1a4a","#861550",
+    "#700e89","#7b1c93","#872b9e","#923aa8","#9e4ab2","#a95bbd","#b56ac7","#c07ad1","#cc8adc","#d79ae6"
+];
+
+if (LAPSE_RATE_COLORS.length !== LAPSE_RATE_BOUNDS.length - 1) {
+    throw new Error("Lapse-rate palette length does not match bounds.");
+}
+
+/* =========================================================================================
    SUPERCELL COMPOSITE PARAMETER COLOR TABLE
    Exact bounds/colors supplied by Matthew. Used by both right- and left-moving SCP.
    ========================================================================================= */
@@ -730,6 +756,12 @@ const WEATHER_FIELDS = {
     temperature_advection_925mb: { name: "925 mb Temperature Advection", shortName: "925 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
     temperature_advection_850mb: { name: "850 mb Temperature Advection", shortName: "850 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
     temperature_advection_700mb: { name: "700 mb Temperature Advection", shortName: "700 mb Temp Advection", units: "°C/3 hr", type: "temperature_advection" },
+
+    lapse_rate_700_500hPa: { name: "700–500 mb Lapse Rate", shortName: "700–500 mb Lapse Rate", units: "°C/km", type: "lapse_rate" },
+    lapse_rate_0_3km: { name: "0–3 km AGL Lapse Rate", shortName: "0–3 km Lapse Rate", units: "°C/km", type: "lapse_rate" },
+    lapse_rate_0_1km: { name: "0–1 km AGL Lapse Rate", shortName: "0–1 km Lapse Rate", units: "°C/km", type: "lapse_rate" },
+    lapse_rate_3_6km: { name: "3–6 km AGL Lapse Rate", shortName: "3–6 km Lapse Rate", units: "°C/km", type: "lapse_rate" },
+    lapse_rate_2_6km_max: { name: "Maximum 2-km Lapse Rate in 2–6 km AGL", shortName: "2–6 km Max 2-km Lapse Rate", units: "°C/km", type: "lapse_rate" },
 
     rh_925mb: { name: "925 mb Relative Humidity", shortName: "925 mb RH", units: "%", type: "rh" },
     rh_850mb: { name: "850 mb Relative Humidity", shortName: "850 mb RH", units: "%", type: "rh" },
@@ -5011,6 +5043,11 @@ const TEMPERATURE_ADVECTION_RGB =
         return hexToRgb(color);
     });
 
+const LAPSE_RATE_RGB =
+    LAPSE_RATE_COLORS.map(
+        hexToRgb
+    );
+
 const THETAE_RGB =
     THETAE_COLORS.map(
         hexToRgb
@@ -5474,6 +5511,16 @@ function getFieldColor(
 
     if (definition.type === "temperature_advection") {
         return getBinnedWindColor(value, -16, TEMPERATURE_ADVECTION_BOUNDS, TEMPERATURE_ADVECTION_RGB);
+    }
+
+
+    if (definition.type === "lapse_rate") {
+        return getBinnedWindColor(
+            value,
+            0,
+            LAPSE_RATE_BOUNDS,
+            LAPSE_RATE_RGB
+        );
     }
 
 
@@ -9746,6 +9793,18 @@ function updateLegend() {
     }
 
 
+    /* Lapse rates. */
+    else if (field.type === "lapse_rate") {
+
+        drawProportionalColorLegend(LAPSE_RATE_COLORS, LAPSE_RATE_BOUNDS);
+
+        renderProportionalLegendLabels(
+            [0, 1, 2, 3, 4, 5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10],
+            LAPSE_RATE_BOUNDS
+        );
+    }
+
+
     /* 2-m equivalent potential temperature. */
     else if (field.type === "thetae") {
 
@@ -9865,6 +9924,9 @@ function formatScalarSample(field, value) {
     }
     if (definition.type === "temperature_advection") {
         return `${value.toFixed(1)} °C/3 hr`;
+    }
+    if (definition.type === "lapse_rate") {
+        return `${value.toFixed(1)} °C/km`;
     }
     if (definition.type === "thetae") {
         return `${value.toFixed(1)} K`;
