@@ -723,6 +723,13 @@ const WEATHER_FIELDS = {
         type: "stp"
     },
 
+    stp_fix: {
+        name: "Significant Tornado Parameter (Fixed Layer)",
+        shortName: "Fixed-Layer STP",
+        units: "",
+        type: "stp"
+    },
+
     scp_right: {
         name: "Right-Moving Supercell Composite Parameter",
         shortName: "Right-Moving SCP",
@@ -756,6 +763,20 @@ const WEATHER_FIELDS = {
         shortName: "2 m Theta-e",
         units: "K",
         type: "thetae"
+    },
+
+    theta_2m: {
+        name: "2 m Potential Temperature",
+        shortName: "2 m Theta",
+        units: "°F",
+        type: "temperature"
+    },
+
+    wetbulb_2m: {
+        name: "2 m Wet-Bulb Temperature",
+        shortName: "2 m Wet-Bulb",
+        units: "°F",
+        type: "temperature"
     },
 
     rh_2m: {
@@ -956,6 +977,9 @@ const vectorColors = Object.fromEntries(
    ========================================================================================= */
 
 const CONTOUR_FIELDS = {
+
+    theta_2m_contours: { name: "2 m Potential Temperature", shortName: "2 m Theta", units: "K", interval: 2, minimum: null, colorScheme: "theta", color: "#d7191c", smoothGeometry: true, smoothIterations: 4 },
+    thetae_2m_contours: { name: "2 m Equivalent Potential Temperature", shortName: "2 m Theta-e", units: "K", interval: 4, minimum: 310, anchor: 310, colorScheme: "thetae", color: null, smoothGeometry: true, smoothIterations: 4 },
 
     lcl_height: {
         name: "LCL Height",
@@ -1239,6 +1263,8 @@ const activeOverlays = {
     frontogenesis700: false,
     lclHeight: false,
     stpEff: false,
+    thetaContours: false,
+    thetaeContours: false,
     divergence925: false,
     divergence850: false,
     divergence700: false,
@@ -1498,7 +1524,10 @@ function ensureFilledWindFieldOptions() {
         "wind_speed_250mb",
         "pwat",
         "stp_eff",
+        "stp_fix",
         "sfc_temperature",
+        "theta_2m",
+        "wetbulb_2m",
         "thetae_2m",
         "rh_2m",
         "temperature_925mb",
@@ -1859,6 +1888,18 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         stateKey: "stpEff",
         toggleId: "stp-eff-toggle",
         label: "Effective-Layer STP"
+    },
+    {
+        field: "theta_2m_contours",
+        stateKey: "thetaContours",
+        toggleId: "theta-contours-toggle",
+        label: "2 m Theta Contours"
+    },
+    {
+        field: "thetae_2m_contours",
+        stateKey: "thetaeContours",
+        toggleId: "thetae-contours-toggle",
+        label: "2 m Theta-e Contours"
     },
 
 ];
@@ -7969,9 +8010,14 @@ async function renderContourField(
                     )
             );
 
+    const contourAnchor =
+        metadata.display && Number.isFinite(Number(metadata.display.anchor))
+            ? Number(metadata.display.anchor)
+            : (Number.isFinite(Number(definition.anchor)) ? Number(definition.anchor) : 0);
+
     let firstLevel =
-        Math.ceil(
-            minimumValue / interval
+        contourAnchor + Math.ceil(
+            (minimumValue - contourAnchor) / interval
         ) * interval;
 
     if (
@@ -7981,8 +8027,8 @@ async function renderContourField(
         firstLevel =
             Math.max(
                 firstLevel,
-                Math.ceil(
-                    configuredMinimum / interval
+                contourAnchor + Math.ceil(
+                    (configuredMinimum - contourAnchor) / interval
                 ) * interval
             );
 
@@ -8009,7 +8055,7 @@ async function renderContourField(
         lastLevel =
             Math.min(
                 lastLevel,
-                Math.floor(configuredMaximum / interval) * interval
+                contourAnchor + Math.floor((configuredMaximum - contourAnchor) / interval) * interval
             );
     }
 
@@ -8063,6 +8109,9 @@ async function renderContourField(
     const isFrontogenesisContour =
         field.startsWith("frontogenesis_");
 
+    const isThetaContour = field === "theta_2m_contours";
+    const isThetaeContour = field === "thetae_2m_contours";
+
     contourCtx.lineWidth =
         isMslpOrHeightContour
             ? 2.0
@@ -8104,7 +8153,11 @@ async function renderContourField(
                                         : (
                                             colorScheme === "stp"
                                                 ? getDiscreteContourColor(level, STP_BOUNDS, STP_COLORS)
-                                                : fixedColor
+                                                : colorScheme === "theta"
+                                                    ? "#d7191c"
+                                                    : colorScheme === "thetae"
+                                                        ? (level >= 330 ? "#138a13" : "#a64b22")
+                                                        : fixedColor
                                         )
                                 )
                         )
@@ -8115,6 +8168,12 @@ async function renderContourField(
             const isFreezing = Math.abs(level) < 0.001;
             contourCtx.lineWidth = isFreezing ? 2.25 : 2.0;
             contourCtx.setLineDash(isFreezing ? [] : [8, 6]);
+        } else if (isThetaContour) {
+            contourCtx.lineWidth = 1.75;
+            contourCtx.setLineDash([]);
+        } else if (isThetaeContour) {
+            contourCtx.lineWidth = level >= 350 ? 2.5 : (level >= 330 ? 1.75 : 1.5);
+            contourCtx.setLineDash([]);
         } else {
             contourCtx.setLineDash([]);
         }
@@ -8421,7 +8480,7 @@ async function renderContourField(
          * is transparent, the filled weather field remains visible through the
          * gap; this is not a white label box.
          */
-        if (isMslpOrHeightContour || isPressureTemperatureContour || isFrontogenesisContour) {
+        {
 
             let gapAngle =
                 candidate.angle;
@@ -8488,13 +8547,7 @@ async function renderContourField(
             candidate.angle,
             candidate.level,
             candidate.color,
-            (isMslpOrHeightContour || isPressureTemperatureContour || isFrontogenesisContour)
-                ? "rgba(255,255,255,0.0)"
-                : (
-                    field === "warm_cloud_depth"
-                        ? "rgba(0,0,0,0.92)"
-                        : "rgba(255,255,255,0.88)"
-                )
+            "rgba(255,255,255,0.0)"
         );
 
         acceptedLabels.push({
@@ -10031,6 +10084,7 @@ function formatContourSample(field, value) {
     if (field === "lcl_height") return `${Math.round(value)} m AGL`;
     if (field === "warm_cloud_depth") return `${Math.round(value)} m`;
     if (field === "stp_eff_contours") return value.toFixed(1);
+    if (field === "theta_2m_contours" || field === "thetae_2m_contours") return `${Math.round(value)} K`;
     if (field.startsWith("divergence_")) return `${value.toFixed(1)} ${units}`;
 
     return `${value.toFixed(1)}${units ? ` ${units}` : ""}`;
