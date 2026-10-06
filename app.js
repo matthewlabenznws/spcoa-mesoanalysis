@@ -1307,6 +1307,9 @@ let contourMetadata = {};
 
 let citiesEnabled = false;
 
+// County outlines are visible by default and can be toggled under Map Layers.
+let countiesEnabled = true;
+
 let cwaBordersEnabled = false;
 
 let cwaBorderColor = "#6f42c1";
@@ -1608,6 +1611,52 @@ const sectorSelect =
 
 const citiesToggle =
     document.getElementById("cities-toggle");
+
+/*
+ * Counties are injected into the existing Map Layers card so index.html
+ * does not need to change. Counties remain ON by default.
+ */
+let countiesToggle =
+    document.getElementById("counties-toggle");
+
+function ensureCountiesControl() {
+
+    if (countiesToggle) {
+        countiesToggle.checked = countiesEnabled;
+        return;
+    }
+
+    const citiesRow =
+        citiesToggle
+            ? citiesToggle.closest("label")
+            : null;
+
+    if (!citiesRow || !citiesRow.parentElement) {
+        return;
+    }
+
+    const countyRow = document.createElement("label");
+    countyRow.className = "toggle-row";
+    countyRow.style.display = "flex";
+    countyRow.style.alignItems = "center";
+    countyRow.style.gap = "6px";
+
+    countiesToggle = document.createElement("input");
+    countiesToggle.type = "checkbox";
+    countiesToggle.id = "counties-toggle";
+    countiesToggle.checked = true;
+
+    const text = document.createElement("span");
+    text.textContent = "Counties";
+
+    countyRow.appendChild(countiesToggle);
+    countyRow.appendChild(text);
+
+    // Put Counties immediately above Cities in Map Layers.
+    citiesRow.insertAdjacentElement("beforebegin", countyRow);
+}
+
+ensureCountiesControl();
 
 /*
  * CWA borders are injected into the existing Map Layers card so index.html
@@ -9633,42 +9682,42 @@ function renderGeography() {
        COUNTIES
        ------------------------------------------------------------------------------------- */
 
-    geographyCtx.beginPath();
+    if (countiesEnabled) {
 
+        geographyCtx.beginPath();
 
-    geographyCtx.strokeStyle =
-        "rgba(45,45,45,0.80)";
+        geographyCtx.strokeStyle =
+            "rgba(45,45,45,0.80)";
 
+        geographyCtx.lineWidth =
+            0.75;
 
-    geographyCtx.lineWidth =
-        0.75;
+        for (
+            const feature
+            of
+            countyFeatures
+        ) {
 
+            drawGeoJSONLine(
 
-    for (
-        const feature
-        of
-        countyFeatures
-    ) {
+                feature.geometry,
 
-        drawGeoJSONLine(
+                geographyCtx
 
-            feature.geometry,
+            );
 
-            geographyCtx
+        }
 
-        );
+        geographyCtx.stroke();
 
     }
-
-
-    geographyCtx.stroke();
 
 
     /* -------------------------------------------------------------------------------------
        CWA BORDERS
 
        Draw order is intentional:
-       counties -> CWA borders -> states -> cities.
+       counties (when enabled) -> CWA borders -> states -> cities.
        ------------------------------------------------------------------------------------- */
 
     if (cwaBordersEnabled) {
@@ -9724,18 +9773,41 @@ function renderGeography() {
 
     /* -------------------------------------------------------------------------------------
        STATES
+
+       State borders are the top boundary layer. When CWA borders are enabled, first
+       knock out the CWA stroke directly beneath state lines, then draw the normal
+       black state outline. This prevents a thick CWA line from showing around the
+       sides of a state border while keeping the normal 1.75 px state styling.
        ------------------------------------------------------------------------------------- */
 
-    geographyCtx.beginPath();
+    if (cwaBordersEnabled && cwaFeatures.length) {
 
+        geographyCtx.save();
+        geographyCtx.globalCompositeOperation = "destination-out";
+        geographyCtx.beginPath();
+        geographyCtx.strokeStyle = "rgba(0,0,0,1)";
+        geographyCtx.lineWidth = Math.max(2.75, cwaBorderWidth + 1.5);
+        geographyCtx.lineJoin = "round";
+        geographyCtx.lineCap = "round";
+
+        for (const feature of stateFeatures) {
+            drawGeoJSONLine(feature.geometry, geographyCtx);
+        }
+
+        geographyCtx.stroke();
+        geographyCtx.restore();
+    }
+
+    geographyCtx.beginPath();
 
     geographyCtx.strokeStyle =
         "rgba(0,0,0,1.0)";
 
-
     geographyCtx.lineWidth =
         1.75;
 
+    geographyCtx.lineJoin = "round";
+    geographyCtx.lineCap = "round";
 
     for (
         const feature
@@ -9752,7 +9824,6 @@ function renderGeography() {
         );
 
     }
-
 
     geographyCtx.stroke();
 
@@ -10997,6 +11068,23 @@ if (sectorSelect) {
 
         }
 
+    );
+
+}
+
+
+/* =========================================================================================
+   COUNTIES TOGGLE
+   ========================================================================================= */
+
+if (countiesToggle) {
+
+    countiesToggle.addEventListener(
+        "change",
+        event => {
+            countiesEnabled = event.target.checked;
+            renderGeography();
+        }
     );
 
 }
