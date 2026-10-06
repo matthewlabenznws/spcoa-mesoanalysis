@@ -12668,7 +12668,11 @@ async function saveTimelineGif() {
         const gif = new GIF({
             workers: 2,
             quality: 1,
-            dither: "FloydSteinberg-serpentine",
+            // IMPORTANT: Do not dither meteorological fills. Floyd-Steinberg
+            // dithering creates the grainy/speckled appearance seen in exported
+            // GIFs. Let gif.js quantize directly to the nearest palette color so
+            // filled fields retain clean, solid color regions.
+            dither: false,
             repeat: 0,
             workerScript: workerUrl
         });
