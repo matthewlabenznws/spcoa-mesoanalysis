@@ -9011,13 +9011,8 @@ function drawGeoJSONLine(
    CITY PROPERTY HELPERS
    ========================================================================================= */
 
-function getCityName(
-    feature
-) {
-
-    const properties =
-        feature.properties || {};
-
+function getCityName(feature) {
+    const properties = feature.properties || {};
 
     return (
         properties.name ||
@@ -9026,17 +9021,23 @@ function getCityName(
         properties.CITY ||
         ""
     );
-
 }
 
 
-function getCityClass(
-    feature
-) {
+function getCityStateFP(feature) {
+    const properties = feature.properties || {};
 
-    const properties =
-        feature.properties || {};
+    return String(
+        properties.STATEFP ??
+        properties.statefp ??
+        properties.state_fips ??
+        ""
+    ).padStart(2, "0");
+}
 
+
+function getCityClass(feature) {
+    const properties = feature.properties || {};
 
     const value =
         properties.city_class ??
@@ -9045,108 +9046,155 @@ function getCityClass(
         properties.scalerank ??
         5;
 
+    const numeric = Number(value);
 
-    const numeric =
-        Number(
-            value
-        );
-
-
-    return Number.isFinite(
-        numeric
-    )
+    return Number.isFinite(numeric)
         ? numeric
         : 5;
+}
 
+
+/*
+ * The old cities.geojson contains many real U.S. places that happen to
+ * share famous city names.  Their source city_class values make some tiny
+ * same-name towns look as important as the major city.
+ *
+ * These keys preserve the intended major/regional place while allowing the
+ * other same-name places to fall back to a much lower priority.
+ */
+const PRIMARY_SAME_NAME_CITY_KEYS = new Set([
+    "dallas|48",
+    "houston|48",
+    "los angeles|06",
+    "new york|36",
+    "philadelphia|42",
+    "phoenix|04",
+    "san antonio|48",
+    "san diego|06",
+    "denver|08",
+    "des moines|19",
+    "kansas city|20",
+    "kansas city|29",
+    "minneapolis|27",
+    "st. louis|29",
+    "cheyenne|56",
+    "dodge city|20",
+    "garden city|20",
+    "hays|20",
+    "rapid city|46"
+]);
+
+
+/*
+ * Small operationally useful LBF-area towns can be promoted independently
+ * of their population-based source class.
+ */
+const LBF_CITY_PRIORITY_OVERRIDES = new Map([
+    ["north platte|31", 2],
+    ["valentine|31", 3],
+    ["ogallala|31", 3],
+    ["imperial|31", 3],
+    ["broken bow|31", 3],
+    ["ainsworth|31", 3],
+    ["o'neill|31", 3],
+    ["burwell|31", 4],
+    ["mullen|31", 4],
+    ["thedford|31", 4]
+]);
+
+
+/*
+ * Places that we intentionally do not want forced onto the operational map.
+ * They can remain in cities.geojson without being rendered.
+ */
+const HIDDEN_CITY_KEYS = new Set([
+    "sutherland|31"
+]);
+
+
+function getCityKey(feature) {
+    return (
+        `${getCityName(feature).trim().toLowerCase()}|` +
+        `${getCityStateFP(feature)}`
+    );
+}
+
+
+function getEffectiveCityClass(feature) {
+    const key = getCityKey(feature);
+    const name = getCityName(feature).trim().toLowerCase();
+    const sourceClass = getCityClass(feature);
+
+    if (LBF_CITY_PRIORITY_OVERRIDES.has(key)) {
+        return LBF_CITY_PRIORITY_OVERRIDES.get(key);
+    }
+
+    /*
+     * If a name appears more than once in the dataset and one of those
+     * occurrences is a recognized primary city, demote the other same-name
+     * places.  This is what prevents Denver, Garden City, Minneapolis, etc.
+     * from being repeated everywhere at regional zoom.
+     */
+    const hasPrimaryVersion = cityFeatures.some(candidate => {
+        const candidateName = getCityName(candidate).trim().toLowerCase();
+        return (
+            candidateName === name &&
+            PRIMARY_SAME_NAME_CITY_KEYS.has(getCityKey(candidate))
+        );
+    });
+
+    if (
+        hasPrimaryVersion &&
+        !PRIMARY_SAME_NAME_CITY_KEYS.has(key)
+    ) {
+        return Math.max(sourceClass, 5);
+    }
+
+    return sourceClass;
 }
 
 
 /* =========================================================================================
-   CITY VISIBILITY
+   CITY VISIBILITY / PRIORITY
    ========================================================================================= */
 
-function cityVisibleAtZoom(
-    feature,
-    zoom
-) {
+function cityVisibleAtZoom(feature, zoom) {
+    const key = getCityKey(feature);
 
-    const name =
-        getCityName(
-            feature
-        );
-
-
-    const cityClass =
-        getCityClass(
-            feature
-        );
-
-
-    /*
-     * North Platte is promoted so it appears with the regional-class
-     * cities even if its source city class is lower.
-     */
-    if (
-        name.toLowerCase() ===
-        "north platte"
-    ) {
-
-        return (
-            zoom >= 4
-        );
-
+    if (HIDDEN_CITY_KEYS.has(key)) {
+        return false;
     }
 
+    const cityClass = getEffectiveCityClass(feature);
+
+    if (cityClass <= 1) return zoom >= 3.0;
+    if (cityClass === 2) return zoom >= 3.7;
+    if (cityClass === 3) return zoom >= 4.6;
+    if (cityClass === 4) return zoom >= 5.4;
 
     /*
-     * Major cities.
+     * Truly small towns wait until the user is zoomed in.  This keeps the
+     * regional view clean while still allowing local detail.
      */
-    if (
-        cityClass <= 2
-    ) {
+    return zoom >= 7.0;
+}
 
-        return (
-            zoom >= 2
-        );
 
+function getCityPriority(feature) {
+    const cityClass = getEffectiveCityClass(feature);
+    const key = getCityKey(feature);
+
+    let priority = 1000 - (cityClass * 100);
+
+    if (PRIMARY_SAME_NAME_CITY_KEYS.has(key)) {
+        priority += 50;
     }
 
-
-    /*
-     * Regional cities.
-     */
-    if (
-        cityClass === 3
-    ) {
-
-        return (
-            zoom >= 4
-        );
-
+    if (LBF_CITY_PRIORITY_OVERRIDES.has(key)) {
+        priority += 75;
     }
 
-
-    /*
-     * Local cities.
-     */
-    if (
-        cityClass === 4
-    ) {
-
-        return (
-            zoom >= 5
-        );
-
-    }
-
-
-    /*
-     * Small cities.
-     */
-    return (
-        zoom >= 6
-    );
-
+    return priority;
 }
 
 
@@ -9154,63 +9202,69 @@ function cityVisibleAtZoom(
    CITY LABEL SIZE
    ========================================================================================= */
 
-function getCityFont(
-    feature
-) {
+function getCityFont(feature) {
+    const cityClass = getEffectiveCityClass(feature);
 
-    const name =
-        getCityName(
-            feature
-        );
-
-
-    const cityClass =
-        getCityClass(
-            feature
-        );
-
-
-    /*
-     * North Platte receives the regional-city treatment.
-     */
-    if (
-        name.toLowerCase() ===
-        "north platte"
-    ) {
-
-        return (
-            "12px Arial, Helvetica, sans-serif"
-        );
-
+    if (cityClass <= 1) {
+        return "600 12px Arial, Helvetica, sans-serif";
     }
 
-
-    if (
-        cityClass <= 2
-    ) {
-
-        return (
-            "12px Arial, Helvetica, sans-serif"
-        );
-
+    if (cityClass === 2) {
+        return "600 11.5px Arial, Helvetica, sans-serif";
     }
 
-
-    if (
-        cityClass === 3
-    ) {
-
-        return (
-            "11px Arial, Helvetica, sans-serif"
-        );
-
+    if (cityClass === 3) {
+        return "600 11px Arial, Helvetica, sans-serif";
     }
 
+    if (cityClass === 4) {
+        return "600 10.5px Arial, Helvetica, sans-serif";
+    }
 
-    return (
-        "10px Arial, Helvetica, sans-serif"
+    return "500 10px Arial, Helvetica, sans-serif";
+}
+
+
+/* =========================================================================================
+   CITY COLLISION HELPERS
+   ========================================================================================= */
+
+function cityBoxesOverlap(a, b, padding = 4) {
+    return !(
+        a.right + padding < b.left ||
+        a.left - padding > b.right ||
+        a.bottom + padding < b.top ||
+        a.top - padding > b.bottom
+    );
+}
+
+
+function getCityLabelBox(ctx, name, point) {
+    const metrics = ctx.measureText(name);
+
+    const width = Math.max(
+        1,
+        metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight
     );
 
+    const height = Math.max(
+        10,
+        metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent
+    );
+
+    /*
+     * A little extra room accounts for the white halo and keeps neighboring
+     * labels from visually touching.
+     */
+    const xPad = 4;
+    const yPad = 3;
+
+    return {
+        left: point.x - width / 2 - xPad,
+        right: point.x + width / 2 + xPad,
+        top: point.y - height / 2 - yPad,
+        bottom: point.y + height / 2 + yPad
+    };
 }
 
 
@@ -9219,174 +9273,114 @@ function getCityFont(
    ========================================================================================= */
 
 function renderCities() {
-
-    if (
-        !citiesEnabled
-    ) {
-
+    if (!citiesEnabled) {
         return;
-
     }
 
-
-    const zoom =
-        map.getZoom();
-
-
-    const rect =
-        mapWrapper.getBoundingClientRect();
-
+    const zoom = map.getZoom();
+    const rect = mapWrapper.getBoundingClientRect();
 
     geographyCtx.save();
 
-
-    geographyCtx.textAlign =
-        "center";
-
-
-    geographyCtx.textBaseline =
-        "middle";
-
-
-    geographyCtx.lineJoin =
-        "round";
-
+    geographyCtx.textAlign = "center";
+    geographyCtx.textBaseline = "middle";
+    geographyCtx.lineJoin = "round";
 
     /*
-     * There are intentionally NO city dots.
-     *
-     * Only the city names are rendered.
+     * Build the eligible list first, then render highest-priority cities
+     * first.  Lower-priority labels are skipped whenever they collide with a
+     * label that has already been accepted.
      */
-    for (
-        const feature
-        of
-        cityFeatures
-    ) {
+    const candidates = [];
 
+    for (const feature of cityFeatures) {
         if (
             !feature.geometry ||
-            feature.geometry.type !==
-                "Point"
+            feature.geometry.type !== "Point" ||
+            !cityVisibleAtZoom(feature, zoom)
         ) {
-
             continue;
-
         }
 
+        const name = getCityName(feature);
+        const coordinates = feature.geometry.coordinates;
 
         if (
-            !cityVisibleAtZoom(
-                feature,
-                zoom
-            )
-        ) {
-
-            continue;
-
-        }
-
-
-        const name =
-            getCityName(
-                feature
-            );
-
-
-        if (!name) {
-
-            continue;
-
-        }
-
-
-        const coordinates =
-            feature.geometry.coordinates;
-
-
-        if (
-            !Array.isArray(
-                coordinates
-            ) ||
-
+            !name ||
+            !Array.isArray(coordinates) ||
             coordinates.length < 2
         ) {
-
             continue;
-
         }
 
+        const point = map.project(coordinates);
 
-        const point =
-            map.project(
-                coordinates
-            );
-
-
-        /*
-         * Skip labels well outside the visible map.
-         */
         if (
             point.x < -100 ||
-            point.x >
-                rect.width + 100 ||
-
+            point.x > rect.width + 100 ||
             point.y < -50 ||
-            point.y >
-                rect.height + 50
+            point.y > rect.height + 50
         ) {
-
             continue;
-
         }
 
-
-        geographyCtx.font =
-            getCityFont(
-                feature
-            );
-
-
-        /*
-         * Small white halo to preserve readability over weather fields.
-         */
-        geographyCtx.strokeStyle =
-            "rgba(255,255,255,0.95)";
-
-
-        geographyCtx.lineWidth =
-            3;
-
-
-        geographyCtx.strokeText(
-
+        candidates.push({
+            feature,
             name,
-
-            point.x,
-
-            point.y
-
-        );
-
-
-        geographyCtx.fillStyle =
-            "#333333";
-
-
-        geographyCtx.fillText(
-
-            name,
-
-            point.x,
-
-            point.y
-
-        );
-
+            point,
+            priority: getCityPriority(feature)
+        });
     }
 
+    candidates.sort((a, b) => {
+        if (b.priority !== a.priority) {
+            return b.priority - a.priority;
+        }
+
+        /*
+         * Stable geographic tie-breaker so labels do not flicker while
+         * panning or zooming.
+         */
+        const aKey = getCityKey(a.feature);
+        const bKey = getCityKey(b.feature);
+        return aKey.localeCompare(bKey);
+    });
+
+    const occupiedBoxes = [];
+
+    for (const candidate of candidates) {
+        const { feature, name, point } = candidate;
+
+        geographyCtx.font = getCityFont(feature);
+
+        const box = getCityLabelBox(
+            geographyCtx,
+            name,
+            point
+        );
+
+        const collides = occupiedBoxes.some(existing =>
+            cityBoxesOverlap(box, existing, 3)
+        );
+
+        if (collides) {
+            continue;
+        }
+
+        occupiedBoxes.push(box);
+
+        /*
+         * No city dots: only clean labels with a small white halo.
+         */
+        geographyCtx.strokeStyle = "rgba(255,255,255,0.96)";
+        geographyCtx.lineWidth = 3;
+        geographyCtx.strokeText(name, point.x, point.y);
+
+        geographyCtx.fillStyle = "#333333";
+        geographyCtx.fillText(name, point.x, point.y);
+    }
 
     geographyCtx.restore();
-
 }
 
 
