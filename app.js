@@ -645,11 +645,9 @@ const SCP_COLORS = ["#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3","#a5a5a5",
    Display units: 10^-5 s^-1. Low deformation is kept light; stronger deformation
    progresses through cyan/blue/purple/red to match the SPC-style diagnostic feel.
    ========================================================================================= */
-const SFC_DEFORMATION_BOUNDS = [0,1,2,3,4,5,6,7,8,9,10,12,14,16,18,20];
+const SFC_DEFORMATION_BOUNDS = [8,12,16,20,24,28,32];
 const SFC_DEFORMATION_COLORS = [
-    "#ffffff", "#e8f7ff", "#c8ecff", "#9fddff", "#73c9f2",
-    "#4eaddd", "#3d8fc7", "#526fc0", "#6d58b5", "#8846a8",
-    "#a43d92", "#bd3f72", "#d54b55", "#e66a3f", "#f28a32"
+    "#7cff00", "#e6dc00", "#c98900", "#df4b18", "#c20d20", "#8d148f"
 ];
 const SFC_DEFORMATION_RGB = SFC_DEFORMATION_COLORS.map(hexToRgb);
 
@@ -792,13 +790,6 @@ const WEATHER_FIELDS = {
         type: "dewpoint"
     },
 
-    sfc_total_deformation: {
-        name: "SFC Total Deformation",
-        shortName: "SFC Total Deformation",
-        units: "10⁻⁵ s⁻¹",
-        type: "surface_deformation"
-    },
-
     thetae_2m: {
         name: "2 m Equivalent Potential Temperature",
         shortName: "2 m Theta-e",
@@ -878,7 +869,7 @@ const VECTOR_FIELDS = {
         shortName: "SFC Axes of Dilatation",
         defaultColor: "#1f5fbf",
         renderType: "axis_segments",
-        units: "orientation"
+        units: "10⁻⁵ s⁻¹"
     },
 
     srwind_0_2km: {
@@ -5957,7 +5948,7 @@ function getFieldColor(
     if (definition.type === "surface_deformation") {
         return getBinnedWindColor(
             value,
-            0,
+            8,
             SFC_DEFORMATION_BOUNDS,
             SFC_DEFORMATION_RGB
         );
@@ -6808,11 +6799,15 @@ function drawAxisOfDilatation(ctx, x, y, axisU, axisV, color = "#1f5fbf") {
     const magnitude = Math.hypot(axisU, axisV);
     if (!Number.isFinite(magnitude) || magnitude < 1.0e-6) return;
 
-    // Backend supplies a unit vector in projected x/y coordinates. Canvas y increases
-    // downward, so the projected y component is reversed for screen coordinates.
+    // Backend magnitude is resultant deformation in 10^-5 s^-1; direction is the
+    // axis of dilatation. Canvas y increases downward, so projected y is reversed.
     const dx = axisU / magnitude;
     const dy = -axisV / magnitude;
-    const halfLength = 12;
+
+    // SPC-style convention: segment length increases with resultant deformation.
+    // Keep weak axes visible but cap extreme values so isolated maxima cannot dominate.
+    const deformation = Math.min(Math.max(magnitude, 0), 32);
+    const halfLength = 2.5 + 0.55 * deformation;
 
     ctx.save();
     ctx.strokeStyle = color;
