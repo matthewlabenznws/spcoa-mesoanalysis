@@ -1307,6 +1307,10 @@ let contourMetadata = {};
 
 let citiesEnabled = false;
 
+let cwaBordersEnabled = false;
+
+let cwaBorderColor = "#6f42c1";
+
 
 /* =========================================================================================
    CACHES
@@ -1600,6 +1604,75 @@ const sectorSelect =
 
 const citiesToggle =
     document.getElementById("cities-toggle");
+
+/*
+ * CWA borders are injected into the existing Map Layers card so index.html
+ * does not need to change.  The color picker redraws the geography canvas
+ * immediately and is also honored by PNG/GIF exports because those exports
+ * composite geographyCanvas.
+ */
+let cwaBordersToggle =
+    document.getElementById("cwa-borders-toggle");
+
+let cwaBorderColorInput =
+    document.getElementById("cwa-border-color");
+
+function ensureCwaBorderControls() {
+
+    if (cwaBordersToggle && cwaBorderColorInput) {
+        return;
+    }
+
+    const citiesRow =
+        citiesToggle
+            ? citiesToggle.closest("label")
+            : null;
+
+    const mapLayersContainer =
+        citiesRow
+            ? citiesRow.parentElement
+            : null;
+
+    if (!mapLayersContainer) {
+        return;
+    }
+
+    const label = document.createElement("label");
+    label.className = "toggle-row";
+    label.style.display = "flex";
+    label.style.alignItems = "center";
+    label.style.gap = "6px";
+
+    cwaBordersToggle = document.createElement("input");
+    cwaBordersToggle.type = "checkbox";
+    cwaBordersToggle.id = "cwa-borders-toggle";
+    cwaBordersToggle.checked = false;
+
+    const text = document.createElement("span");
+    text.textContent = "CWA Borders";
+
+    cwaBorderColorInput = document.createElement("input");
+    cwaBorderColorInput.type = "color";
+    cwaBorderColorInput.id = "cwa-border-color";
+    cwaBorderColorInput.value = cwaBorderColor;
+    cwaBorderColorInput.title = "CWA border color";
+    cwaBorderColorInput.setAttribute("aria-label", "CWA border color");
+    cwaBorderColorInput.style.width = "28px";
+    cwaBorderColorInput.style.height = "22px";
+    cwaBorderColorInput.style.padding = "0";
+    cwaBorderColorInput.style.border = "none";
+    cwaBorderColorInput.style.background = "transparent";
+    cwaBorderColorInput.style.cursor = "pointer";
+    cwaBorderColorInput.style.marginLeft = "auto";
+
+    label.appendChild(cwaBordersToggle);
+    label.appendChild(text);
+    label.appendChild(cwaBorderColorInput);
+
+    citiesRow.insertAdjacentElement("afterend", label);
+}
+
+ensureCwaBorderControls();
 
 const surfaceWindToggle =
     document.getElementById("sfc-wind-toggle");
@@ -2345,6 +2418,8 @@ map.addControl(
 let countyFeatures = [];
 
 let stateFeatures = [];
+
+let cwaFeatures = [];
 
 let cityFeatures = [];
 
@@ -8774,6 +8849,45 @@ async function loadGeography() {
 
 
     /*
+     * NWS County Warning Area boundaries are stored separately as GeoJSON.
+     * Failure to load them should not prevent the rest of the map from working.
+     */
+    try {
+
+        const cwaResponse =
+            await fetch(
+                "data/cwa_boundaries.geojson"
+            );
+
+        if (cwaResponse.ok) {
+
+            const cwas =
+                await cwaResponse.json();
+
+            cwaFeatures =
+                cwas.features || [];
+
+        }
+        else {
+
+            console.warn(
+                "Unable to load data/cwa_boundaries.geojson"
+            );
+
+        }
+
+    }
+    catch (error) {
+
+        console.warn(
+            "CWA boundaries could not be loaded:",
+            error
+        );
+
+    }
+
+
+    /*
      * Cities are stored separately as GeoJSON.
      *
      * Failure to load cities should not prevent the rest of the map
@@ -9435,6 +9549,50 @@ function renderGeography() {
 
 
     geographyCtx.stroke();
+
+
+    /* -------------------------------------------------------------------------------------
+       CWA BORDERS
+
+       Draw order is intentional:
+       counties -> CWA borders -> states -> cities.
+       ------------------------------------------------------------------------------------- */
+
+    if (cwaBordersEnabled) {
+
+        geographyCtx.beginPath();
+
+        geographyCtx.strokeStyle =
+            cwaBorderColor;
+
+        geographyCtx.lineWidth =
+            1.35;
+
+        geographyCtx.lineJoin =
+            "round";
+
+        geographyCtx.lineCap =
+            "round";
+
+        for (
+            const feature
+            of
+            cwaFeatures
+        ) {
+
+            drawGeoJSONLine(
+
+                feature.geometry,
+
+                geographyCtx
+
+            );
+
+        }
+
+        geographyCtx.stroke();
+
+    }
 
 
     /* -------------------------------------------------------------------------------------
@@ -10743,6 +10901,50 @@ if (citiesToggle) {
 
 
 /* =========================================================================================
+   CWA BORDER TOGGLE + COLOR
+   ========================================================================================= */
+
+if (cwaBordersToggle) {
+
+    cwaBordersToggle.addEventListener(
+
+        "change",
+
+        event => {
+
+            cwaBordersEnabled =
+                event.target.checked;
+
+            renderGeography();
+
+        }
+
+    );
+
+}
+
+
+if (cwaBorderColorInput) {
+
+    cwaBorderColorInput.addEventListener(
+
+        "input",
+
+        event => {
+
+            cwaBorderColor =
+                event.target.value || "#6f42c1";
+
+            renderGeography();
+
+        }
+
+    );
+
+}
+
+
+/* =========================================================================================
    WIND TOGGLES + PER-LAYER COLOR PICKERS
    ========================================================================================= */
 
@@ -11115,6 +11317,23 @@ async function initialize() {
 
             citiesEnabled =
                 citiesToggle.checked;
+
+        }
+
+
+        if (cwaBordersToggle) {
+
+            cwaBordersEnabled =
+                cwaBordersToggle.checked;
+
+        }
+
+
+        if (cwaBorderColorInput) {
+
+            cwaBorderColor =
+                cwaBorderColorInput.value ||
+                cwaBorderColor;
 
         }
 
