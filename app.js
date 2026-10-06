@@ -1005,6 +1005,20 @@ const vectorColors = Object.fromEntries(
 
 const CONTOUR_FIELDS = {
 
+    dcp_contours: {
+        name: "Derecho Composite Parameter", shortName: "DCP", units: "",
+        levels: [1, 2, 4, 6, 8, 10, 12], colorScheme: "dcp_spc"
+    },
+    lhp_contours: {
+        name: "Large Hail Parameter", shortName: "LHP", units: "",
+        levels: [4, 6, 8, 12, 16, 20], colorScheme: "lhp_spc"
+    },
+    shp_contours: {
+        name: "Significant Hail Parameter", shortName: "SHIP", units: "",
+        levels: [0.5, 1, 1.5, 2, 3, 5], colorScheme: "shp_spc"
+    },
+
+
     theta_2m_contours: { name: "2 m Potential Temperature", shortName: "2 m Theta", units: "K", interval: 2, minimum: null, colorScheme: "theta", color: "#d7191c", smoothGeometry: true, smoothIterations: 4 },
     thetae_2m_contours: { name: "2 m Equivalent Potential Temperature", shortName: "2 m Theta-e", units: "K", interval: 2, minimum: 310, anchor: 310, colorScheme: "thetae", color: null, smoothGeometry: true, smoothIterations: 4 },
 
@@ -1290,6 +1304,9 @@ const activeOverlays = {
     frontogenesis700: false,
     lclHeight: false,
     stpEff: false,
+    dcpContours: false,
+    lhpContours: false,
+    shpContours: false,
     thetaContours: false,
     thetaeContours: false,
     divergence925: false,
@@ -2153,6 +2170,24 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         stateKey: "stpEff",
         toggleId: "stp-eff-toggle",
         label: "Effective-Layer STP"
+    },
+    {
+        field: "dcp_contours",
+        stateKey: "dcpContours",
+        toggleId: "dcp-contours-toggle",
+        label: "Derecho Composite Parameter"
+    },
+    {
+        field: "lhp_contours",
+        stateKey: "lhpContours",
+        toggleId: "lhp-contours-toggle",
+        label: "Large Hail Parameter"
+    },
+    {
+        field: "shp_contours",
+        stateKey: "shpContours",
+        toggleId: "shp-contours-toggle",
+        label: "Significant Hail Parameter"
     },
     {
         field: "theta_2m_contours",
@@ -8296,6 +8331,15 @@ async function renderContourField(
             ? Number(metadata.display.anchor)
             : (Number.isFinite(Number(definition.anchor)) ? Number(definition.anchor) : 0);
 
+    const explicitLevelsRaw =
+        (metadata.display && Array.isArray(metadata.display.levels) && metadata.display.levels.length)
+            ? metadata.display.levels
+            : (Array.isArray(definition.levels) ? definition.levels : null);
+
+    const explicitLevels = explicitLevelsRaw
+        ? explicitLevelsRaw.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+        : null;
+
     let firstLevel =
         contourAnchor + Math.ceil(
             (minimumValue - contourAnchor) / interval
@@ -8340,7 +8384,23 @@ async function renderContourField(
             );
     }
 
-    if (firstLevel > lastLevel) {
+    const levelsToRender = explicitLevels
+        ? explicitLevels.filter(level =>
+            level >= minimumValue &&
+            level <= maximumValue &&
+            (!Number.isFinite(configuredMinimum) || level >= configuredMinimum) &&
+            (!Number.isFinite(configuredMaximum) || level <= configuredMaximum)
+        )
+        : (() => {
+            const levels = [];
+            if (firstLevel > lastLevel) return levels;
+            for (let level = firstLevel; level <= lastLevel + interval * 0.001; level += interval) {
+                levels.push(level);
+            }
+            return levels;
+        })();
+
+    if (levelsToRender.length === 0) {
         return;
     }
 
@@ -8411,11 +8471,7 @@ async function renderContourField(
     contourCtx.lineJoin = "round";
     contourCtx.lineCap = "round";
 
-    for (
-        let level = firstLevel;
-        level <= lastLevel;
-        level += interval
-    ) {
+    for (const level of levelsToRender) {
 
         const contourColor =
             colorScheme === "pressure_temperature_isotherms"
@@ -8434,6 +8490,12 @@ async function renderContourField(
                                         : (
                                             colorScheme === "stp"
                                                 ? getDiscreteContourColor(level, STP_BOUNDS, STP_COLORS)
+                                                : colorScheme === "dcp_spc"
+                                                    ? (level >= 12 ? "#a00000" : level >= 10 ? "#c40000" : level >= 8 ? "#e00000" : level >= 6 ? "#ff1f1f" : level >= 4 ? "#ff3b1f" : level >= 2 ? "#ff6500" : "#e88924")
+                                                : colorScheme === "lhp_spc"
+                                                    ? (level >= 20 ? "#ff1f1f" : level >= 16 ? "#ff3b1f" : level >= 12 ? "#f2c300" : level >= 8 ? "#f0b800" : level >= 6 ? "#e89b16" : "#b46b2a")
+                                                : colorScheme === "shp_spc"
+                                                    ? (level >= 5 ? "#ff00ff" : level >= 3 ? "#ff2a1a" : level >= 2 ? "#f2c300" : level >= 1 ? "#f39a18" : "#9b542b")
                                                 : colorScheme === "theta"
                                                     ? "#d7191c"
                                                     : colorScheme === "thetae"
@@ -8454,6 +8516,24 @@ async function renderContourField(
             contourCtx.setLineDash([]);
         } else if (isThetaeContour) {
             contourCtx.lineWidth = level >= 350 ? 2.5 : (level >= 330 ? 1.75 : 1.5);
+            contourCtx.setLineDash([]);
+        } else if (
+            (colorScheme === "shp_spc" && Math.abs(level - 0.5) < 0.001) ||
+            (colorScheme === "lhp_spc" && Math.abs(level - 4) < 0.001)
+        ) {
+            contourCtx.lineWidth = 1.25;
+            contourCtx.setLineDash([7, 6]);
+        } else if (
+            colorScheme === "dcp_spc" ||
+            colorScheme === "lhp_spc" ||
+            colorScheme === "shp_spc"
+        ) {
+            contourCtx.lineWidth =
+                (colorScheme === "shp_spc" && level >= 5) ||
+                (colorScheme === "lhp_spc" && level >= 16) ||
+                (colorScheme === "dcp_spc" && level >= 8)
+                    ? 2.0
+                    : 1.5;
             contourCtx.setLineDash([]);
         } else {
             contourCtx.setLineDash([]);
@@ -11023,6 +11103,9 @@ if (fieldSelect) {
                 activeOverlays.warmCloudDepth ||
                 activeOverlays.lclHeight ||
                 activeOverlays.stpEff ||
+                activeOverlays.dcpContours ||
+                activeOverlays.lhpContours ||
+                activeOverlays.shpContours ||
                 activeOverlays.divergence925 ||
                 activeOverlays.divergence850 ||
                 activeOverlays.divergence700 ||
