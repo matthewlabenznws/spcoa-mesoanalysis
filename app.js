@@ -12805,3 +12805,332 @@ requestAnimationFrame(renderAnnotations);
 
 /* Timeline manifest refresh is intentionally lightweight; tiles remain demand-loaded. */
 setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
+
+/* =========================================================================================
+   MULTI-PANEL VIEWER (1 / 2 / 4)
+   -----------------------------------------------------------------------------------------
+   Architecture:
+   - The top-level page keeps the existing sidebar/timeline as the controller.
+   - Each visible panel is an embedded copy of this same viewer (?embedded=1&panel=N).
+   - Field/overlay controls are sent only to the active panel.
+   - Timeline/run and camera changes are synchronized across all visible panels.
+   - Save PNG requests a lossless panel capture from each embedded viewer and combines them.
+   ========================================================================================= */
+
+const MULTIPANEL_QUERY = new URLSearchParams(window.location.search);
+const MULTIPANEL_EMBEDDED = MULTIPANEL_QUERY.get("embedded") === "1";
+const MULTIPANEL_PANEL_ID = Number(MULTIPANEL_QUERY.get("panel") || 1);
+
+function mpNextFrame() {
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+async function mpCapturePanelDataUrl() {
+    renderAnnotations();
+    await mpNextFrame();
+    const rect = mapWrapper.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    const footerH = 36;
+    const out = document.createElement("canvas");
+    out.width = w;
+    out.height = h + footerH;
+    const ctx = out.getContext("2d", {alpha:false});
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0,0,out.width,out.height);
+    const layers = [map.getCanvas(), weatherCanvas, vectorCanvas, contourCanvas, geographyCanvas, contourLabelCanvas, annotationCanvas].filter(Boolean);
+    for (const layer of layers) {
+        ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, w, h);
+    }
+
+    // Recreate the live legend on the capture.
+    if (legend && legend.style.display !== "none" && activeField && activeField !== "none") {
+        const lr = legend.getBoundingClientRect();
+        const lx = Math.max(8, Math.round(lr.left - rect.left));
+        const ly = Math.max(8, Math.round(lr.top - rect.top));
+        const lw = Math.min(w-lx-8, Math.max(220, Math.round(lr.width)));
+        const lh = Math.max(58, Math.round(lr.height));
+        ctx.fillStyle = "rgba(20,40,57,.96)"; ctx.fillRect(lx,ly,lw,lh);
+        ctx.strokeStyle = "#41647d"; ctx.lineWidth=1; ctx.strokeRect(lx+.5,ly+.5,lw-1,lh-1);
+        ctx.fillStyle="#f4f8fb"; ctx.font='600 12px Inter,"Segoe UI",Arial,sans-serif'; ctx.textBaseline="top";
+        ctx.fillText(legendTitle ? legendTitle.textContent : "", lx+12, ly+9);
+        if (legendCanvas && legendCanvas.width) ctx.drawImage(legendCanvas,lx+12,ly+28,lw-24,16);
+        if (legendLabels) {
+            const labels=Array.from(legendLabels.querySelectorAll(".legend-label"));
+            ctx.font='500 9px Inter,"Segoe UI",Arial,sans-serif'; ctx.fillStyle="#c7d6e1";
+            labels.forEach((el,i)=>{
+                const frac=labels.length<=1?0:i/(labels.length-1);
+                ctx.textAlign=i===0?"left":(i===labels.length-1?"right":"center");
+                ctx.fillText(el.textContent||"",lx+12+frac*(lw-24),ly+48);
+            });
+            ctx.textAlign="left";
+        }
+    }
+
+    // Per-panel active-layer footer.
+    ctx.fillStyle="#f7f8fa"; ctx.fillRect(0,h,w,footerH);
+    ctx.strokeStyle="#aeb7bf"; ctx.beginPath(); ctx.moveTo(0,h+.5); ctx.lineTo(w,h+.5); ctx.stroke();
+    const descriptions=getActiveLayerDescriptions().map(x=>x.text);
+    descriptions.push(`Valid: ${formatAnalysisTime(currentAnalysisTime)}`);
+    ctx.fillStyle="#17232d"; ctx.font='650 11px Inter,"Segoe UI",Arial,sans-serif'; ctx.textAlign="center"; ctx.textBaseline="middle";
+    let label=descriptions.join("  |  ");
+    while (ctx.measureText(label).width > w-20 && label.length>20) label=label.slice(0,-4)+"…";
+    ctx.fillText(label,w/2,h+footerH/2);
+    ctx.textAlign="left";
+    return out.toDataURL("image/png");
+}
+
+if (MULTIPANEL_EMBEDDED) {
+    document.documentElement.classList.add("embedded-view");
+    document.body.classList.add("embedded-view");
+    const layoutCard=document.getElementById("layout-card"); if(layoutCard) layoutCard.style.display="none";
+    let mpSuppressCamera=false;
+
+    function mpApplyControl(msg) {
+        if (msg.kind === "field") {
+            const el=document.querySelector(`.field-choice[data-field="${CSS.escape(msg.field)}"]`);
+            if(el) el.click();
+            return;
+        }
+        if (msg.kind === "control") {
+            let el=null;
+            if(msg.id) el=document.getElementById(msg.id);
+            if(!el && msg.vectorField) el=document.querySelector(`input[data-vector-field="${CSS.escape(msg.vectorField)}"]`);
+            if(!el) return;
+            if(el.type === "checkbox") el.checked=Boolean(msg.checked);
+            else if(msg.value !== undefined) el.value=msg.value;
+            el.dispatchEvent(new Event(msg.eventType || "change", {bubbles:true}));
+            return;
+        }
+        if (msg.kind === "tool") {
+            const el=document.querySelector(`.draw-tool[data-tool="${CSS.escape(msg.tool)}"]`); if(el) el.click();
+            return;
+        }
+        if (msg.kind === "button" && msg.id) {
+            const el=document.getElementById(msg.id); if(el) el.click();
+        }
+    }
+
+    window.addEventListener("message", async event => {
+        const msg=event.data || {};
+        if(msg.channel !== "spcoa-multipanel") return;
+        if(msg.type === "control") mpApplyControl(msg.payload || {});
+        else if(msg.type === "camera" && msg.camera) {
+            mpSuppressCamera=true;
+            map.jumpTo({center:msg.camera.center,zoom:msg.camera.zoom,bearing:msg.camera.bearing||0,pitch:msg.camera.pitch||0});
+            setTimeout(()=>{mpSuppressCamera=false;},80);
+        }
+        else if(msg.type === "run" && msg.run) {
+            const item=timelineState.availableRuns.find(x=>x.run===msg.run);
+            if(item && item.run!==currentRun) await switchTimelineRun(item);
+        }
+        else if(msg.type === "capture" && msg.requestId) {
+            try {
+                const dataUrl=await mpCapturePanelDataUrl();
+                parent.postMessage({channel:"spcoa-multipanel",type:"capture-result",requestId:msg.requestId,panel:MULTIPANEL_PANEL_ID,dataUrl},"*");
+            } catch(error) {
+                parent.postMessage({channel:"spcoa-multipanel",type:"capture-result",requestId:msg.requestId,panel:MULTIPANEL_PANEL_ID,error:String(error)},"*");
+            }
+        }
+    });
+
+    map.on("moveend",()=>{
+        if(mpSuppressCamera) return;
+        const c=map.getCenter();
+        parent.postMessage({channel:"spcoa-multipanel",type:"camera",panel:MULTIPANEL_PANEL_ID,camera:{center:[c.lng,c.lat],zoom:map.getZoom(),bearing:map.getBearing(),pitch:map.getPitch()}},"*");
+    });
+    map.once("idle",()=>parent.postMessage({channel:"spcoa-multipanel",type:"ready",panel:MULTIPANEL_PANEL_ID},"*"));
+}
+else {
+    const panelGrid=document.getElementById("panel-grid");
+    const layoutButtons=Array.from(document.querySelectorAll(".layout-btn[data-layout]"));
+    const activePanelLabel=document.getElementById("active-panel-label");
+    const panelStates=Array.from({length:4},()=>({field:"none",controls:{}}));
+    const panelFrames=new Map();
+    const pendingCaptures=new Map();
+    let panelLayout=1;
+    let activePanel=1;
+    let suppressRelay=false;
+    let lastBroadcastRun=null;
+
+    function mpFrame(panel){return panelFrames.get(panel)?.contentWindow || null;}
+    function mpSend(panel,message){const win=mpFrame(panel); if(win) win.postMessage({channel:"spcoa-multipanel",...message},"*");}
+    function mpVisiblePanels(){return Array.from({length:panelLayout},(_,i)=>i+1);}
+    function mpBroadcast(message){mpVisiblePanels().forEach(p=>mpSend(p,message));}
+
+    function mpCreatePanels() {
+        if(!panelGrid) return;
+        panelGrid.innerHTML=""; panelFrames.clear();
+        panelGrid.className=`panel-grid-${panelLayout}`;
+        for(let p=1;p<=panelLayout;p++) {
+            const slot=document.createElement("div"); slot.className="analysis-panel"+(p===activePanel?" active":""); slot.dataset.panel=String(p);
+            const badge=document.createElement("div"); badge.className="panel-badge"; badge.textContent=String(p); slot.appendChild(badge);
+            const frame=document.createElement("iframe");
+            const url=new URL(window.location.href); url.searchParams.set("embedded","1"); url.searchParams.set("panel",String(p));
+            frame.src=url.toString(); frame.title=`Analysis Panel ${p}`; frame.loading="eager"; slot.appendChild(frame);
+            panelFrames.set(p,frame);
+            slot.addEventListener("pointerdown",()=>mpSetActivePanel(p));
+            panelGrid.appendChild(slot);
+        }
+        if(activePanel>panelLayout) activePanel=1;
+        mpUpdatePanelChrome();
+    }
+
+    function mpUpdatePanelChrome(){
+        document.querySelectorAll(".analysis-panel").forEach(el=>el.classList.toggle("active",Number(el.dataset.panel)===activePanel));
+        layoutButtons.forEach(b=>b.classList.toggle("active",Number(b.dataset.layout)===panelLayout));
+        if(activePanelLabel) activePanelLabel.textContent=`Editing Panel ${activePanel}`;
+    }
+
+    function mpControlKey(el){
+        if(el.id) return `#${el.id}`;
+        if(el.dataset?.vectorField) return `vector:${el.dataset.vectorField}`;
+        return null;
+    }
+
+    function mpPayloadForElement(el,eventType="change") {
+        if(el.classList?.contains("field-choice")) return {kind:"field",field:el.dataset.field};
+        if(el.matches?.(".draw-tool[data-tool]")) return {kind:"tool",tool:el.dataset.tool};
+        if(el.id && el.tagName==="BUTTON") return {kind:"button",id:el.id};
+        const key=mpControlKey(el); if(!key) return null;
+        return {kind:"control",id:el.id||null,vectorField:el.dataset?.vectorField||null,checked:el.type==="checkbox"?el.checked:undefined,value:el.type==="checkbox"?undefined:el.value,eventType};
+    }
+
+    function mpRemember(payload) {
+        const st=panelStates[activePanel-1];
+        if(payload.kind==="field") st.field=payload.field;
+        else if(payload.kind==="control") {
+            const key=payload.id?`#${payload.id}`:`vector:${payload.vectorField}`;
+            st.controls[key]={...payload};
+        }
+    }
+
+    function mpApplyStateToController(panel) {
+        const st=panelStates[panel-1];
+        suppressRelay=true;
+        try {
+            const fieldSelect=document.getElementById("field-select");
+            if(fieldSelect && st.field && [...fieldSelect.options].some(o=>o.value===st.field)) {
+                fieldSelect.value=st.field; fieldSelect.dispatchEvent(new Event("change",{bubbles:true}));
+            }
+            document.querySelectorAll(".field-choice").forEach(el=>el.classList.toggle("active",el.dataset.field===st.field));
+            // Reset known checkbox controls before applying this panel's saved values.
+            document.querySelectorAll("#sidebar input[type=checkbox]").forEach(el=>{
+                const key=`#${el.id}`;
+                if(key==="#counties-toggle") return;
+                if(!(key in st.controls) && el.checked){el.checked=false;el.dispatchEvent(new Event("change",{bubbles:true}));}
+            });
+            Object.values(st.controls).forEach(payload=>{
+                let el=payload.id?document.getElementById(payload.id):document.querySelector(`input[data-vector-field="${CSS.escape(payload.vectorField||"")}"]`);
+                if(!el) return;
+                if(el.type==="checkbox") el.checked=Boolean(payload.checked); else if(payload.value!==undefined) el.value=payload.value;
+                el.dispatchEvent(new Event(payload.eventType||"change",{bubbles:true}));
+            });
+        } finally {suppressRelay=false;}
+    }
+
+    function mpSetActivePanel(panel){
+        if(panel<1||panel>panelLayout||panel===activePanel) return;
+        activePanel=panel; mpApplyStateToController(panel); mpUpdatePanelChrome();
+    }
+
+    function mpSetLayout(layout){
+        if(![1,2,4].includes(layout)||layout===panelLayout) return;
+        panelLayout=layout; if(activePanel>layout) activePanel=1; mpCreatePanels();
+    }
+    layoutButtons.forEach(btn=>btn.addEventListener("click",()=>mpSetLayout(Number(btn.dataset.layout))));
+
+    // Relay sidebar controls only to the active panel. Sector is shared because cameras are synchronized.
+    const sidebar=document.getElementById("sidebar");
+    if(sidebar) {
+        sidebar.addEventListener("click",event=>{
+            if(suppressRelay) return;
+            const el=event.target.closest(".field-choice"); if(!el) return;
+            const payload=mpPayloadForElement(el,"click"); if(!payload) return; mpRemember(payload); mpSend(activePanel,{type:"control",payload});
+        },true);
+        sidebar.addEventListener("change",event=>{
+            if(suppressRelay) return;
+            const el=event.target;
+            if(el.id==="sector-select") {const payload=mpPayloadForElement(el,"change"); mpBroadcast({type:"control",payload}); return;}
+            const payload=mpPayloadForElement(el,"change"); if(!payload) return; mpRemember(payload); mpSend(activePanel,{type:"control",payload});
+        },true);
+        sidebar.addEventListener("input",event=>{
+            if(suppressRelay) return;
+            const el=event.target; if(el.type!=="color") return;
+            const payload=mpPayloadForElement(el,"input"); if(!payload) return; mpRemember(payload); mpSend(activePanel,{type:"control",payload});
+        },true);
+    }
+
+    // Annotation toolbar controls affect only the active panel. Save PNG is handled separately below.
+    if(drawingToolbar) {
+        drawingToolbar.addEventListener("click",event=>{
+            const el=event.target.closest("button"); if(!el || el.id==="save-png" || el.id==="save-gif") return;
+            const payload=mpPayloadForElement(el,"click"); if(payload) mpSend(activePanel,{type:"control",payload});
+        },true);
+        drawingToolbar.addEventListener("change",event=>{const payload=mpPayloadForElement(event.target,"change"); if(payload) mpSend(activePanel,{type:"control",payload});},true);
+        drawingToolbar.addEventListener("input",event=>{const payload=mpPayloadForElement(event.target,"input"); if(payload) mpSend(activePanel,{type:"control",payload});},true);
+    }
+
+    // Keep every panel on exactly the same analysis run. This also keeps playback synchronized.
+    setInterval(()=>{
+        if(currentRun && currentRun!==lastBroadcastRun){lastBroadcastRun=currentRun;mpBroadcast({type:"run",run:currentRun});}
+    },200);
+
+    // Save GIF remains an active-panel export for now.
+    if(saveGifButton) saveGifButton.addEventListener("click",event=>{
+        event.stopImmediatePropagation(); mpSend(activePanel,{type:"control",payload:{kind:"button",id:"save-gif"}});
+    },true);
+
+    function mpRequestCapture(panel) {
+        return new Promise((resolve,reject)=>{
+            const requestId=`${Date.now()}-${panel}-${Math.random().toString(36).slice(2)}`;
+            const timer=setTimeout(()=>{pendingCaptures.delete(requestId);reject(new Error(`Panel ${panel} capture timed out`));},15000);
+            pendingCaptures.set(requestId,{resolve,reject,timer}); mpSend(panel,{type:"capture",requestId});
+        });
+    }
+
+    async function mpImageFromDataUrl(url){return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=reject;img.src=url;});}
+
+    async function mpSaveCombinedPng(){
+        const old=savePngButton?.textContent||"Save PNG";
+        if(savePngButton){savePngButton.disabled=true;savePngButton.textContent="Preparing…";}
+        try {
+            const panels=mpVisiblePanels();
+            const urls=await Promise.all(panels.map(mpRequestCapture));
+            const imgs=await Promise.all(urls.map(mpImageFromDataUrl));
+            const outW=3840, headerH=92, gap=8;
+            const cols=panelLayout===1?1:2, rows=panelLayout===4?2:1;
+            const cellW=Math.floor((outW-gap*(cols-1))/cols);
+            const aspect=imgs[0].height/imgs[0].width;
+            const cellH=Math.round(cellW*aspect);
+            const outH=headerH+rows*cellH+gap*(rows-1);
+            const out=document.createElement("canvas"); out.width=outW; out.height=outH;
+            const ctx=out.getContext("2d",{alpha:false}); ctx.fillStyle="#fff";ctx.fillRect(0,0,outW,outH);
+            ctx.fillStyle="#102433";ctx.fillRect(0,0,outW,headerH);ctx.textBaseline="middle";
+            ctx.textAlign="left";ctx.fillStyle="#d7e7f2";ctx.font='600 25px Inter,"Segoe UI",Arial,sans-serif';ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE",42,headerH/2);
+            ctx.textAlign="right";ctx.fillStyle="#fff";ctx.font='700 29px Inter,"Segoe UI",Arial,sans-serif';ctx.fillText(`3-km Mesoscale Analysis Data · ${panelLayout}-Panel`,outW-42,headerH/2);
+            imgs.forEach((img,i)=>{const col=i%cols,row=Math.floor(i/cols);const x=col*(cellW+gap),y=headerH+row*(cellH+gap);ctx.drawImage(img,x,y,cellW,cellH);ctx.strokeStyle="#0d1b27";ctx.lineWidth=4;ctx.strokeRect(x+2,y+2,cellW-4,cellH-4);ctx.fillStyle="rgba(13,27,39,.88)";ctx.fillRect(x+12,y+12,48,38);ctx.fillStyle="#fff";ctx.font='800 22px Inter,"Segoe UI",Arial,sans-serif';ctx.textAlign="center";ctx.fillText(String(i+1),x+36,y+31);});
+            const blob=await new Promise(resolve=>out.toBlob(resolve,"image/png")); if(!blob) throw new Error("PNG encoding failed");
+            downloadBlob(blob,`3km_Mesoscale_Analysis_${panelLayout}Panel_${exportFileTimeStamp(currentAnalysisTime)}.png`);
+        } catch(error){console.error("Combined PNG export failed",error);if(statusElement)statusElement.textContent="PNG export failed";}
+        finally{if(savePngButton){savePngButton.disabled=false;savePngButton.textContent=old;}}
+    }
+    if(savePngButton) savePngButton.addEventListener("click",event=>{event.preventDefault();event.stopImmediatePropagation();mpSaveCombinedPng();},true);
+
+    window.addEventListener("message",event=>{
+        const msg=event.data||{}; if(msg.channel!=="spcoa-multipanel") return;
+        if(msg.type==="camera" && msg.camera) mpVisiblePanels().filter(p=>p!==msg.panel).forEach(p=>mpSend(p,{type:"camera",camera:msg.camera}));
+        else if(msg.type==="capture-result" && msg.requestId) {
+            const pending=pendingCaptures.get(msg.requestId); if(!pending)return; clearTimeout(pending.timer);pendingCaptures.delete(msg.requestId); if(msg.error)pending.reject(new Error(msg.error));else pending.resolve(msg.dataUrl);
+        }
+        else if(msg.type==="ready") {
+            if(currentRun) mpSend(msg.panel,{type:"run",run:currentRun});
+            // Replay any state already assigned to this panel.
+            const st=panelStates[msg.panel-1]; if(st?.field && st.field!=="none") mpSend(msg.panel,{type:"control",payload:{kind:"field",field:st.field}});
+            Object.values(st?.controls||{}).forEach(payload=>mpSend(msg.panel,{type:"control",payload}));
+        }
+    });
+
+    mpCreatePanels();
+}
+
