@@ -641,6 +641,19 @@ const SCP_COLORS = ["#ffffff","#f0f0f0","#e1e1e1","#d2d2d2","#c3c3c3","#a5a5a5",
 
 
 /* =========================================================================================
+   SFC TOTAL DEFORMATION COLOR TABLE
+   Display units: 10^-5 s^-1. Low deformation is kept light; stronger deformation
+   progresses through cyan/blue/purple/red to match the SPC-style diagnostic feel.
+   ========================================================================================= */
+const SFC_DEFORMATION_BOUNDS = [0,1,2,3,4,5,6,7,8,9,10,12,14,16,18,20];
+const SFC_DEFORMATION_COLORS = [
+    "#ffffff", "#e8f7ff", "#c8ecff", "#9fddff", "#73c9f2",
+    "#4eaddd", "#3d8fc7", "#526fc0", "#6d58b5", "#8846a8",
+    "#a43d92", "#bd3f72", "#d54b55", "#e66a3f", "#f28a32"
+];
+const SFC_DEFORMATION_RGB = SFC_DEFORMATION_COLORS.map(hexToRgb);
+
+/* =========================================================================================
    FIELD DEFINITIONS
    ========================================================================================= */
 
@@ -779,6 +792,13 @@ const WEATHER_FIELDS = {
         type: "dewpoint"
     },
 
+    sfc_total_deformation: {
+        name: "SFC Total Deformation",
+        shortName: "SFC Total Deformation",
+        units: "10⁻⁵ s⁻¹",
+        type: "surface_deformation"
+    },
+
     thetae_2m: {
         name: "2 m Equivalent Potential Temperature",
         shortName: "2 m Theta-e",
@@ -851,6 +871,14 @@ const VECTOR_FIELDS = {
         name: "Surface Wind",
         shortName: "Surface Wind",
         defaultColor: "#000000"
+    },
+
+    sfc_axes_dilatation: {
+        name: "SFC Axes of Dilatation",
+        shortName: "SFC Axes of Dilatation",
+        defaultColor: "#1f5fbf",
+        renderType: "axis_segments",
+        units: "orientation"
     },
 
     srwind_0_2km: {
@@ -971,6 +999,7 @@ const VECTOR_FIELDS = {
 
 const VECTOR_OVERLAY_CONFIG = [
     { field: "sfc_wind", stateKey: "surfaceWind", toggleId: "sfc-wind-toggle" },
+    { field: "sfc_axes_dilatation", stateKey: "sfcAxesDilatation", toggleId: "sfc-axes-dilatation-toggle" },
     { field: "srwind_0_2km", stateKey: "srWind02", toggleId: "srwind-02-toggle" },
     { field: "srwind_4_6km", stateKey: "srWind46", toggleId: "srwind-46-toggle" },
     { field: "srwind_9_11km", stateKey: "srWind911", toggleId: "srwind-911-toggle" },
@@ -1267,6 +1296,7 @@ let activeField = "none";
 
 const activeOverlays = {
     surfaceWind: false,
+    sfcAxesDilatation: false,
     srWind02: false,
     srWind46: false,
     srWind911: false,
@@ -2428,11 +2458,12 @@ function getActiveLayerDescriptions() {
             continue;
         }
 
+        const isAxisSegments = field.renderType === "axis_segments";
         descriptions.push({
             text: formatActiveLayer(
                 field.shortName || field.name,
-                "kt",
-                "barbs"
+                isAxisSegments ? "" : "kt",
+                isAxisSegments ? "axes" : "barbs"
             ),
             color: vectorColors[config.field] || field.defaultColor || "#000000"
         });
@@ -5923,6 +5954,15 @@ function getFieldColor(
         );
     }
 
+    if (definition.type === "surface_deformation") {
+        return getBinnedWindColor(
+            value,
+            0,
+            SFC_DEFORMATION_BOUNDS,
+            SFC_DEFORMATION_RGB
+        );
+    }
+
 
     if (
         definition.type ===
@@ -6762,6 +6802,30 @@ function drawWindBarb(
 
 
 /* =========================================================================================
+   DRAW AXIS OF DILATATION
+   ========================================================================================= */
+function drawAxisOfDilatation(ctx, x, y, axisU, axisV, color = "#1f5fbf") {
+    const magnitude = Math.hypot(axisU, axisV);
+    if (!Number.isFinite(magnitude) || magnitude < 1.0e-6) return;
+
+    // Backend supplies a unit vector in projected x/y coordinates. Canvas y increases
+    // downward, so the projected y component is reversed for screen coordinates.
+    const dx = axisU / magnitude;
+    const dy = -axisV / magnitude;
+    const halfLength = 12;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x - dx * halfLength, y - dy * halfLength);
+    ctx.lineTo(x + dx * halfLength, y + dy * halfLength);
+    ctx.stroke();
+    ctx.restore();
+}
+
+/* =========================================================================================
    RENDER ONE VECTOR FIELD
    ========================================================================================= */
 
@@ -6882,21 +6946,27 @@ async function renderVectorField(
             }
 
 
-            drawWindBarb(
+            const vectorDefinition = VECTOR_FIELDS[field] || {};
 
-                vectorCtx,
-
-                x,
-
-                y,
-
-                vector.u,
-
-                vector.v,
-
-                vectorColors[field] || "#000000"
-
-            );
+            if (vectorDefinition.renderType === "axis_segments") {
+                drawAxisOfDilatation(
+                    vectorCtx,
+                    x,
+                    y,
+                    vector.u,
+                    vector.v,
+                    vectorColors[field] || vectorDefinition.defaultColor || "#1f5fbf"
+                );
+            } else {
+                drawWindBarb(
+                    vectorCtx,
+                    x,
+                    y,
+                    vector.u,
+                    vector.v,
+                    vectorColors[field] || "#000000"
+                );
+            }
 
         }
 
@@ -10405,6 +10475,15 @@ function updateLegend() {
         );
     }
 
+    /* Surface total deformation. */
+    else if (field.type === "surface_deformation") {
+        drawProportionalColorLegend(SFC_DEFORMATION_COLORS, SFC_DEFORMATION_BOUNDS);
+        renderProportionalLegendLabels(
+            [0, 2, 4, 6, 8, 10, 12, 16, 20],
+            SFC_DEFORMATION_BOUNDS
+        );
+    }
+
 
     /* 2-m equivalent potential temperature. */
     else if (field.type === "thetae") {
@@ -10536,6 +10615,9 @@ function formatScalarSample(field, value) {
         return value.toFixed(1);
     }
     if (definition.type === "relative_vorticity") {
+        return `${value.toFixed(1)} ×10⁻⁵ s⁻¹`;
+    }
+    if (definition.type === "surface_deformation") {
         return `${value.toFixed(1)} ×10⁻⁵ s⁻¹`;
     }
     if (definition.type === "thetae") {
