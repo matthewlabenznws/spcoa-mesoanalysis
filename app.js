@@ -1311,6 +1311,10 @@ let cwaBordersEnabled = false;
 
 let cwaBorderColor = "#6f42c1";
 
+let cwaBorderWidth = 2.0;
+
+let selectedCwa = "ALL";
+
 
 /* =========================================================================================
    CACHES
@@ -1607,19 +1611,30 @@ const citiesToggle =
 
 /*
  * CWA borders are injected into the existing Map Layers card so index.html
- * does not need to change.  The color picker redraws the geography canvas
- * immediately and is also honored by PNG/GIF exports because those exports
- * composite geographyCanvas.
+ * does not need to change. Controls include on/off, office selector, color,
+ * and line thickness. All controls redraw geography immediately and are
+ * honored by PNG/GIF exports because those exports composite geographyCanvas.
  */
 let cwaBordersToggle =
     document.getElementById("cwa-borders-toggle");
 
+let cwaSelector =
+    document.getElementById("cwa-selector");
+
 let cwaBorderColorInput =
     document.getElementById("cwa-border-color");
 
+let cwaBorderWidthSelect =
+    document.getElementById("cwa-border-width");
+
 function ensureCwaBorderControls() {
 
-    if (cwaBordersToggle && cwaBorderColorInput) {
+    if (
+        cwaBordersToggle &&
+        cwaSelector &&
+        cwaBorderColorInput &&
+        cwaBorderWidthSelect
+    ) {
         return;
     }
 
@@ -1637,11 +1652,18 @@ function ensureCwaBorderControls() {
         return;
     }
 
-    const label = document.createElement("label");
-    label.className = "toggle-row";
-    label.style.display = "flex";
-    label.style.alignItems = "center";
-    label.style.gap = "6px";
+    const wrapper = document.createElement("div");
+    wrapper.id = "cwa-controls-wrapper";
+    wrapper.style.display = "flex";
+    wrapper.style.flexDirection = "column";
+    wrapper.style.gap = "6px";
+    wrapper.style.marginTop = "2px";
+
+    const topRow = document.createElement("label");
+    topRow.className = "toggle-row";
+    topRow.style.display = "flex";
+    topRow.style.alignItems = "center";
+    topRow.style.gap = "6px";
 
     cwaBordersToggle = document.createElement("input");
     cwaBordersToggle.type = "checkbox";
@@ -1665,11 +1687,100 @@ function ensureCwaBorderControls() {
     cwaBorderColorInput.style.cursor = "pointer";
     cwaBorderColorInput.style.marginLeft = "auto";
 
-    label.appendChild(cwaBordersToggle);
-    label.appendChild(text);
-    label.appendChild(cwaBorderColorInput);
+    topRow.appendChild(cwaBordersToggle);
+    topRow.appendChild(text);
+    topRow.appendChild(cwaBorderColorInput);
 
-    citiesRow.insertAdjacentElement("afterend", label);
+    const optionsRow = document.createElement("div");
+    optionsRow.style.display = "grid";
+    optionsRow.style.gridTemplateColumns = "minmax(0, 1fr) 76px";
+    optionsRow.style.gap = "6px";
+    optionsRow.style.paddingLeft = "22px";
+
+    cwaSelector = document.createElement("select");
+    cwaSelector.id = "cwa-selector";
+    cwaSelector.title = "CWA to display";
+    cwaSelector.setAttribute("aria-label", "CWA to display");
+    cwaSelector.style.minWidth = "0";
+    cwaSelector.style.width = "100%";
+    cwaSelector.style.fontSize = "11px";
+
+    const allOption = document.createElement("option");
+    allOption.value = "ALL";
+    allOption.textContent = "All CWAs";
+    cwaSelector.appendChild(allOption);
+
+    cwaBorderWidthSelect = document.createElement("select");
+    cwaBorderWidthSelect.id = "cwa-border-width";
+    cwaBorderWidthSelect.title = "CWA border thickness";
+    cwaBorderWidthSelect.setAttribute("aria-label", "CWA border thickness");
+    cwaBorderWidthSelect.style.width = "76px";
+    cwaBorderWidthSelect.style.fontSize = "11px";
+
+    for (const width of [1, 1.5, 2, 2.5, 3, 4, 5]) {
+        const option = document.createElement("option");
+        option.value = String(width);
+        option.textContent = `${width}px`;
+        if (width === cwaBorderWidth) {
+            option.selected = true;
+        }
+        cwaBorderWidthSelect.appendChild(option);
+    }
+
+    optionsRow.appendChild(cwaSelector);
+    optionsRow.appendChild(cwaBorderWidthSelect);
+
+    wrapper.appendChild(topRow);
+    wrapper.appendChild(optionsRow);
+
+    citiesRow.insertAdjacentElement("afterend", wrapper);
+}
+
+function populateCwaSelector() {
+
+    if (!cwaSelector) {
+        return;
+    }
+
+    const previousValue = selectedCwa || "ALL";
+
+    while (cwaSelector.options.length > 1) {
+        cwaSelector.remove(1);
+    }
+
+    const offices = cwaFeatures
+        .map(feature => {
+            const properties = feature.properties || {};
+            const code = String(
+                properties.CWA || properties.WFO || ""
+            ).trim().toUpperCase();
+            const cityState = String(
+                properties.CITYSTATE || ""
+            ).trim();
+            return { code, cityState };
+        })
+        .filter(item => item.code);
+
+    const uniqueOffices = Array.from(
+        new Map(
+            offices.map(item => [item.code, item])
+        ).values()
+    ).sort((a, b) => a.code.localeCompare(b.code));
+
+    for (const office of uniqueOffices) {
+        const option = document.createElement("option");
+        option.value = office.code;
+        option.textContent = office.cityState
+            ? `${office.code} — ${office.cityState}`
+            : office.code;
+        cwaSelector.appendChild(option);
+    }
+
+    const hasPrevious = Array.from(cwaSelector.options)
+        .some(option => option.value === previousValue);
+
+    selectedCwa = hasPrevious ? previousValue : "ALL";
+    cwaSelector.value = selectedCwa;
 }
 
 ensureCwaBorderControls();
@@ -8867,6 +8978,8 @@ async function loadGeography() {
             cwaFeatures =
                 cwas.features || [];
 
+            populateCwaSelector();
+
         }
         else {
 
@@ -9566,7 +9679,7 @@ function renderGeography() {
             cwaBorderColor;
 
         geographyCtx.lineWidth =
-            1.35;
+            cwaBorderWidth;
 
         geographyCtx.lineJoin =
             "round";
@@ -9579,6 +9692,20 @@ function renderGeography() {
             of
             cwaFeatures
         ) {
+
+            const properties =
+                feature.properties || {};
+
+            const featureCwa = String(
+                properties.CWA || properties.WFO || ""
+            ).trim().toUpperCase();
+
+            if (
+                selectedCwa !== "ALL" &&
+                featureCwa !== selectedCwa
+            ) {
+                continue;
+            }
 
             drawGeoJSONLine(
 
@@ -10901,44 +11028,54 @@ if (citiesToggle) {
 
 
 /* =========================================================================================
-   CWA BORDER TOGGLE + COLOR
+   CWA BORDER CONTROLS
    ========================================================================================= */
 
 if (cwaBordersToggle) {
 
     cwaBordersToggle.addEventListener(
-
         "change",
-
         event => {
-
-            cwaBordersEnabled =
-                event.target.checked;
-
+            cwaBordersEnabled = event.target.checked;
             renderGeography();
-
         }
-
     );
 
 }
 
+if (cwaSelector) {
+
+    cwaSelector.addEventListener(
+        "change",
+        event => {
+            selectedCwa = event.target.value || "ALL";
+            renderGeography();
+        }
+    );
+
+}
 
 if (cwaBorderColorInput) {
 
     cwaBorderColorInput.addEventListener(
-
         "input",
-
         event => {
-
-            cwaBorderColor =
-                event.target.value || "#6f42c1";
-
+            cwaBorderColor = event.target.value || "#6f42c1";
             renderGeography();
-
         }
+    );
 
+}
+
+if (cwaBorderWidthSelect) {
+
+    cwaBorderWidthSelect.addEventListener(
+        "change",
+        event => {
+            const width = Number(event.target.value);
+            cwaBorderWidth = Number.isFinite(width) ? width : 2.0;
+            renderGeography();
+        }
     );
 
 }
