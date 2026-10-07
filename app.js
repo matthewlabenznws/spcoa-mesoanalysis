@@ -7455,7 +7455,7 @@ function drawAxisOfDilatation(ctx, x, y, axisU, axisV, color = "#1f5fbf") {
     // SPC-style convention: segment length increases with resultant deformation.
     // Keep weak axes visible but cap extreme values so isolated maxima cannot dominate.
     const deformation = Math.min(Math.max(magnitude, 0), 32);
-    const halfLength = 4.0 + 0.95 * deformation;
+    const halfLength = Math.min(58, 5.0 + 1.65 * deformation); // deliberately exaggerated, SPC-inspired
 
     ctx.save();
     ctx.strokeStyle = color;
@@ -13732,3 +13732,4 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
