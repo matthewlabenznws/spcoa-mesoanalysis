@@ -1438,6 +1438,10 @@ const WEATHER_FIELDS = {
         type: "rh"
     },
 
+    petterssen_fgen_925mb: { name: "925 mb 2-D Petterssen Frontogenesis", shortName: "925 mb 2-D FGEN", units: "K/(100 km)/3 h", type: "petterssen_fgen" },
+    petterssen_fgen_850mb: { name: "850 mb 2-D Petterssen Frontogenesis", shortName: "850 mb 2-D FGEN", units: "K/(100 km)/3 h", type: "petterssen_fgen" },
+    petterssen_fgen_700mb: { name: "700 mb 2-D Petterssen Frontogenesis", shortName: "700 mb 2-D FGEN", units: "K/(100 km)/3 h", type: "petterssen_fgen" },
+
     temperature_925mb: { name: "925 mb Temperature", shortName: "925 mb Temperature", units: "°C", type: "pressure_temperature" },
     temperature_850mb: { name: "850 mb Temperature", shortName: "850 mb Temperature", units: "°C", type: "pressure_temperature" },
     temperature_700mb: { name: "700 mb Temperature", shortName: "700 mb Temperature", units: "°C", type: "pressure_temperature" },
@@ -1476,6 +1480,20 @@ const WEATHER_FIELDS = {
 };
 
 
+
+const PETTERSSEN_FGEN_BOUNDS = Array.from({length:41},(_,i)=>i-20);
+const PETTERSSEN_FGEN_COLORS = Array.from({length:40},(_,i)=>{
+    const t=(i+0.5)/40;
+    const stops=[[0,[0,0,100]],[0.25,[50,0,255]],[0.5,[255,255,255]],[0.75,[255,55,55]],[1,[125,0,0]]];
+    let a=stops[0],b=stops[stops.length-1];
+    for(let j=1;j<stops.length;j++){if(t<=stops[j][0]){a=stops[j-1];b=stops[j];break;}}
+    const f=(t-a[0])/(b[0]-a[0]);
+    return '#'+a[1].map((v,k)=>Math.round(v+(b[1][k]-v)*f).toString(16).padStart(2,'0')).join('');
+});
+const PETTERSSEN_FGEN_RGB = PETTERSSEN_FGEN_COLORS.map(c=>[
+    parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)
+]);
+
 const VECTOR_FIELDS = {
 
     sfc_wind: {
@@ -1484,6 +1502,9 @@ const VECTOR_FIELDS = {
         defaultColor: "#000000"
     },
 
+    axes_dilatation_925mb: { name: "925 mb Axes of Dilatation", shortName: "925 mb Axes", defaultColor: "#1f5fbf", renderType: "axis_segments", units: "10⁻⁵ s⁻¹" },
+    axes_dilatation_850mb: { name: "850 mb Axes of Dilatation", shortName: "850 mb Axes", defaultColor: "#1f5fbf", renderType: "axis_segments", units: "10⁻⁵ s⁻¹" },
+    axes_dilatation_700mb: { name: "700 mb Axes of Dilatation", shortName: "700 mb Axes", defaultColor: "#1f5fbf", renderType: "axis_segments", units: "10⁻⁵ s⁻¹" },
     sfc_axes_dilatation: {
         name: "SFC Axes of Dilatation",
         shortName: "SFC Axes of Dilatation",
@@ -1611,6 +1632,10 @@ const VECTOR_FIELDS = {
 const VECTOR_OVERLAY_CONFIG = [
     { field: "sfc_wind", stateKey: "surfaceWind", toggleId: "sfc-wind-toggle" },
     { field: "sfc_axes_dilatation", stateKey: "sfcAxesDilatation", toggleId: "sfc-axes-dilatation-toggle" },
+    { field: "axes_dilatation_925mb", stateKey: "axesDilatation925", toggleId: "axes-dilatation-925mb-toggle" },
+    { field: "axes_dilatation_850mb", stateKey: "axesDilatation850", toggleId: "axes-dilatation-850mb-toggle" },
+    { field: "axes_dilatation_700mb", stateKey: "axesDilatation700", toggleId: "axes-dilatation-700mb-toggle" },
+
     { field: "srwind_0_2km", stateKey: "srWind02", toggleId: "srwind-02-toggle" },
     { field: "srwind_4_6km", stateKey: "srWind46", toggleId: "srwind-46-toggle" },
     { field: "srwind_9_11km", stateKey: "srWind911", toggleId: "srwind-911-toggle" },
@@ -1765,11 +1790,11 @@ const CONTOUR_FIELDS = {
         smoothIterations: 4
     },
 
-    temperature_contours_925mb: { name: "925 mb Temperature", shortName: "925 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_850mb: { name: "850 mb Temperature", shortName: "850 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_700mb: { name: "700 mb Temperature", shortName: "700 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_500mb: { name: "500 mb Temperature", shortName: "500 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_250mb: { name: "250 mb Temperature", shortName: "250 mb Temperature", units: "°C", interval: 2, minimum: null, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_925mb: { name: "925 mb Positive Temperature", shortName: "925 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_850mb: { name: "850 mb Positive Temperature", shortName: "850 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_700mb: { name: "700 mb Positive Temperature", shortName: "700 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_500mb: { name: "500 mb Positive Temperature", shortName: "500 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_250mb: { name: "250 mb Positive Temperature", shortName: "250 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
 
     frontogenesis_925mb: { name: "925 mb Frontogenesis", shortName: "925 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
     frontogenesis_850mb: { name: "850 mb Frontogenesis", shortName: "850 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
@@ -6556,6 +6581,9 @@ function getFieldColor(
         return getBinnedWindColor(value, 0, EHI_BOUNDS, EHI_RGB);
     }
 
+    if (definition.type === "petterssen_fgen") {
+        return getBinnedWindColor(value, -20, PETTERSSEN_FGEN_BOUNDS, PETTERSSEN_FGEN_RGB);
+    }
     if (definition.type === "relative_vorticity") {
         return getBinnedWindColor(
             value,
@@ -7431,7 +7459,7 @@ function drawAxisOfDilatation(ctx, x, y, axisU, axisV, color = "#1f5fbf") {
 
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = 3.0;
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(x - dx * halfLength, y - dy * halfLength);
@@ -9194,8 +9222,8 @@ async function renderContourField(
         contourCtx.strokeStyle = contourColor;
         if (isPressureTemperatureContour) {
             const isFreezing = Math.abs(level) < 0.001;
-            contourCtx.lineWidth = isFreezing ? 2.25 : 2.0;
-            contourCtx.setLineDash(isFreezing ? [] : [8, 6]);
+            contourCtx.lineWidth = isFreezing ? 2.5 : 1.5;
+            contourCtx.setLineDash([]);
         } else if (isThetaContour) {
             contourCtx.lineWidth = 1.75;
             contourCtx.setLineDash([]);
@@ -11119,6 +11147,12 @@ function updateLegend() {
         );
     }
 
+    /* Signed 2-D Petterssen frontogenesis / frontolysis. */
+    else if (field.type === "petterssen_fgen") {
+        drawProportionalColorLegend(PETTERSSEN_FGEN_COLORS, PETTERSSEN_FGEN_BOUNDS);
+        renderProportionalLegendLabels([-20,-15,-10,-5,0,5,10,15,20], PETTERSSEN_FGEN_BOUNDS);
+    }
+
     /* Pressure-level relative vorticity. */
     else if (field.type === "relative_vorticity") {
         drawProportionalColorLegend(RELATIVE_VORTICITY_COLORS, RELATIVE_VORTICITY_BOUNDS);
@@ -11266,6 +11300,9 @@ function formatScalarSample(field, value) {
     }
     if (definition.type === "ehi") {
         return value.toFixed(1);
+    }
+    if (definition.type === "petterssen_fgen") {
+        return `${value.toFixed(1)} K/(100 km)/3 h`;
     }
     if (definition.type === "relative_vorticity") {
         return `${value.toFixed(1)} ×10⁻⁵ s⁻¹`;
@@ -13695,3 +13732,4 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
