@@ -1,3 +1,301 @@
+/* =========================================================================================
+   MULTI-PANEL HOST / CHILD MODE
+   ========================================================================================= */
+const __MP_PARAMS = new URLSearchParams(window.location.search);
+const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
+
+if (!__MP_CHILD) {
+    document.body.classList.add("mp-shell");
+
+    (function initMultiPanelHost() {
+        const mapWrapper = document.getElementById("map-wrapper");
+        const layoutSelect = document.getElementById("layout-select");
+        const sidebar = document.getElementById("sidebar");
+        const toolbar = document.getElementById("drawing-toolbar");
+        const timeline = document.getElementById("timeline-bar");
+        const savePng = document.getElementById("save-png");
+        const saveGif = document.getElementById("save-gif");
+        const panelGrid = document.createElement("div");
+        panelGrid.id = "panel-grid";
+        panelGrid.className = "layout-1";
+        mapWrapper.replaceChildren(panelGrid);
+
+        const panels = [];
+        let activePanel = 0;
+        let layoutCount = 1;
+        let cameraBroadcasting = false;
+        let lastTimelineValue = null;
+
+        function childUrl(index) {
+            const u = new URL(window.location.href);
+            u.searchParams.set("mpchild", "1");
+            u.searchParams.set("panel", String(index + 1));
+            return u.toString();
+        }
+
+        for (let i = 0; i < 4; i++) {
+            const holder = document.createElement("div");
+            holder.className = "mp-panel" + (i === 0 ? " active" : "");
+            holder.dataset.panel = String(i);
+            const badge = document.createElement("div");
+            badge.className = "mp-panel-badge";
+            badge.textContent = `Panel ${i + 1}`;
+            const frame = document.createElement("iframe");
+            frame.title = `Mesoanalysis Panel ${i + 1}`;
+            frame.loading = "eager";
+            frame.src = childUrl(i);
+            holder.append(badge, frame);
+            panelGrid.appendChild(holder);
+            panels.push({ holder, frame, badge, ready: false });
+        }
+
+        function visiblePanelCount() { return layoutCount; }
+
+        function applyLayout(count) {
+            layoutCount = Number(count) === 4 ? 4 : Number(count) === 2 ? 2 : 1;
+            panelGrid.className = `layout-${layoutCount}`;
+            panels.forEach((p, i) => { p.holder.style.display = i < layoutCount ? "block" : "none"; });
+            if (activePanel >= layoutCount) setActivePanel(0);
+            requestAnimationFrame(() => {
+                panels.slice(0, layoutCount).forEach(p => {
+                    try { p.frame.contentWindow.postMessage({ type: "mp-resize" }, "*"); } catch (_) {}
+                });
+            });
+        }
+
+        function setActivePanel(index) {
+            if (index < 0 || index >= layoutCount) return;
+            activePanel = index;
+            panels.forEach((p, i) => p.holder.classList.toggle("active", i === activePanel));
+            syncHostFromActiveChild();
+        }
+
+        function childDoc(index = activePanel) {
+            try { return panels[index].frame.contentDocument; } catch (_) { return null; }
+        }
+
+        function childElById(id, index = activePanel) {
+            const d = childDoc(index);
+            return d ? d.getElementById(id) : null;
+        }
+
+        function dispatchChildValue(source, index, eventType = "change") {
+            if (!source || !source.id) return;
+            const target = childElById(source.id, index);
+            if (!target) return;
+            if (source.type === "checkbox" || source.type === "radio") target.checked = source.checked;
+            else target.value = source.value;
+            target.dispatchEvent(new Event(eventType, { bubbles: true }));
+        }
+
+        function clickChildById(id, index = activePanel) {
+            const el = childElById(id, index);
+            if (el) el.click();
+        }
+
+        function clickChildField(field, index = activePanel) {
+            const d = childDoc(index);
+            if (!d) return;
+            const row = Array.from(d.querySelectorAll(".field-choice")).find(el => el.dataset.field === field);
+            if (row) row.click();
+        }
+
+        function broadcastTimelineControl(source, eventType) {
+            for (let i = 0; i < layoutCount; i++) dispatchChildValue(source, i, eventType);
+        }
+
+        function syncHostFromActiveChild() {
+            const d = childDoc();
+            if (!d) return;
+            document.querySelectorAll("#sidebar input[id], #sidebar select[id], #drawing-toolbar input[id], #timeline-bar input[id], #timeline-bar select[id]").forEach(host => {
+                if (host.id === "layout-select") return;
+                const child = d.getElementById(host.id);
+                if (!child) return;
+                if (host.type === "checkbox" || host.type === "radio") host.checked = child.checked;
+                else host.value = child.value;
+            });
+            document.querySelectorAll("#sidebar .field-choice").forEach(host => {
+                const field = host.dataset.field;
+                const child = Array.from(d.querySelectorAll(".field-choice")).find(el => el.dataset.field === field);
+                host.classList.toggle("active", !!child && child.classList.contains("active"));
+            });
+            document.querySelectorAll("#drawing-toolbar .draw-tool[data-tool]").forEach(host => {
+                const child = d.querySelector(`.draw-tool[data-tool="${host.dataset.tool}"]`);
+                host.classList.toggle("active", !!child && child.classList.contains("active"));
+            });
+            ["timeline-speed-label", "timeline-time-label", "draw-hint"].forEach(id => {
+                const host = document.getElementById(id), child = d.getElementById(id);
+                if (host && child) host.textContent = child.textContent;
+            });
+            const hs = document.getElementById("timeline-slider"), cs = d.getElementById("timeline-slider");
+            if (hs && cs) { hs.min = cs.min; hs.max = cs.max; hs.value = cs.value; }
+        }
+
+        function syncTimeFromActiveChild() {
+            const d = childDoc();
+            if (!d) return;
+            const slider = d.getElementById("timeline-slider");
+            if (!slider) return;
+            const key = `${slider.min}|${slider.max}|${slider.value}`;
+            if (key === lastTimelineValue) return;
+            lastTimelineValue = key;
+            for (let i = 0; i < layoutCount; i++) {
+                if (i === activePanel) continue;
+                const other = childElById("timeline-slider", i);
+                if (!other) continue;
+                other.min = slider.min; other.max = slider.max; other.value = slider.value;
+                other.dispatchEvent(new Event("input", { bubbles: true }));
+                other.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        }
+
+        layoutSelect.addEventListener("change", () => applyLayout(layoutSelect.value));
+
+        sidebar.addEventListener("click", event => {
+            const row = event.target.closest(".field-choice");
+            if (row) {
+                clickChildField(row.dataset.field);
+                setTimeout(syncHostFromActiveChild, 50);
+                return;
+            }
+            const input = event.target.closest("input[id]");
+            if (input && input.type === "checkbox") {
+                const target = childElById(input.id);
+                if (target) setTimeout(() => { target.click(); syncHostFromActiveChild(); }, 0);
+            }
+        }, true);
+
+        sidebar.addEventListener("change", event => {
+            const el = event.target;
+            if (!el || !el.id || el.id === "layout-select") return;
+            if (el.id === "sector-select") {
+                for (let i = 0; i < layoutCount; i++) dispatchChildValue(el, i, "change");
+            } else if (el.tagName === "SELECT" || (el.tagName === "INPUT" && el.type !== "checkbox")) {
+                dispatchChildValue(el, activePanel, "change");
+            }
+        });
+
+        toolbar.addEventListener("click", event => {
+            const button = event.target.closest("button");
+            if (!button) return;
+            if (button.id === "save-png") { event.preventDefault(); event.stopImmediatePropagation(); saveCombinedPng(); return; }
+            if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); clickChildById("save-gif"); return; }
+            if (button.id) clickChildById(button.id);
+            else if (button.dataset.tool) {
+                const d = childDoc();
+                const target = d && d.querySelector(`.draw-tool[data-tool="${button.dataset.tool}"]`);
+                if (target) target.click();
+            }
+            setTimeout(syncHostFromActiveChild, 30);
+        }, true);
+
+        toolbar.addEventListener("change", event => {
+            const el = event.target;
+            if (el && el.id) dispatchChildValue(el, activePanel, "change");
+        });
+        toolbar.addEventListener("input", event => {
+            const el = event.target;
+            if (el && el.id) dispatchChildValue(el, activePanel, "input");
+        });
+
+        timeline.addEventListener("click", event => {
+            const button = event.target.closest("button[id]");
+            if (!button) return;
+            for (let i = 0; i < layoutCount; i++) clickChildById(button.id, i);
+            setTimeout(syncHostFromActiveChild, 40);
+        }, true);
+        timeline.addEventListener("change", event => {
+            const el = event.target;
+            if (!el || !el.id) return;
+            broadcastTimelineControl(el, "change");
+        });
+        timeline.addEventListener("input", event => {
+            const el = event.target;
+            if (!el || !el.id) return;
+            broadcastTimelineControl(el, "input");
+        });
+
+        window.addEventListener("message", event => {
+            const msg = event.data || {};
+            if (!msg.type) return;
+            if (msg.type === "mp-ready") {
+                const i = Number(msg.panel) - 1;
+                if (panels[i]) panels[i].ready = true;
+                if (i === activePanel) syncHostFromActiveChild();
+            } else if (msg.type === "mp-activate") {
+                setActivePanel(Number(msg.panel) - 1);
+            } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting) {
+                const source = Number(msg.panel) - 1;
+                cameraBroadcasting = true;
+                for (let i = 0; i < layoutCount; i++) {
+                    if (i === source) continue;
+                    panels[i].frame.contentWindow.postMessage({ type: "mp-set-camera", camera: msg.camera }, "*");
+                }
+                setTimeout(() => { cameraBroadcasting = false; }, 80);
+            }
+        });
+
+        async function saveCombinedPng() {
+            const old = savePng.textContent;
+            savePng.disabled = true;
+            savePng.textContent = "Preparing…";
+            try {
+                const count = visiblePanelCount();
+                const captures = [];
+                for (let i = 0; i < count; i++) {
+                    const w = panels[i].frame.contentWindow;
+                    if (!w || typeof w.__mpCapturePanel !== "function") throw new Error(`Panel ${i + 1} is not ready.`);
+                    captures.push(await w.__mpCapturePanel(1800));
+                }
+                const images = await Promise.all(captures.map(src => new Promise((resolve, reject) => {
+                    const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = src;
+                })));
+                const cols = count === 1 ? 1 : 2;
+                const rows = count === 4 ? 2 : 1;
+                const gap = 8;
+                const headerH = 92;
+                const panelW = 1920;
+                const panelH = Math.max(...images.map(img => Math.round(panelW * img.height / img.width)));
+                const outW = cols * panelW + (cols - 1) * gap;
+                const outH = headerH + rows * panelH + (rows - 1) * gap;
+                const out = document.createElement("canvas"); out.width = outW; out.height = outH;
+                const ctx = out.getContext("2d", { alpha: false });
+                ctx.fillStyle = "#102433"; ctx.fillRect(0, 0, outW, headerH);
+                ctx.fillStyle = "#d7e7f2"; ctx.font = '600 25px Inter, "Segoe UI", Arial, sans-serif'; ctx.textBaseline = "middle"; ctx.textAlign = "left";
+                ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42, headerH / 2);
+                ctx.fillStyle = "#ffffff"; ctx.font = '700 29px Inter, "Segoe UI", Arial, sans-serif'; ctx.textAlign = "right";
+                ctx.fillText(`${count}-Panel · 3-km Mesoscale Analysis Data`, outW - 42, headerH / 2);
+                images.forEach((img, i) => {
+                    const col = count === 1 ? 0 : i % 2, row = count === 4 ? Math.floor(i / 2) : 0;
+                    const x = col * (panelW + gap), y = headerH + row * (panelH + gap);
+                    ctx.fillStyle = "#ffffff"; ctx.fillRect(x, y, panelW, panelH);
+                    const h = Math.round(panelW * img.height / img.width);
+                    ctx.drawImage(img, x, y, panelW, h);
+                    ctx.strokeStyle = i === activePanel ? "#2f9be8" : "#425766"; ctx.lineWidth = 5; ctx.strokeRect(x + 2.5, y + 2.5, panelW - 5, panelH - 5);
+                    ctx.fillStyle = "rgba(13,27,39,.9)"; ctx.fillRect(x + 14, y + 14, 122, 42);
+                    ctx.fillStyle = "#fff"; ctx.font = '700 21px Inter, Arial, sans-serif'; ctx.textAlign = "center"; ctx.fillText(`Panel ${i + 1}`, x + 75, y + 35);
+                });
+                const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
+                if (!blob) throw new Error("PNG encoding failed.");
+                const url = URL.createObjectURL(blob), a = document.createElement("a");
+                const label = (document.getElementById("timeline-time-label")?.textContent || "analysis").replace(/[^0-9A-Za-z]+/g, "_");
+                a.href = url; a.download = `3km_Mesoscale_Analysis_${count}Panel_${label}.png`; document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1500);
+            } catch (err) {
+                console.error("Combined PNG export failed:", err);
+                alert(`Combined PNG export failed: ${err.message || err}`);
+            } finally {
+                savePng.disabled = false; savePng.textContent = old || "Save PNG";
+            }
+        }
+
+        setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); }, 350);
+        applyLayout(layoutSelect ? layoutSelect.value : 1);
+        if (saveGif) saveGif.title = "GIF export uses the active panel. PNG export combines all visible panels.";
+    })();
+} else {
+    document.body.classList.add("mp-child");
+
 "use strict";
 
 /* =========================================================================================
@@ -12801,3 +13099,84 @@ requestAnimationFrame(renderAnnotations);
 
 /* Timeline manifest refresh is intentionally lightweight; tiles remain demand-loaded. */
 setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
+
+/* =========================================================================================
+   MULTI-PANEL CHILD BRIDGE
+   ========================================================================================= */
+(function initMultiPanelChildBridge() {
+    const panelNumber = Number(__MP_PARAMS.get("panel") || 1);
+    let applyingRemoteCamera = false;
+
+    function notify(type, extra = {}) {
+        if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ type, panel: panelNumber, ...extra }, "*");
+        }
+    }
+
+    document.addEventListener("pointerdown", () => notify("mp-activate"), true);
+
+    map.on("moveend", () => {
+        if (applyingRemoteCamera) return;
+        const c = map.getCenter();
+        notify("mp-camera", { camera: { center: [c.lng, c.lat], zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() } });
+    });
+
+    window.addEventListener("message", event => {
+        const msg = event.data || {};
+        if (msg.type === "mp-set-camera" && msg.camera) {
+            applyingRemoteCamera = true;
+            try { map.jumpTo(msg.camera); } finally { setTimeout(() => { applyingRemoteCamera = false; }, 120); }
+        } else if (msg.type === "mp-resize") {
+            requestAnimationFrame(() => { map.resize(); resizeAllCanvases(); renderAnnotations(); });
+        }
+    });
+
+    window.__mpCapturePanel = async function(outW = 1800) {
+        renderAnnotations();
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const rect = mapWrapper.getBoundingClientRect();
+        const srcW = Math.max(1, rect.width), srcH = Math.max(1, rect.height);
+        const footerH = 72;
+        const outH = Math.round(outW * srcH / srcW) + footerH;
+        const out = document.createElement("canvas"); out.width = outW; out.height = outH;
+        const ctx = out.getContext("2d", { alpha: false });
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, outW, outH);
+        const mapH = outH - footerH;
+        const layers = [map.getCanvas(), weatherCanvas, vectorCanvas, contourCanvas, geographyCanvas, contourLabelCanvas, annotationCanvas].filter(Boolean);
+        for (const layer of layers) ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, outW, mapH);
+
+        if (legend && legend.style.display !== "none") {
+            const lr = legend.getBoundingClientRect(), scale = outW / srcW;
+            const x = (lr.left - rect.left) * scale, y = (lr.top - rect.top) * scale;
+            const w = lr.width * scale, h = lr.height * scale;
+            ctx.fillStyle = "rgba(20,40,57,.96)"; ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = "#41647d"; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+            ctx.fillStyle = "#f4f8fb"; ctx.font = `600 ${Math.max(15, 12*scale)}px Inter, Arial, sans-serif`; ctx.textAlign = "left";
+            ctx.fillText(legendTitle?.textContent || "", x + 14*scale, y + 22*scale);
+            if (legendCanvas && legendCanvas.width) ctx.drawImage(legendCanvas, x + 14*scale, y + 31*scale, Math.max(1, w - 28*scale), 18*scale);
+            if (legendLabels) {
+                const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
+                ctx.fillStyle = "#c7d6e1"; ctx.font = `500 ${Math.max(12, 9*scale)}px Inter, Arial, sans-serif`;
+                labels.forEach((el, i) => {
+                    const pct = labels.length <= 1 ? 0 : i/(labels.length-1);
+                    ctx.textAlign = i === 0 ? "left" : i === labels.length-1 ? "right" : "center";
+                    ctx.fillText(el.textContent || "", x + 14*scale + pct*(w-28*scale), y + h - 10*scale);
+                });
+            }
+        }
+
+        ctx.fillStyle = "#f7f8fa"; ctx.fillRect(0, mapH, outW, footerH);
+        ctx.strokeStyle = "#aeb7bf"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,mapH+.5); ctx.lineTo(outW,mapH+.5); ctx.stroke();
+        ctx.fillStyle = "#17232d"; ctx.font = '650 22px Inter, "Segoe UI", Arial, sans-serif'; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        const footerText = document.getElementById("active-layers-text")?.textContent || `Valid: ${formatAnalysisTime(currentAnalysisTime)}`;
+        let text = footerText;
+        while (ctx.measureText(text).width > outW - 70 && text.length > 20) text = text.slice(0, -4) + "…";
+        ctx.fillText(text, outW/2, mapH + footerH/2);
+        return out.toDataURL("image/png");
+    };
+
+    map.once("idle", () => notify("mp-ready"));
+    setTimeout(() => notify("mp-ready"), 2500);
+})();
+}
+
