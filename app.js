@@ -1186,7 +1186,11 @@ const PRESSURE_TEMPERATURE_COLORS = (() => {
    Range: -16 to +16 C / 3 hr in 1-degree bins.
    ========================================================================================= */
 
-const TEMPERATURE_ADVECTION_BOUNDS = Array.from({ length: 33 }, (_, i) => -16 + i);
+const TEMPERATURE_ADVECTION_BOUNDS = [
+    ...Array.from({ length: 16 }, (_, i) => -16 + i),
+    -0.5, 0.5,
+    ...Array.from({ length: 16 }, (_, i) => 1 + i)
+];
 const TEMPERATURE_ADVECTION_CONTROL_POINTS = [
     [0.00, "#bdb7e8"], [0.05, "#14029c"], [0.30, "#03b6fc"],
     [0.49, "#ffffff"], [0.51, "#ffffff"], [0.70, "#fca503"],
@@ -1203,6 +1207,7 @@ function sampleTemperatureAdvectionColor(position) {
 }
 const TEMPERATURE_ADVECTION_COLORS = TEMPERATURE_ADVECTION_BOUNDS.slice(0, -1).map((lower, i) => {
     const midpoint = (lower + TEMPERATURE_ADVECTION_BOUNDS[i + 1]) / 2;
+    if (lower >= -0.5 && TEMPERATURE_ADVECTION_BOUNDS[i + 1] <= 0.5) return "#ffffff";
     return sampleTemperatureAdvectionColor((midpoint + 16) / 32);
 });
 
@@ -6564,6 +6569,9 @@ function getFieldColor(
 
 
     if (definition.type === "temperature_advection") {
+        if (Number.isFinite(value) && value >= -0.5 && value <= 0.5) {
+            return { r: 255, g: 255, b: 255 };
+        }
         return getBinnedWindColor(value, -16, TEMPERATURE_ADVECTION_BOUNDS, TEMPERATURE_ADVECTION_RGB);
     }
 
