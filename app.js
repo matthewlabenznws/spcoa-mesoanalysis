@@ -7455,7 +7455,7 @@ function drawAxisOfDilatation(ctx, x, y, axisU, axisV, color = "#1f5fbf") {
     // SPC-style convention: segment length increases with resultant deformation.
     // Keep weak axes visible but cap extreme values so isolated maxima cannot dominate.
     const deformation = Math.min(Math.max(magnitude, 0), 32);
-    const halfLength = 2.5 + 0.55 * deformation;
+    const halfLength = 4.0 + 0.95 * deformation;
 
     ctx.save();
     ctx.strokeStyle = color;
@@ -9222,8 +9222,8 @@ async function renderContourField(
         contourCtx.strokeStyle = contourColor;
         if (isPressureTemperatureContour) {
             const isFreezing = Math.abs(level) < 0.001;
-            contourCtx.lineWidth = isFreezing ? 2.5 : 1.5;
-            contourCtx.setLineDash([]);
+            contourCtx.lineWidth = isFreezing ? 2.8 : 1.5;
+            contourCtx.setLineDash(level < -0.001 ? [7, 5] : []);
         } else if (isThetaContour) {
             contourCtx.lineWidth = 1.75;
             contourCtx.setLineDash([]);
@@ -13732,4 +13732,3 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
