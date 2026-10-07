@@ -1790,11 +1790,11 @@ const CONTOUR_FIELDS = {
         smoothIterations: 4
     },
 
-    temperature_contours_925mb: { name: "925 mb Positive Temperature", shortName: "925 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_850mb: { name: "850 mb Positive Temperature", shortName: "850 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_700mb: { name: "700 mb Positive Temperature", shortName: "700 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_500mb: { name: "500 mb Positive Temperature", shortName: "500 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
-    temperature_contours_250mb: { name: "250 mb Positive Temperature", shortName: "250 mb T ≥ 0°C", units: "°C", levels: Array.from({length:21},(_,i)=>i*2), interval: 2, minimum: 0, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_925mb: { name: "925 mb Temperature Isotherms", shortName: "925 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_850mb: { name: "850 mb Temperature Isotherms", shortName: "850 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_700mb: { name: "700 mb Temperature Isotherms", shortName: "700 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_500mb: { name: "500 mb Temperature Isotherms", shortName: "500 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
+    temperature_contours_250mb: { name: "250 mb Temperature Isotherms", shortName: "250 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
 
     frontogenesis_925mb: { name: "925 mb Frontogenesis", shortName: "925 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
     frontogenesis_850mb: { name: "850 mb Frontogenesis", shortName: "850 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
@@ -6582,7 +6582,8 @@ function getFieldColor(
     }
 
     if (definition.type === "petterssen_fgen") {
-        return getBinnedWindColor(value, -20, PETTERSSEN_FGEN_BOUNDS, PETTERSSEN_FGEN_RGB);
+        const rgb = getBinnedWindColor(Math.max(-20, Math.min(20, value)), -20, PETTERSSEN_FGEN_BOUNDS, PETTERSSEN_FGEN_RGB);
+        return rgb ? { r: rgb[0], g: rgb[1], b: rgb[2] } : null;
     }
     if (definition.type === "relative_vorticity") {
         return getBinnedWindColor(
@@ -9124,7 +9125,9 @@ async function renderContourField(
             : null;
 
     const colorScheme =
-        field === "dcape"
+        field.startsWith("temperature_contours_")
+            ? "pressure_temperature_isotherms"
+            : field === "dcape"
             ? "dcape"
             : (
                 field === "warm_cloud_depth"
