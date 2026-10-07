@@ -25,6 +25,7 @@ if (!__MP_CHILD) {
         let layoutCount = 1;
         let cameraBroadcasting = false;
         let lastTimelineValue = null;
+        let sharedAnnotations = [];
         const parameterScope = document.getElementById("parameter-scope");
         const drawingScope = document.getElementById("drawing-scope");
 
@@ -39,24 +40,35 @@ if (!__MP_CHILD) {
                 : [activePanel];
         }
 
-        function broadcastAnnotations(sourceIndex, annotationData) {
-            if (!drawingScope || drawingScope.value !== "all" || !Array.isArray(annotationData)) return;
+        function cloneAnnotations(data) {
+            return (Array.isArray(data) ? data : []).map(a => ({
+                ...a,
+                points: Array.isArray(a.points)
+                    ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) }))
+                    : []
+            }));
+        }
+
+        function renderSharedAnnotations(excludeIndex = -1) {
             for (let i = 0; i < layoutCount; i++) {
-                if (i === sourceIndex || !panels[i] || !panels[i].ready) continue;
+                if (i === excludeIndex || !panels[i] || !panels[i].ready) continue;
                 try {
                     const child = panels[i].frame.contentWindow;
                     if (child && typeof child.__mpSetAnnotations === "function") {
-                        child.__mpSetAnnotations(annotationData);
+                        child.__mpSetAnnotations(sharedAnnotations);
                     } else if (child) {
-                        child.postMessage({ type: "mp-set-annotations", annotations: annotationData }, "*");
+                        child.postMessage({ type: "mp-set-annotations", annotations: sharedAnnotations }, "*");
                     }
                 } catch (_) {}
             }
         }
 
-        // Same-origin child frames call this directly. postMessage remains as a fallback.
+        // Authoritative parent-owned annotation state for Draw on -> All Panels.
         window.__mpReceiveAnnotations = (panelNumber, annotationData) => {
-            broadcastAnnotations(Number(panelNumber) - 1, annotationData);
+            if (!drawingScope || drawingScope.value !== "all") return;
+            const sourceIndex = Number(panelNumber) - 1;
+            sharedAnnotations = cloneAnnotations(annotationData);
+            renderSharedAnnotations(sourceIndex);
         };
 
         function childUrl(index) {
@@ -235,6 +247,21 @@ if (!__MP_CHILD) {
             setTimeout(syncHostFromActiveChild, 30);
         }, true);
 
+        drawingScope.addEventListener("change", () => {
+            if (drawingScope.value !== "all") return;
+            try {
+                const child = panels[activePanel] && panels[activePanel].frame.contentWindow;
+                if (child && typeof child.__mpGetAnnotations === "function") {
+                    sharedAnnotations = cloneAnnotations(child.__mpGetAnnotations());
+                } else {
+                    sharedAnnotations = [];
+                }
+            } catch (_) {
+                sharedAnnotations = [];
+            }
+            renderSharedAnnotations();
+        });
+
         toolbar.addEventListener("change", event => {
             const el = event.target;
             if (!el || !el.id || el.id === "drawing-scope") return;
@@ -270,11 +297,20 @@ if (!__MP_CHILD) {
                 const i = Number(msg.panel) - 1;
                 if (panels[i]) {
                     panels[i].ready = true;
-                    try { panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*"); } catch (_) {}
+                    try {
+                        panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*");
+                        if (drawingScope && drawingScope.value === "all") {
+                            const child = panels[i].frame.contentWindow;
+                            if (child && typeof child.__mpSetAnnotations === "function") child.__mpSetAnnotations(sharedAnnotations);
+                        }
+                    } catch (_) {}
                 }
                 if (i === activePanel) syncHostFromActiveChild();
             } else if (msg.type === "mp-annotations" && Array.isArray(msg.annotations)) {
-                broadcastAnnotations(Number(msg.panel) - 1, msg.annotations);
+                if (drawingScope && drawingScope.value === "all") {
+                    sharedAnnotations = cloneAnnotations(msg.annotations);
+                    renderSharedAnnotations(Number(msg.panel) - 1);
+                }
             } else if (msg.type === "mp-activate") {
                 setActivePanel(Number(msg.panel) - 1);
             } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting) {
@@ -13264,6 +13300,10 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         renderAnnotations();
     };
 
+    window.__mpGetAnnotations = function() {
+        return cloneAnnotationState();
+    };
+
     function sendAnnotationState() {
         const data = cloneAnnotationState();
         // Direct same-origin route is the primary path.
@@ -13345,3 +13385,4 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
