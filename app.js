@@ -44,7 +44,9 @@ if (!__MP_CHILD) {
             return (Array.isArray(data) ? data : []).map(a => ({
                 ...a,
                 points: Array.isArray(a.points)
-                    ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) }))
+                    ? a.points.map(p => Array.isArray(p)
+                        ? [Number(p[0]), Number(p[1])]
+                        : [Number(p.lng), Number(p.lat)])
                     : []
             }));
         }
@@ -235,20 +237,34 @@ if (!__MP_CHILD) {
             if (button.id === "save-png") { event.preventDefault(); event.stopImmediatePropagation(); saveCombinedPng(); return; }
             if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); clickChildById("save-gif"); return; }
             const targets = drawingTargets();
-            if (button.id) {
-                for (const i of targets) clickChildById(button.id, i);
-            } else if (button.dataset.tool) {
+            if (button.dataset.tool) {
                 for (const i of targets) {
-                    const d = childDoc(i);
-                    const target = d && d.querySelector(`.draw-tool[data-tool="${button.dataset.tool}"]`);
-                    if (target) target.click();
+                    try {
+                        const child = panels[i].frame.contentWindow;
+                        if (child && typeof child.__mpSetDrawingTool === "function") {
+                            child.__mpSetDrawingTool(button.dataset.tool);
+                        } else {
+                            const d = childDoc(i);
+                            const target = d && d.querySelector(`.draw-tool[data-tool="${button.dataset.tool}"]`);
+                            if (target) target.click();
+                        }
+                    } catch (_) {}
                 }
+            } else if (button.id) {
+                for (const i of targets) clickChildById(button.id, i);
             }
             setTimeout(syncHostFromActiveChild, 30);
         }, true);
 
         drawingScope.addEventListener("change", () => {
             if (drawingScope.value !== "all") return;
+            // Keep the currently selected drawing tool active in every visible child.
+            const activeTool = toolbar.querySelector(".draw-tool.active[data-tool]")?.dataset.tool || "pan";
+            for (let i = 0; i < layoutCount; i++) {
+                const d = childDoc(i);
+                const target = d && d.querySelector(`.draw-tool[data-tool="${activeTool}"]`);
+                if (target && !target.classList.contains("active")) target.click();
+            }
             try {
                 const child = panels[activePanel] && panels[activePanel].frame.contentWindow;
                 if (child && typeof child.__mpGetAnnotations === "function") {
@@ -13282,11 +13298,19 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         }
     });
 
+    function normalizeAnnotationPoint(p) {
+        if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
+        if (p && typeof p === "object") return [Number(p.lng), Number(p.lat)];
+        return [NaN, NaN];
+    }
+
     function cloneAnnotationState() {
         const source = currentAnnotation ? [...annotations, currentAnnotation] : annotations;
         return source.map(a => ({
             ...a,
-            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+            points: Array.isArray(a.points)
+                ? a.points.map(normalizeAnnotationPoint).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+                : []
         }));
     }
 
@@ -13294,7 +13318,9 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         if (!Array.isArray(annotationData)) return;
         annotations = annotationData.map(a => ({
             ...a,
-            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+            points: Array.isArray(a.points)
+                ? a.points.map(normalizeAnnotationPoint).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+                : []
         }));
         currentAnnotation = null;
         renderAnnotations();
@@ -13302,6 +13328,10 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
 
     window.__mpGetAnnotations = function() {
         return cloneAnnotationState();
+    };
+
+    window.__mpSetDrawingTool = function(tool) {
+        setDrawingTool(tool);
     };
 
     function sendAnnotationState() {
@@ -13385,4 +13415,5 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
