@@ -1490,6 +1490,10 @@ const PETTERSSEN_FGEN_COLORS = Array.from({length:40},(_,i)=>{
     const f=(t-a[0])/(b[0]-a[0]);
     return '#'+a[1].map((v,k)=>Math.round(v+(b[1][k]-v)*f).toString(16).padStart(2,'0')).join('');
 });
+// Neutral band: [-0.5, +0.5] K/(100 km)/3 h is pure white.
+// The existing one-unit bins centered at -0.5 and +0.5 are both white.
+PETTERSSEN_FGEN_COLORS[19] = "#ffffff";
+PETTERSSEN_FGEN_COLORS[20] = "#ffffff";
 const PETTERSSEN_FGEN_RGB = PETTERSSEN_FGEN_COLORS.map(c=>[
     parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)
 ]);
@@ -6582,6 +6586,7 @@ function getFieldColor(
     }
 
     if (definition.type === "petterssen_fgen") {
+        if (Number.isFinite(value) && value >= -0.5 && value <= 0.5) return { r: 255, g: 255, b: 255 };
         const rgb = getBinnedWindColor(Math.max(-20, Math.min(20, value)), -20, PETTERSSEN_FGEN_BOUNDS, PETTERSSEN_FGEN_RGB);
         return rgb ? { r: rgb[0], g: rgb[1], b: rgb[2] } : null;
     }
