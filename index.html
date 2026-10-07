@@ -112,6 +112,20 @@ body.mp-child.mp-layout-4 #legend-labels{
 body.mp-child.mp-layout-2 .legend-label,
 body.mp-child.mp-layout-4 .legend-label{top:0}
 
+
+/* Parent-owned drawing surface used only by Draw on -> All Panels. */
+#mp-shared-annotation-canvas{
+  position:absolute;
+  inset:4px;
+  width:calc(100% - 8px);
+  height:calc(100% - 8px);
+  z-index:35;
+  pointer-events:none;
+  touch-action:none;
+}
+#mp-shared-annotation-canvas.drawing-active{pointer-events:auto;cursor:crosshair}
+#mp-shared-annotation-canvas.erasing-active{pointer-events:auto;cursor:not-allowed}
+
 </style>
 </head>
 <body>
