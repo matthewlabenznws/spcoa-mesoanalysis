@@ -26,8 +26,16 @@ if (!__MP_CHILD) {
         let cameraBroadcasting = false;
         let lastTimelineValue = null;
         let sharedAnnotations = [];
+        let sharedCurrentAnnotation = null;
+        let sharedPointerId = null;
+        let sharedSourcePanel = -1;
+        let sharedDrawingTool = "pan";
         const parameterScope = document.getElementById("parameter-scope");
         const drawingScope = document.getElementById("drawing-scope");
+        const sharedCanvas = document.createElement("canvas");
+        sharedCanvas.id = "mp-shared-annotation-canvas";
+        panelGrid.appendChild(sharedCanvas);
+        const sharedCtx = sharedCanvas.getContext("2d");
 
         function parameterTargets() {
             return parameterScope && parameterScope.value === "all"
@@ -44,34 +52,240 @@ if (!__MP_CHILD) {
             return (Array.isArray(data) ? data : []).map(a => ({
                 ...a,
                 points: Array.isArray(a.points)
-                    ? a.points.map(p => Array.isArray(p)
-                        ? [Number(p[0]), Number(p[1])]
-                        : [Number(p.lng), Number(p.lat)])
+                    ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) }))
                     : []
             }));
         }
 
-        function renderSharedAnnotations(excludeIndex = -1) {
+        const SHARED_ANNOTATION_STYLE = {
+            cold:       { line: "#0047ff", width: 3.2, spacing: 38, size: 10 },
+            warm:       { line: "#ed1010", width: 3.2, spacing: 38, size: 10 },
+            stationary: { line: "#111111", width: 3.0, spacing: 40, size: 10 },
+            occluded:   { line: "#8d009f", width: 3.2, spacing: 38, size: 10 },
+            dryline:    { line: "#f28a00", width: 3.0, spacing: 34, size: 9 },
+            trough:     { line: "#8b4a12", width: 3.0 }
+        };
+
+        function resizeSharedCanvas() {
+            const r = panelGrid.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            const w = Math.max(1, Math.round((r.width - 8) * dpr));
+            const h = Math.max(1, Math.round((r.height - 8) * dpr));
+            if (sharedCanvas.width !== w || sharedCanvas.height !== h) {
+                sharedCanvas.width = w; sharedCanvas.height = h;
+            }
+            sharedCanvas.style.width = `${Math.max(1, r.width - 8)}px`;
+            sharedCanvas.style.height = `${Math.max(1, r.height - 8)}px`;
+            sharedCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            sharedCtx.lineCap = "round";
+            sharedCtx.lineJoin = "round";
+        }
+
+        function panelGeometry(index) {
+            if (!panels[index] || index >= layoutCount) return null;
+            const gridRect = panelGrid.getBoundingClientRect();
+            const holderRect = panels[index].holder.getBoundingClientRect();
+            let mapSize = null;
+            try {
+                const cw = panels[index].frame.contentWindow;
+                mapSize = cw && typeof cw.__mpMapSize === "function" ? cw.__mpMapSize() : null;
+            } catch (_) {}
+            return {
+                x: holderRect.left - gridRect.left - 4,
+                y: holderRect.top - gridRect.top - 4,
+                width: holderRect.width,
+                height: mapSize?.height || holderRect.height,
+                holderHeight: holderRect.height
+            };
+        }
+
+        function panelAtCanvasPoint(x, y) {
             for (let i = 0; i < layoutCount; i++) {
-                if (i === excludeIndex || !panels[i] || !panels[i].ready) continue;
-                try {
-                    const child = panels[i].frame.contentWindow;
-                    if (child && typeof child.__mpSetAnnotations === "function") {
-                        child.__mpSetAnnotations(sharedAnnotations);
-                    } else if (child) {
-                        child.postMessage({ type: "mp-set-annotations", annotations: sharedAnnotations }, "*");
-                    }
-                } catch (_) {}
+                const g = panelGeometry(i);
+                if (!g) continue;
+                if (x >= g.x && x <= g.x + g.width && y >= g.y && y <= g.y + g.height) return i;
+            }
+            return -1;
+        }
+
+        function unprojectShared(index, x, y) {
+            const g = panelGeometry(index);
+            if (!g) return null;
+            try {
+                const cw = panels[index].frame.contentWindow;
+                return cw.__mpUnproject(x - g.x, y - g.y);
+            } catch (_) { return null; }
+        }
+
+        function projectShared(index, ll) {
+            const g = panelGeometry(index);
+            if (!g) return null;
+            try {
+                const cw = panels[index].frame.contentWindow;
+                const p = cw.__mpProject(ll);
+                return p ? { x: g.x + p.x, y: g.y + p.y } : null;
+            } catch (_) { return null; }
+        }
+
+        function sharedSmoothPath(ctx, pts) {
+            if (!pts.length) return;
+            ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+            if (pts.length === 2) { ctx.lineTo(pts[1].x, pts[1].y); return; }
+            for (let i = 1; i < pts.length - 1; i++) {
+                const mx = (pts[i].x + pts[i+1].x)/2, my = (pts[i].y + pts[i+1].y)/2;
+                ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+            }
+            if (pts.length > 1) ctx.lineTo(pts[pts.length-1].x, pts[pts.length-1].y);
+        }
+
+        function sharedResample(pts, spacing) {
+            const out=[]; if (pts.length<2) return out;
+            let carry=spacing*.65;
+            for(let i=1;i<pts.length;i++){
+                let ax=pts[i-1].x, ay=pts[i-1].y, bx=pts[i].x, by=pts[i].y;
+                let dx=bx-ax, dy=by-ay, seg=Math.hypot(dx,dy); if(seg<.01) continue;
+                let ux=dx/seg, uy=dy/seg;
+                while(carry<=seg){
+                    const x=ax+ux*carry, y=ay+uy*carry;
+                    out.push({x,y,angle:Math.atan2(uy,ux)});
+                    ax=x; ay=y; seg-=carry; carry=spacing;
+                }
+                carry-=seg;
+            }
+            return out;
+        }
+
+        function sharedTriangle(ctx,x,y,angle,side,size,color){
+            const nx=-Math.sin(angle)*side, ny=Math.cos(angle)*side, tx=Math.cos(angle), ty=Math.sin(angle);
+            const bx=x+nx*1.5, by=y+ny*1.5;
+            ctx.beginPath(); ctx.moveTo(bx-tx*size*.72,by-ty*size*.72);
+            ctx.lineTo(bx+tx*size*.72,by+ty*size*.72); ctx.lineTo(x+nx*size*1.35,y+ny*size*1.35);
+            ctx.closePath(); ctx.fillStyle=color; ctx.fill(); ctx.strokeStyle=color; ctx.lineWidth=1; ctx.stroke();
+        }
+
+        function sharedSemicircle(ctx,x,y,angle,side,size,color){
+            ctx.save(); ctx.translate(x,y); ctx.rotate(angle); ctx.beginPath(); ctx.moveTo(-size,0);
+            for(let i=0;i<=18;i++){const t=Math.PI-(Math.PI*i/18);ctx.lineTo(size*Math.cos(t),side*size*Math.sin(t));}
+            ctx.closePath(); ctx.fillStyle=color; ctx.fill(); ctx.strokeStyle=color; ctx.lineWidth=2.2; ctx.stroke(); ctx.restore();
+        }
+
+        function renderSharedAnnotationForPanel(annotation, index) {
+            if (!annotation?.points?.length) return;
+            const g = panelGeometry(index); if (!g) return;
+            const pts = annotation.points.map(ll => projectShared(index,ll)).filter(Boolean);
+            if (!pts.length) return;
+            sharedCtx.save();
+            sharedCtx.beginPath(); sharedCtx.rect(g.x,g.y,g.width,g.height); sharedCtx.clip();
+
+            if (annotation.type === "high" || annotation.type === "low") {
+                const p=pts[0], letter=annotation.type==="high"?"H":"L";
+                sharedCtx.font='800 58px Inter, "Segoe UI", Arial, sans-serif';
+                sharedCtx.textAlign="center"; sharedCtx.textBaseline="middle"; sharedCtx.lineWidth=3;
+                sharedCtx.strokeStyle="rgba(255,255,255,.9)";
+                sharedCtx.fillStyle=annotation.type==="high"?"#003cff":"#ed0000";
+                sharedCtx.strokeText(letter,p.x,p.y); sharedCtx.fillText(letter,p.x,p.y); sharedCtx.restore(); return;
+            }
+            if (annotation.type === "pen") {
+                sharedCtx.strokeStyle=annotation.color||"#ff3030"; sharedCtx.lineWidth=annotation.width||4;
+                sharedSmoothPath(sharedCtx,pts); sharedCtx.stroke(); sharedCtx.restore(); return;
+            }
+            const style=SHARED_ANNOTATION_STYLE[annotation.type];
+            if (!style || pts.length<2){sharedCtx.restore();return;}
+            sharedCtx.strokeStyle=style.line; sharedCtx.lineWidth=style.width;
+            sharedCtx.setLineDash(annotation.type==="trough"?[11,8]:[]);
+            sharedSmoothPath(sharedCtx,pts); sharedCtx.stroke(); sharedCtx.setLineDash([]);
+            if(annotation.type!=="trough"){
+                sharedResample(pts,style.spacing).forEach((m,k)=>{
+                    if(annotation.type==="cold") sharedTriangle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#0047ff");
+                    else if(annotation.type==="warm") sharedSemicircle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#ed1010");
+                    else if(annotation.type==="stationary"){
+                        if(k%2===0) sharedTriangle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#0047ff");
+                        else sharedSemicircle(sharedCtx,m.x,m.y,m.angle,1,style.size,"#ed1010");
+                    } else if(annotation.type==="occluded"){
+                        if(k%2===0) sharedTriangle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#8d009f");
+                        else sharedSemicircle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#8d009f");
+                    } else if(annotation.type==="dryline") sharedSemicircle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#f28a00");
+                });
+            }
+            sharedCtx.restore();
+        }
+
+        function renderSharedOverlay() {
+            resizeSharedCanvas();
+            const r=sharedCanvas.getBoundingClientRect();
+            sharedCtx.clearRect(0,0,r.width,r.height);
+            if (!drawingScope || drawingScope.value!=="all") return;
+            for(let i=0;i<layoutCount;i++){
+                sharedAnnotations.forEach(a=>renderSharedAnnotationForPanel(a,i));
+                if(sharedCurrentAnnotation) renderSharedAnnotationForPanel(sharedCurrentAnnotation,i);
             }
         }
 
-        // Authoritative parent-owned annotation state for Draw on -> All Panels.
-        window.__mpReceiveAnnotations = (panelNumber, annotationData) => {
-            if (!drawingScope || drawingScope.value !== "all") return;
-            const sourceIndex = Number(panelNumber) - 1;
-            sharedAnnotations = cloneAnnotations(annotationData);
-            renderSharedAnnotations(sourceIndex);
-        };
+        function setSharedDrawingTool(tool) {
+            sharedDrawingTool=tool||"pan";
+            document.querySelectorAll("#drawing-toolbar .draw-tool[data-tool]").forEach(b=>b.classList.toggle("active",b.dataset.tool===sharedDrawingTool));
+            sharedCanvas.classList.toggle("drawing-active",drawingScope.value==="all" && sharedDrawingTool!=="pan" && sharedDrawingTool!=="eraser");
+            sharedCanvas.classList.toggle("erasing-active",drawingScope.value==="all" && sharedDrawingTool==="eraser");
+            const hints={pan:"Pan mode",pen:"Drag to draw",cold:"Drag a cold front",warm:"Drag a warm front",stationary:"Drag a stationary front",occluded:"Drag an occluded front",dryline:"Drag a dryline",trough:"Drag a surface trough",high:"Click to place H",low:"Click to place L",eraser:"Click an annotation to erase"};
+            const h=document.getElementById("draw-hint"); if(h) h.textContent=hints[sharedDrawingTool]||"";
+        }
+
+        function sharedPointSegmentDistance(px,py,ax,ay,bx,by){
+            const dx=bx-ax,dy=by-ay,len2=dx*dx+dy*dy;if(!len2)return Math.hypot(px-ax,py-ay);
+            let t=((px-ax)*dx+(py-ay)*dy)/len2;t=Math.max(0,Math.min(1,t));
+            return Math.hypot(px-(ax+t*dx),py-(ay+t*dy));
+        }
+
+        function eraseSharedAt(panelIndex,x,y){
+            let best=-1,bestD=Infinity;
+            sharedAnnotations.forEach((a,idx)=>{
+                const pts=(a.points||[]).map(ll=>projectShared(panelIndex,ll)).filter(Boolean);
+                let d=Infinity;
+                if(a.type==="high"||a.type==="low"){if(pts[0])d=Math.hypot(x-pts[0].x,y-pts[0].y);}
+                else for(let j=1;j<pts.length;j++)d=Math.min(d,sharedPointSegmentDistance(x,y,pts[j-1].x,pts[j-1].y,pts[j].x,pts[j].y));
+                if(d<bestD){bestD=d;best=idx;}
+            });
+            if(best>=0&&bestD<=18){sharedAnnotations.splice(best,1);renderSharedOverlay();}
+        }
+
+        function canvasXY(event){
+            const r=sharedCanvas.getBoundingClientRect();
+            return {x:event.clientX-r.left,y:event.clientY-r.top};
+        }
+
+        sharedCanvas.addEventListener("pointerdown",event=>{
+            if(drawingScope.value!=="all"||sharedDrawingTool==="pan")return;
+            event.preventDefault(); event.stopPropagation();
+            const p=canvasXY(event),panel=panelAtCanvasPoint(p.x,p.y); if(panel<0)return;
+            if(sharedDrawingTool==="eraser"){eraseSharedAt(panel,p.x,p.y);return;}
+            const ll=unprojectShared(panel,p.x,p.y); if(!ll)return;
+            if(sharedDrawingTool==="high"||sharedDrawingTool==="low"){
+                sharedAnnotations.push({type:sharedDrawingTool,points:[ll]});renderSharedOverlay();return;
+            }
+            sharedPointerId=event.pointerId;sharedSourcePanel=panel;sharedCanvas.setPointerCapture(event.pointerId);
+            sharedCurrentAnnotation={type:sharedDrawingTool,points:[ll],color:document.getElementById("draw-color")?.value||"#ff3030",width:Math.max(1,Math.min(12,Number(document.getElementById("draw-width")?.value)||4))};
+            renderSharedOverlay();
+        });
+
+        sharedCanvas.addEventListener("pointermove",event=>{
+            if(!sharedCurrentAnnotation||event.pointerId!==sharedPointerId)return;
+            event.preventDefault();
+            const p=canvasXY(event),ll=unprojectShared(sharedSourcePanel,p.x,p.y); if(!ll)return;
+            const pts=sharedCurrentAnnotation.points,last=pts[pts.length-1];
+            const a=projectShared(sharedSourcePanel,last),b=projectShared(sharedSourcePanel,ll);
+            if(a&&b&&Math.hypot(b.x-a.x,b.y-a.y)>=3){pts.push(ll);renderSharedOverlay();}
+        });
+
+        function finishSharedDrawing(event){
+            if(!sharedCurrentAnnotation||event.pointerId!==sharedPointerId)return;
+            event.preventDefault();
+            if(sharedCurrentAnnotation.points.length>=2)sharedAnnotations.push(sharedCurrentAnnotation);
+            sharedCurrentAnnotation=null;sharedPointerId=null;sharedSourcePanel=-1;
+            try{sharedCanvas.releasePointerCapture(event.pointerId);}catch(_){}
+            renderSharedOverlay();
+        }
+        sharedCanvas.addEventListener("pointerup",finishSharedDrawing);
+        sharedCanvas.addEventListener("pointercancel",finishSharedDrawing);
 
         function childUrl(index) {
             const u = new URL(window.location.href);
@@ -110,6 +324,7 @@ if (!__MP_CHILD) {
                         p.frame.contentWindow.postMessage({ type: "mp-resize" }, "*");
                     } catch (_) {}
                 });
+                renderSharedOverlay();
             });
         }
 
@@ -236,57 +451,57 @@ if (!__MP_CHILD) {
             if (!button) return;
             if (button.id === "save-png") { event.preventDefault(); event.stopImmediatePropagation(); saveCombinedPng(); return; }
             if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); clickChildById("save-gif"); return; }
-            const targets = drawingTargets();
-            if (button.dataset.tool) {
-                for (const i of targets) {
-                    try {
-                        const child = panels[i].frame.contentWindow;
-                        if (child && typeof child.__mpSetDrawingTool === "function") {
-                            child.__mpSetDrawingTool(button.dataset.tool);
-                        } else {
-                            const d = childDoc(i);
-                            const target = d && d.querySelector(`.draw-tool[data-tool="${button.dataset.tool}"]`);
-                            if (target) target.click();
-                        }
-                    } catch (_) {}
+            if (drawingScope.value === "all") {
+                if (button.dataset.tool) {
+                    setSharedDrawingTool(button.dataset.tool);
+                } else if (button.id === "draw-undo") {
+                    if (sharedAnnotations.length) sharedAnnotations.pop();
+                    renderSharedOverlay();
+                } else if (button.id === "draw-clear") {
+                    sharedAnnotations = []; sharedCurrentAnnotation = null; renderSharedOverlay();
                 }
-            } else if (button.id) {
-                for (const i of targets) clickChildById(button.id, i);
+                return;
+            }
+            if (button.id) clickChildById(button.id, activePanel);
+            else if (button.dataset.tool) {
+                const d = childDoc(activePanel);
+                const target = d && d.querySelector(`.draw-tool[data-tool="${button.dataset.tool}"]`);
+                if (target) target.click();
             }
             setTimeout(syncHostFromActiveChild, 30);
         }, true);
 
         drawingScope.addEventListener("change", () => {
-            if (drawingScope.value !== "all") return;
-            // Keep the currently selected drawing tool active in every visible child.
-            const activeTool = toolbar.querySelector(".draw-tool.active[data-tool]")?.dataset.tool || "pan";
-            for (let i = 0; i < layoutCount; i++) {
-                const d = childDoc(i);
-                const target = d && d.querySelector(`.draw-tool[data-tool="${activeTool}"]`);
-                if (target && !target.classList.contains("active")) target.click();
-            }
-            try {
-                const child = panels[activePanel] && panels[activePanel].frame.contentWindow;
-                if (child && typeof child.__mpGetAnnotations === "function") {
-                    sharedAnnotations = cloneAnnotations(child.__mpGetAnnotations());
-                } else {
-                    sharedAnnotations = [];
+            if (drawingScope.value === "all") {
+                try {
+                    const child = panels[activePanel]?.frame.contentWindow;
+                    sharedAnnotations = child && typeof child.__mpGetAnnotations === "function"
+                        ? cloneAnnotations(child.__mpGetAnnotations()) : [];
+                } catch (_) { sharedAnnotations = []; }
+                for (let i=0;i<layoutCount;i++) {
+                    const d=childDoc(i), pan=d&&d.querySelector('.draw-tool[data-tool="pan"]');
+                    if(pan) pan.click();
                 }
-            } catch (_) {
-                sharedAnnotations = [];
+                setSharedDrawingTool(sharedDrawingTool === "pan" ? "pan" : sharedDrawingTool);
+                renderSharedOverlay();
+            } else {
+                sharedCanvas.classList.remove("drawing-active","erasing-active");
+                renderSharedOverlay();
+                syncHostFromActiveChild();
             }
-            renderSharedAnnotations();
         });
 
         toolbar.addEventListener("change", event => {
             const el = event.target;
             if (!el || !el.id || el.id === "drawing-scope") return;
-            for (const i of drawingTargets()) dispatchChildValue(el, i, "change");
+            if (drawingScope.value === "all") return;
+            dispatchChildValue(el, activePanel, "change");
         });
         toolbar.addEventListener("input", event => {
             const el = event.target;
             if (!el || !el.id || el.id === "drawing-scope") return;
-            for (const i of drawingTargets()) dispatchChildValue(el, i, "input");
+            if (drawingScope.value === "all") return;
+            dispatchChildValue(el, activePanel, "input");
         });
 
         timeline.addEventListener("click", event => {
@@ -315,18 +530,9 @@ if (!__MP_CHILD) {
                     panels[i].ready = true;
                     try {
                         panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*");
-                        if (drawingScope && drawingScope.value === "all") {
-                            const child = panels[i].frame.contentWindow;
-                            if (child && typeof child.__mpSetAnnotations === "function") child.__mpSetAnnotations(sharedAnnotations);
-                        }
                     } catch (_) {}
                 }
                 if (i === activePanel) syncHostFromActiveChild();
-            } else if (msg.type === "mp-annotations" && Array.isArray(msg.annotations)) {
-                if (drawingScope && drawingScope.value === "all") {
-                    sharedAnnotations = cloneAnnotations(msg.annotations);
-                    renderSharedAnnotations(Number(msg.panel) - 1);
-                }
             } else if (msg.type === "mp-activate") {
                 setActivePanel(Number(msg.panel) - 1);
             } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting) {
@@ -336,7 +542,7 @@ if (!__MP_CHILD) {
                     if (i === source) continue;
                     panels[i].frame.contentWindow.postMessage({ type: "mp-set-camera", camera: msg.camera }, "*");
                 }
-                setTimeout(() => { cameraBroadcasting = false; }, 80);
+                setTimeout(() => { cameraBroadcasting = false; renderSharedOverlay(); }, 100);
             }
         });
 
@@ -347,10 +553,21 @@ if (!__MP_CHILD) {
             try {
                 const count = visiblePanelCount();
                 const captures = [];
+                const restoreAnnotations = [];
                 for (let i = 0; i < count; i++) {
                     const w = panels[i].frame.contentWindow;
                     if (!w || typeof w.__mpCapturePanel !== "function") throw new Error(`Panel ${i + 1} is not ready.`);
+                    if (drawingScope.value === "all" && typeof w.__mpGetAnnotations === "function" && typeof w.__mpSetAnnotations === "function") {
+                        restoreAnnotations[i] = w.__mpGetAnnotations();
+                        w.__mpSetAnnotations(sharedAnnotations);
+                    }
                     captures.push(await w.__mpCapturePanel(1800));
+                }
+                if (drawingScope.value === "all") {
+                    for (let i=0;i<count;i++) {
+                        const w=panels[i].frame.contentWindow;
+                        if (restoreAnnotations[i] && typeof w.__mpSetAnnotations === "function") w.__mpSetAnnotations(restoreAnnotations[i]);
+                    }
                 }
                 const images = await Promise.all(captures.map(src => new Promise((resolve, reject) => {
                     const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = src;
@@ -394,7 +611,7 @@ if (!__MP_CHILD) {
             }
         }
 
-        setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); }, 350);
+        setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); if (drawingScope.value === "all") renderSharedOverlay(); }, 350);
         applyLayout(layoutSelect ? layoutSelect.value : 1);
         if (saveGif) saveGif.title = "GIF export uses the active panel. PNG export combines all visible panels.";
     })();
@@ -13298,19 +13515,11 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         }
     });
 
-    function normalizeAnnotationPoint(p) {
-        if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
-        if (p && typeof p === "object") return [Number(p.lng), Number(p.lat)];
-        return [NaN, NaN];
-    }
-
     function cloneAnnotationState() {
         const source = currentAnnotation ? [...annotations, currentAnnotation] : annotations;
         return source.map(a => ({
             ...a,
-            points: Array.isArray(a.points)
-                ? a.points.map(normalizeAnnotationPoint).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
-                : []
+            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
         }));
     }
 
@@ -13318,9 +13527,7 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         if (!Array.isArray(annotationData)) return;
         annotations = annotationData.map(a => ({
             ...a,
-            points: Array.isArray(a.points)
-                ? a.points.map(normalizeAnnotationPoint).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
-                : []
+            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
         }));
         currentAnnotation = null;
         renderAnnotations();
@@ -13329,9 +13536,17 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     window.__mpGetAnnotations = function() {
         return cloneAnnotationState();
     };
-
-    window.__mpSetDrawingTool = function(tool) {
-        setDrawingTool(tool);
+    window.__mpProject = function(ll) {
+        const p = map.project(ll);
+        return { x: p.x, y: p.y };
+    };
+    window.__mpUnproject = function(x, y) {
+        const ll = map.unproject([x, y]);
+        return [ll.lng, ll.lat];
+    };
+    window.__mpMapSize = function() {
+        const r = mapWrapper.getBoundingClientRect();
+        return { width: r.width, height: r.height };
     };
 
     function sendAnnotationState() {
@@ -13378,25 +13593,90 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         for (const layer of layers) ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, outW, mapH);
 
         if (legend && legend.style.display !== "none") {
-            const lr = legend.getBoundingClientRect(), scale = outW / srcW;
-            const x = (lr.left - rect.left) * scale, y = (lr.top - rect.top) * scale;
-            const w = lr.width * scale, h = lr.height * scale;
-            ctx.fillStyle = "rgba(20,40,57,.96)"; ctx.fillRect(x, y, w, h);
-            ctx.strokeStyle = "#41647d"; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
-            ctx.fillStyle = "#f4f8fb"; ctx.font = `600 ${Math.max(15, 12*scale)}px Inter, Arial, sans-serif`; ctx.textAlign = "left";
-            ctx.fillText(legendTitle?.textContent || "", x + 14*scale, y + 22*scale);
-            if (legendCanvas && legendCanvas.width) ctx.drawImage(legendCanvas, x + 14*scale, y + 31*scale, Math.max(1, w - 28*scale), 18*scale);
+            /*
+             * PNG legend is rendered independently from the compact on-screen
+             * multi-panel legend.  Do NOT scale the tiny DOM legend box up:
+             * that was squeezing the color ramp and piling the tick labels
+             * together in 2/4-panel exports.
+             */
+            const lr = legend.getBoundingClientRect();
+            const scale = outW / srcW;
+
+            // Preserve the legend's map-relative lower-left position, but give
+            // the exported legend a stable width/height in output pixels.
+            const leftFrac = Math.max(0, (lr.left - rect.left) / srcW);
+            const bottomFrac = Math.max(0, (rect.bottom - lr.bottom) / srcH);
+
+            const w = Math.round(Math.max(470, Math.min(620, outW * 0.30)));
+            const h = 118;
+            const x = Math.max(18, Math.min(outW - w - 18, Math.round(leftFrac * outW)));
+            const y = Math.max(18, Math.min(mapH - h - 18, Math.round(mapH - bottomFrac * mapH - h)));
+
+            const padX = 22;
+            const titleY = y + 29;
+            const barX = x + padX;
+            const barY = y + 43;
+            const barW = w - padX * 2;
+            const barH = 22;
+            const labelY = barY + barH + 27;
+
+            ctx.fillStyle = "rgba(20,40,57,.96)";
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = "#41647d";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, w, h);
+
+            ctx.fillStyle = "#f4f8fb";
+            ctx.font = '600 21px Inter, Arial, sans-serif';
+            ctx.textAlign = "left";
+            ctx.textBaseline = "alphabetic";
+            ctx.fillText(legendTitle?.textContent || "", x + padX, titleY);
+
+            if (legendCanvas && legendCanvas.width) {
+                ctx.drawImage(legendCanvas, barX, barY, barW, barH);
+            }
+
             if (legendLabels) {
-                const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
-                ctx.fillStyle = "#c7d6e1"; ctx.font = `500 ${Math.max(12, 9*scale)}px Inter, Arial, sans-serif`;
-                labels.forEach((el, i) => {
-                    // Use the exact DOM tick position instead of redistributing labels evenly.
-                    // This is essential for nonuniform bounds and for endpoints such as 130 F.
-                    const rawPct = parseFloat(el.style.left || "0");
-                    const pct = Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) / 100 : 0;
-                    ctx.textAlign = el.classList.contains("legend-label-first") ? "left" :
-                                    el.classList.contains("legend-label-last") ? "right" : "center";
-                    ctx.fillText(el.textContent || "", x + 14*scale + pct*(w-28*scale), y + h - 10*scale);
+                const allLabels = Array.from(legendLabels.querySelectorAll(".legend-label"))
+                    .map(el => {
+                        const rawPct = parseFloat(el.style.left || "");
+                        return {
+                            el,
+                            pct: Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) / 100 : null,
+                            text: (el.textContent || "").trim()
+                        };
+                    })
+                    .filter(d => d.pct !== null && d.text);
+
+                // Thin only when labels would collide at export resolution.
+                // Endpoints are always preserved.
+                ctx.font = '500 17px Inter, Arial, sans-serif';
+                const minGap = 58;
+                const kept = [];
+                allLabels.forEach((d, i) => {
+                    const px = barX + d.pct * barW;
+                    if (i === 0 || i === allLabels.length - 1) {
+                        kept.push({ ...d, px });
+                        return;
+                    }
+                    const prev = kept[kept.length - 1];
+                    const lastPx = barX + allLabels[allLabels.length - 1].pct * barW;
+                    if ((!prev || px - prev.px >= minGap) && lastPx - px >= minGap) {
+                        kept.push({ ...d, px });
+                    }
+                });
+
+                // If the final endpoint was already inserted early, de-dupe.
+                const unique = [];
+                kept.sort((a,b) => a.pct - b.pct).forEach(d => {
+                    if (!unique.length || Math.abs(d.pct - unique[unique.length-1].pct) > 1e-6) unique.push(d);
+                });
+
+                ctx.fillStyle = "#c7d6e1";
+                ctx.textBaseline = "alphabetic";
+                unique.forEach((d, i) => {
+                    ctx.textAlign = i === 0 ? "left" : i === unique.length - 1 ? "right" : "center";
+                    ctx.fillText(d.text, d.px, labelY);
                 });
             }
         }
@@ -13415,5 +13695,3 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
-
