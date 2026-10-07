@@ -25,6 +25,19 @@ if (!__MP_CHILD) {
         let layoutCount = 1;
         let cameraBroadcasting = false;
         let lastTimelineValue = null;
+        const parameterScope = document.getElementById("parameter-scope");
+        const drawingScope = document.getElementById("drawing-scope");
+
+        function parameterTargets() {
+            return parameterScope && parameterScope.value === "all"
+                ? Array.from({ length: layoutCount }, (_, i) => i)
+                : [activePanel];
+        }
+        function drawingTargets() {
+            return drawingScope && drawingScope.value === "all"
+                ? Array.from({ length: layoutCount }, (_, i) => i)
+                : [activePanel];
+        }
 
         function childUrl(index) {
             const u = new URL(window.location.href);
@@ -58,7 +71,10 @@ if (!__MP_CHILD) {
             if (activePanel >= layoutCount) setActivePanel(0);
             requestAnimationFrame(() => {
                 panels.slice(0, layoutCount).forEach(p => {
-                    try { p.frame.contentWindow.postMessage({ type: "mp-resize" }, "*"); } catch (_) {}
+                    try {
+                        p.frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*");
+                        p.frame.contentWindow.postMessage({ type: "mp-resize" }, "*");
+                    } catch (_) {}
                 });
             });
         }
@@ -108,7 +124,7 @@ if (!__MP_CHILD) {
             const d = childDoc();
             if (!d) return;
             document.querySelectorAll("#sidebar input[id], #sidebar select[id], #drawing-toolbar input[id], #timeline-bar input[id], #timeline-bar select[id]").forEach(host => {
-                if (host.id === "layout-select") return;
+                if (host.id === "layout-select" || host.id === "parameter-scope" || host.id === "drawing-scope") return;
                 const child = d.getElementById(host.id);
                 if (!child) return;
                 if (host.type === "checkbox" || host.type === "radio") host.checked = child.checked;
@@ -154,24 +170,30 @@ if (!__MP_CHILD) {
         sidebar.addEventListener("click", event => {
             const row = event.target.closest(".field-choice");
             if (row) {
-                clickChildField(row.dataset.field);
+                for (const i of parameterTargets()) clickChildField(row.dataset.field, i);
                 setTimeout(syncHostFromActiveChild, 50);
                 return;
             }
             const input = event.target.closest("input[id]");
             if (input && input.type === "checkbox") {
-                const target = childElById(input.id);
-                if (target) setTimeout(() => { target.click(); syncHostFromActiveChild(); }, 0);
+                const targets = parameterTargets();
+                setTimeout(() => {
+                    for (const i of targets) {
+                        const target = childElById(input.id, i);
+                        if (target && target.checked !== input.checked) target.click();
+                    }
+                    syncHostFromActiveChild();
+                }, 0);
             }
         }, true);
 
         sidebar.addEventListener("change", event => {
             const el = event.target;
-            if (!el || !el.id || el.id === "layout-select") return;
+            if (!el || !el.id || el.id === "layout-select" || el.id === "parameter-scope") return;
             if (el.id === "sector-select") {
                 for (let i = 0; i < layoutCount; i++) dispatchChildValue(el, i, "change");
             } else if (el.tagName === "SELECT" || (el.tagName === "INPUT" && el.type !== "checkbox")) {
-                dispatchChildValue(el, activePanel, "change");
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "change");
             }
         });
 
@@ -180,22 +202,28 @@ if (!__MP_CHILD) {
             if (!button) return;
             if (button.id === "save-png") { event.preventDefault(); event.stopImmediatePropagation(); saveCombinedPng(); return; }
             if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); clickChildById("save-gif"); return; }
-            if (button.id) clickChildById(button.id);
-            else if (button.dataset.tool) {
-                const d = childDoc();
-                const target = d && d.querySelector(`.draw-tool[data-tool="${button.dataset.tool}"]`);
-                if (target) target.click();
+            const targets = drawingTargets();
+            if (button.id) {
+                for (const i of targets) clickChildById(button.id, i);
+            } else if (button.dataset.tool) {
+                for (const i of targets) {
+                    const d = childDoc(i);
+                    const target = d && d.querySelector(`.draw-tool[data-tool="${button.dataset.tool}"]`);
+                    if (target) target.click();
+                }
             }
             setTimeout(syncHostFromActiveChild, 30);
         }, true);
 
         toolbar.addEventListener("change", event => {
             const el = event.target;
-            if (el && el.id) dispatchChildValue(el, activePanel, "change");
+            if (!el || !el.id || el.id === "drawing-scope") return;
+            for (const i of drawingTargets()) dispatchChildValue(el, i, "change");
         });
         toolbar.addEventListener("input", event => {
             const el = event.target;
-            if (el && el.id) dispatchChildValue(el, activePanel, "input");
+            if (!el || !el.id || el.id === "drawing-scope") return;
+            for (const i of drawingTargets()) dispatchChildValue(el, i, "input");
         });
 
         timeline.addEventListener("click", event => {
@@ -220,8 +248,17 @@ if (!__MP_CHILD) {
             if (!msg.type) return;
             if (msg.type === "mp-ready") {
                 const i = Number(msg.panel) - 1;
-                if (panels[i]) panels[i].ready = true;
+                if (panels[i]) {
+                    panels[i].ready = true;
+                    try { panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*"); } catch (_) {}
+                }
                 if (i === activePanel) syncHostFromActiveChild();
+            } else if (msg.type === "mp-annotations" && drawingScope && drawingScope.value === "all" && Array.isArray(msg.annotations)) {
+                const source = Number(msg.panel) - 1;
+                for (let i = 0; i < layoutCount; i++) {
+                    if (i === source) continue;
+                    try { panels[i].frame.contentWindow.postMessage({ type: "mp-set-annotations", annotations: msg.annotations }, "*"); } catch (_) {}
+                }
             } else if (msg.type === "mp-activate") {
                 setActivePanel(Number(msg.panel) - 1);
             } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting) {
@@ -2795,7 +2832,7 @@ function updateActiveLayersStrip() {
     function appendSeparator() {
         const separator = document.createElement("span");
         separator.className = "active-layer-separator";
-        separator.textContent = "|";
+        separator.textContent = " | ";
         activeLayersText.appendChild(separator);
     }
 
@@ -10454,11 +10491,47 @@ function drawProportionalColorLegend(colors, bounds) {
     }
 }
 
+function getResponsiveLegendTicks(ticks, bounds, proportional = false) {
+    if (!Array.isArray(ticks) || ticks.length <= 2 || !legendLabels) return ticks || [];
+
+    const width = Math.max(1, legendLabels.getBoundingClientRect().width || legendLabels.clientWidth || 240);
+    // Approximate label footprint plus breathing room. Multi-panel legends intentionally
+    // show fewer ticks rather than squeezing labels together.
+    const isFourPanel = document.body.classList.contains("mp-layout-4");
+    const minGapPx = isFourPanel ? 38 : width <= 250 ? 42 : width <= 320 ? 46 : width <= 390 ? 50 : 54;
+
+    const positionFor = tick => {
+        const value = typeof tick === "object" ? tick.value : tick;
+        if (proportional) {
+            const min = bounds[0], max = bounds[bounds.length - 1];
+            return max === min ? 0 : ((value - min) / (max - min)) * width;
+        }
+        return (getLegendBoundaryPosition(value, bounds) / 100) * width;
+    };
+
+    const kept = [ticks[0]];
+    let lastX = positionFor(ticks[0]);
+    const lastTick = ticks[ticks.length - 1];
+    const lastTickX = positionFor(lastTick);
+
+    for (let i = 1; i < ticks.length - 1; i++) {
+        const x = positionFor(ticks[i]);
+        // Reserve space for the final label too.
+        if (x - lastX >= minGapPx && lastTickX - x >= minGapPx) {
+            kept.push(ticks[i]);
+            lastX = x;
+        }
+    }
+    kept.push(lastTick);
+    return kept;
+}
+
 function renderProportionalLegendLabels(ticks, bounds) {
     if (!legendLabels) return;
     legendLabels.innerHTML = "";
     const min = bounds[0], max = bounds[bounds.length - 1], span = max - min;
-    ticks.forEach((tick, index) => {
+    const visibleTicks = getResponsiveLegendTicks(ticks, bounds, true);
+    visibleTicks.forEach((tick, index) => {
         const value = typeof tick === "object" ? tick.value : tick;
         const label = typeof tick === "object" ? tick.label : String(tick);
         const position = Math.max(0, Math.min(100, ((value - min) / span) * 100));
@@ -10467,7 +10540,7 @@ function renderProportionalLegendLabels(ticks, bounds) {
         el.textContent = label;
         el.style.left = `${position}%`;
         if (index === 0 || position <= 0.01) el.classList.add("legend-label-first");
-        if (index === ticks.length - 1 || position >= 99.99) el.classList.add("legend-label-last");
+        if (index === visibleTicks.length - 1 || position >= 99.99) el.classList.add("legend-label-last");
         legendLabels.appendChild(el);
     });
 }
@@ -10529,7 +10602,8 @@ function renderLegendLabels(ticks, bounds) {
 
     legendLabels.innerHTML = "";
 
-    ticks.forEach((tick, tickIndex) => {
+    const visibleTicks = getResponsiveLegendTicks(ticks, bounds, false);
+    visibleTicks.forEach((tick, tickIndex) => {
 
         const value =
             typeof tick === "object"
@@ -10555,7 +10629,7 @@ function renderLegendLabels(ticks, bounds) {
             span.classList.add("legend-label-first");
         }
 
-        if (tickIndex === ticks.length - 1 || position >= 99.99) {
+        if (tickIndex === visibleTicks.length - 1 || position >= 99.99) {
             span.classList.add("legend-label-last");
         }
 
@@ -13126,10 +13200,33 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         if (msg.type === "mp-set-camera" && msg.camera) {
             applyingRemoteCamera = true;
             try { map.jumpTo(msg.camera); } finally { setTimeout(() => { applyingRemoteCamera = false; }, 120); }
+        } else if (msg.type === "mp-layout") {
+            document.body.classList.remove("mp-layout-1", "mp-layout-2", "mp-layout-4");
+            document.body.classList.add(`mp-layout-${Number(msg.count) === 4 ? 4 : Number(msg.count) === 2 ? 2 : 1}`);
+            requestAnimationFrame(() => { updateLegend(); map.resize(); resizeAllCanvases(); renderAnnotations(); });
+        } else if (msg.type === "mp-set-annotations" && Array.isArray(msg.annotations)) {
+            annotations = msg.annotations.map(a => ({
+                ...a,
+                points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+            }));
+            currentAnnotation = null;
+            renderAnnotations();
         } else if (msg.type === "mp-resize") {
             requestAnimationFrame(() => { map.resize(); resizeAllCanvases(); renderAnnotations(); });
         }
     });
+
+    function sendAnnotationState() {
+        notify("mp-annotations", {
+            annotations: annotations.map(a => ({
+                ...a,
+                points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+            }))
+        });
+    }
+    annotationCanvas.addEventListener("pointerup", () => setTimeout(sendAnnotationState, 0));
+    if (drawUndoButton) drawUndoButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
+    if (drawClearButton) drawClearButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
 
     window.__mpCapturePanel = async function(outW = 1800) {
         renderAnnotations();
@@ -13158,8 +13255,12 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
                 const labels = Array.from(legendLabels.querySelectorAll(".legend-label"));
                 ctx.fillStyle = "#c7d6e1"; ctx.font = `500 ${Math.max(12, 9*scale)}px Inter, Arial, sans-serif`;
                 labels.forEach((el, i) => {
-                    const pct = labels.length <= 1 ? 0 : i/(labels.length-1);
-                    ctx.textAlign = i === 0 ? "left" : i === labels.length-1 ? "right" : "center";
+                    // Use the exact DOM tick position instead of redistributing labels evenly.
+                    // This is essential for nonuniform bounds and for endpoints such as 130 F.
+                    const rawPct = parseFloat(el.style.left || "0");
+                    const pct = Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) / 100 : 0;
+                    ctx.textAlign = el.classList.contains("legend-label-first") ? "left" :
+                                    el.classList.contains("legend-label-last") ? "right" : "center";
                     ctx.fillText(el.textContent || "", x + 14*scale + pct*(w-28*scale), y + h - 10*scale);
                 });
             }
@@ -13169,7 +13270,7 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         ctx.strokeStyle = "#aeb7bf"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,mapH+.5); ctx.lineTo(outW,mapH+.5); ctx.stroke();
         ctx.fillStyle = "#17232d"; ctx.font = '650 22px Inter, "Segoe UI", Arial, sans-serif'; ctx.textAlign = "center"; ctx.textBaseline = "middle";
         const footerText = document.getElementById("active-layers-text")?.textContent || `Valid: ${formatAnalysisTime(currentAnalysisTime)}`;
-        let text = footerText;
+        let text = footerText.replace(/\s*\|\s*/g, " | ").replace(/\s+/g, " ").trim();
         while (ctx.measureText(text).width > outW - 70 && text.length > 20) text = text.slice(0, -4) + "…";
         ctx.fillText(text, outW/2, mapH + footerH/2);
         return out.toDataURL("image/png");
@@ -13179,4 +13280,3 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
