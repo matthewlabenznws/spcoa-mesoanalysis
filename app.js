@@ -10498,7 +10498,8 @@ function getResponsiveLegendTicks(ticks, bounds, proportional = false) {
     // Approximate label footprint plus breathing room. Multi-panel legends intentionally
     // show fewer ticks rather than squeezing labels together.
     const isFourPanel = document.body.classList.contains("mp-layout-4");
-    const minGapPx = isFourPanel ? 38 : width <= 250 ? 42 : width <= 320 ? 46 : width <= 390 ? 50 : 54;
+    const isTwoPanel = document.body.classList.contains("mp-layout-2");
+    const minGapPx = isFourPanel ? 32 : isTwoPanel ? 36 : width <= 250 ? 42 : width <= 320 ? 46 : width <= 390 ? 50 : 54;
 
     const positionFor = tick => {
         const value = typeof tick === "object" ? tick.value : tick;
@@ -13107,11 +13108,20 @@ if (drawingToolbar && annotationCanvas) {
     annotationCanvas.addEventListener("pointerdown", event => {
         if (activeDrawingTool === "pan") return;
         event.preventDefault();
-        if (activeDrawingTool === "eraser") { eraseAt(event); return; }
+        if (activeDrawingTool === "eraser") {
+            eraseAt(event);
+            setTimeout(() => {
+                if (typeof window.__mpSendAnnotationState === "function") window.__mpSendAnnotationState();
+            }, 0);
+            return;
+        }
         const ll = eventLngLat(event);
         if (activeDrawingTool === "high" || activeDrawingTool === "low") {
             annotations.push({ type: activeDrawingTool, points: [ll] });
             renderAnnotations();
+            setTimeout(() => {
+                if (typeof window.__mpSendAnnotationState === "function") window.__mpSendAnnotationState();
+            }, 0);
             return;
         }
         annotationPointerId = event.pointerId;
@@ -13145,6 +13155,9 @@ if (drawingToolbar && annotationCanvas) {
         annotationPointerId = null;
         try { annotationCanvas.releasePointerCapture(event.pointerId); } catch (_) {}
         renderAnnotations();
+        setTimeout(() => {
+            if (typeof window.__mpSendAnnotationState === "function") window.__mpSendAnnotationState();
+        }, 0);
     };
     annotationCanvas.addEventListener("pointerup", finishAnnotation);
     annotationCanvas.addEventListener("pointercancel", finishAnnotation);
@@ -13187,7 +13200,13 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
         }
     }
 
-    document.addEventListener("pointerdown", () => notify("mp-activate"), true);
+    // Only a normal pan-mode click may change the active panel.
+    // While any drawing/eraser tool is active, pointer events belong to the
+    // annotation canvas and must not switch the sidebar to another panel.
+    document.addEventListener("pointerdown", event => {
+        if (activeDrawingTool !== "pan") return;
+        notify("mp-activate");
+    }, true);
 
     map.on("moveend", () => {
         if (applyingRemoteCamera) return;
@@ -13224,7 +13243,9 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
             }))
         });
     }
-    annotationCanvas.addEventListener("pointerup", () => setTimeout(sendAnnotationState, 0));
+    // Drawing handlers are defined outside this bridge IIFE. Expose one safe
+    // child->parent sync hook so completed annotations can actually broadcast.
+    window.__mpSendAnnotationState = sendAnnotationState;
     if (drawUndoButton) drawUndoButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
     if (drawClearButton) drawClearButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
 
@@ -13280,3 +13301,4 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
