@@ -39,6 +39,26 @@ if (!__MP_CHILD) {
                 : [activePanel];
         }
 
+        function broadcastAnnotations(sourceIndex, annotationData) {
+            if (!drawingScope || drawingScope.value !== "all" || !Array.isArray(annotationData)) return;
+            for (let i = 0; i < layoutCount; i++) {
+                if (i === sourceIndex || !panels[i] || !panels[i].ready) continue;
+                try {
+                    const child = panels[i].frame.contentWindow;
+                    if (child && typeof child.__mpSetAnnotations === "function") {
+                        child.__mpSetAnnotations(annotationData);
+                    } else if (child) {
+                        child.postMessage({ type: "mp-set-annotations", annotations: annotationData }, "*");
+                    }
+                } catch (_) {}
+            }
+        }
+
+        // Same-origin child frames call this directly. postMessage remains as a fallback.
+        window.__mpReceiveAnnotations = (panelNumber, annotationData) => {
+            broadcastAnnotations(Number(panelNumber) - 1, annotationData);
+        };
+
         function childUrl(index) {
             const u = new URL(window.location.href);
             u.searchParams.set("mpchild", "1");
@@ -253,12 +273,8 @@ if (!__MP_CHILD) {
                     try { panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*"); } catch (_) {}
                 }
                 if (i === activePanel) syncHostFromActiveChild();
-            } else if (msg.type === "mp-annotations" && drawingScope && drawingScope.value === "all" && Array.isArray(msg.annotations)) {
-                const source = Number(msg.panel) - 1;
-                for (let i = 0; i < layoutCount; i++) {
-                    if (i === source) continue;
-                    try { panels[i].frame.contentWindow.postMessage({ type: "mp-set-annotations", annotations: msg.annotations }, "*"); } catch (_) {}
-                }
+            } else if (msg.type === "mp-annotations" && Array.isArray(msg.annotations)) {
+                broadcastAnnotations(Number(msg.panel) - 1, msg.annotations);
             } else if (msg.type === "mp-activate") {
                 setActivePanel(Number(msg.panel) - 1);
             } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting) {
@@ -13224,28 +13240,56 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
             document.body.classList.add(`mp-layout-${Number(msg.count) === 4 ? 4 : Number(msg.count) === 2 ? 2 : 1}`);
             requestAnimationFrame(() => { updateLegend(); map.resize(); resizeAllCanvases(); renderAnnotations(); });
         } else if (msg.type === "mp-set-annotations" && Array.isArray(msg.annotations)) {
-            annotations = msg.annotations.map(a => ({
-                ...a,
-                points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
-            }));
-            currentAnnotation = null;
-            renderAnnotations();
+            window.__mpSetAnnotations(msg.annotations);
         } else if (msg.type === "mp-resize") {
             requestAnimationFrame(() => { map.resize(); resizeAllCanvases(); renderAnnotations(); });
         }
     });
 
-    function sendAnnotationState() {
-        notify("mp-annotations", {
-            annotations: annotations.map(a => ({
-                ...a,
-                points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
-            }))
-        });
+    function cloneAnnotationState() {
+        const source = currentAnnotation ? [...annotations, currentAnnotation] : annotations;
+        return source.map(a => ({
+            ...a,
+            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+        }));
     }
-    // Drawing handlers are defined outside this bridge IIFE. Expose one safe
-    // child->parent sync hook so completed annotations can actually broadcast.
+
+    window.__mpSetAnnotations = function(annotationData) {
+        if (!Array.isArray(annotationData)) return;
+        annotations = annotationData.map(a => ({
+            ...a,
+            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+        }));
+        currentAnnotation = null;
+        renderAnnotations();
+    };
+
+    function sendAnnotationState() {
+        const data = cloneAnnotationState();
+        // Direct same-origin route is the primary path.
+        try {
+            if (window.parent && window.parent !== window &&
+                typeof window.parent.__mpReceiveAnnotations === "function") {
+                window.parent.__mpReceiveAnnotations(panelNumber, data);
+                return;
+            }
+        } catch (_) {}
+        // Fallback for environments where direct parent access is unavailable.
+        notify("mp-annotations", { annotations: data });
+    }
+
     window.__mpSendAnnotationState = sendAnnotationState;
+
+    let annotationSyncQueued = false;
+    annotationCanvas.addEventListener("pointermove", () => {
+        if (!currentAnnotation || annotationSyncQueued) return;
+        annotationSyncQueued = true;
+        requestAnimationFrame(() => {
+            annotationSyncQueued = false;
+            sendAnnotationState();
+        });
+    });
+
     if (drawUndoButton) drawUndoButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
     if (drawClearButton) drawClearButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
 
@@ -13301,4 +13345,3 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
