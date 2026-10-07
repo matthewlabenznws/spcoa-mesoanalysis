@@ -39,6 +39,36 @@ body.mp-child #app{width:100%!important;}
 body.mp-child #active-layers-strip{min-height:32px;}
 body.mp-shell #active-layers-strip{display:none!important;}
 body.mp-shell #save-gif{opacity:.55;}
+
+/* Responsive legends inside multi-panel child maps. Single-panel keeps the original size. */
+body.mp-child #legend{width:clamp(250px,42vw,360px);padding:8px 10px 7px;left:12px;bottom:12px;border-radius:5px}
+body.mp-child #legend-title{margin-bottom:5px;font-size:11px;line-height:1.15}
+body.mp-child #legend-bar{height:13px}
+body.mp-child #legend-labels{height:15px;margin-top:3px;font-size:9px}
+body.mp-child .legend-label{top:0}
+body.mp-child #active-layers-strip{font-size:11px;padding:0 8px}
+body.mp-child .active-layer-separator{margin:0 4px}
+@media (max-width:1050px){body.mp-child #legend{width:300px;max-width:calc(100% - 24px)}}
+@media (max-width:800px){body.mp-child #legend{width:260px;max-width:calc(100% - 20px);left:10px;bottom:10px;padding:7px 9px 6px}body.mp-child #legend-title{font-size:10.5px}body.mp-child #legend-bar{height:12px}body.mp-child #legend-labels{font-size:8.5px;height:14px}}
+
+.panel-scope-heading{display:block;margin-top:10px}
+#parameter-scope,#drawing-scope{height:30px;border:1px solid #45657b;border-radius:4px;background:#0f2230;color:#eef6fb;font:650 11px Inter,Arial,sans-serif;padding:0 7px}
+#parameter-scope{width:100%}
+.draw-scope-control{flex:0 0 auto}
+.draw-scope-control select{width:auto;min-width:105px;height:22px;border:1px solid #5b778b;border-radius:3px;background:#0b1a25;color:#fff;font:inherit;padding:0 5px}
+
+/* Compact multi-panel legends; labels stay immediately beneath the color bar. */
+body.mp-child #legend{width:320px;max-width:calc(100% - 22px);padding:7px 9px 5px;left:10px;bottom:10px;border-radius:5px}
+body.mp-child #legend-title{margin-bottom:4px;font-size:10.5px;line-height:1.1}
+body.mp-child #legend-bar{height:11px}
+body.mp-child #legend-labels{height:11px;margin-top:1px;font-size:8.5px;line-height:1}
+body.mp-child .legend-label{top:0;line-height:1}
+body.mp-child.mp-layout-2 #legend{width:300px}
+body.mp-child.mp-layout-4 #legend{width:255px;padding:6px 8px 4px;left:8px;bottom:8px}
+body.mp-child.mp-layout-4 #legend-title{font-size:10px;margin-bottom:3px}
+body.mp-child.mp-layout-4 #legend-bar{height:10px}
+body.mp-child.mp-layout-4 #legend-labels{height:10px;margin-top:1px;font-size:8px}
+
 </style>
 </head>
 <body>
@@ -53,7 +83,7 @@ body.mp-shell #save-gif{opacity:.55;}
   </div>
   <div class="sidebar-body">
     <div class="sector"><label class="small-heading" for="sector-select">Sector</label><select id="sector-select"><option value="lbf">LBF CWA</option><option value="regional">LBF Regional</option><option value="nebraska">Nebraska</option><option value="northern_plains">Northern Plains</option><option value="central_plains">Central Plains</option><option value="southern_plains">Southern Plains</option><option value="high_plains">High Plains</option><option value="midwest">Midwest</option><option value="rockies">Rockies</option><option value="conus">CONUS</option></select></div>
-    <div class="layout-card"><label class="small-heading" for="layout-select">Panel Layout</label><select id="layout-select"><option value="1">1 Panel</option><option value="2">2 Panels</option><option value="4">4 Panels</option></select></div>
+    <div class="layout-card"><label class="small-heading" for="layout-select">Panel Layout</label><select id="layout-select"><option value="1">1 Panel</option><option value="2">2 Panels</option><option value="4">4 Panels</option></select><label class="small-heading panel-scope-heading" for="parameter-scope">Parameter Changes</label><select id="parameter-scope"><option value="active">Active Panel</option><option value="all">All Panels</option></select></div>
 
     <details class="category" id="surface-category"><summary class="cat-head">Surface</summary><div class="cat-content">
       <button class="field-row field-choice" data-field="sfc_temperature"><span class="field-dot"></span>2 m Temperature</button>
@@ -143,7 +173,7 @@ body.mp-shell #save-gif{opacity:.55;}
   </div>
 </aside>
 
-<div id="map-column"><div id="drawing-toolbar" role="toolbar" aria-label="Map annotation tools">
+<div id="map-column"><div id="drawing-toolbar" role="toolbar" aria-label="Map annotation tools"><label class="draw-control draw-scope-control">Draw on <select id="drawing-scope" aria-label="Drawing target"><option value="active">Active Panel</option><option value="all">All Panels</option></select></label><span class="draw-separator"></span>
 <button class="draw-tool active" type="button" data-tool="pan">↔ Pan</button><button class="draw-tool" type="button" data-tool="pen">✎ Pen</button>
 <label class="draw-control">Color <input id="draw-color" type="color" value="#ff3030" aria-label="Pen color"></label><label class="draw-control">Width: <input id="draw-width" type="number" min="1" max="12" step="1" value="4" aria-label="Pen width"> px</label><span class="draw-separator"></span>
 <button class="draw-tool" type="button" data-tool="cold">Cold</button><button class="draw-tool" type="button" data-tool="warm">Warm</button><button class="draw-tool" type="button" data-tool="stationary">Stationary</button><button class="draw-tool" type="button" data-tool="occluded">Occluded</button><button class="draw-tool" type="button" data-tool="dryline">Dryline</button><button class="draw-tool" type="button" data-tool="trough">Trough</button><span class="draw-separator"></span>
