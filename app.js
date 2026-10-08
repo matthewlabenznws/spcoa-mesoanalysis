@@ -1536,6 +1536,10 @@ const PETTERSSEN_FGEN_RGB = PETTERSSEN_FGEN_COLORS.map(c=>[
 ]);
 
 const VECTOR_FIELDS = {
+    q_vector_925mb: { name: "925 mb Q-Vectors", shortName: "925 mb Q-Vectors", defaultColor: "#000000", renderType: "arrows", units: "m² kg⁻¹ s⁻¹" },
+    q_vector_850mb: { name: "850 mb Q-Vectors", shortName: "850 mb Q-Vectors", defaultColor: "#000000", renderType: "arrows", units: "m² kg⁻¹ s⁻¹" },
+    q_vector_700mb: { name: "700 mb Q-Vectors", shortName: "700 mb Q-Vectors", defaultColor: "#000000", renderType: "arrows", units: "m² kg⁻¹ s⁻¹" },
+
 
     sfc_wind: {
         name: "Surface Wind",
@@ -1671,6 +1675,10 @@ const VECTOR_FIELDS = {
 };
 
 const VECTOR_OVERLAY_CONFIG = [
+    { field: "q_vector_925mb", stateKey: "qVector925", toggleId: "q-vector-925mb-toggle" },
+    { field: "q_vector_850mb", stateKey: "qVector850", toggleId: "q-vector-850mb-toggle" },
+    { field: "q_vector_700mb", stateKey: "qVector700", toggleId: "q-vector-700mb-toggle" },
+
     { field: "sfc_wind", stateKey: "surfaceWind", toggleId: "sfc-wind-toggle" },
     { field: "sfc_axes_dilatation", stateKey: "sfcAxesDilatation", toggleId: "sfc-axes-dilatation-toggle" },
     { field: "axes_dilatation_925mb", stateKey: "axesDilatation925", toggleId: "axes-dilatation-925mb-toggle" },
@@ -3147,11 +3155,12 @@ function getActiveLayerDescriptions() {
         }
 
         const isAxisSegments = field.renderType === "axis_segments";
+        const isQVector = field.renderType === "arrows";
         descriptions.push({
             text: formatActiveLayer(
                 field.shortName || field.name,
-                isAxisSegments ? "" : "kt",
-                isAxisSegments ? "axes" : "barbs"
+                (isAxisSegments || isQVector) ? "" : "kt",
+                isAxisSegments ? "axes" : (isQVector ? "arrows" : "barbs")
             ),
             color: vectorColors[config.field] || field.defaultColor || "#000000"
         });
@@ -7528,6 +7537,39 @@ function drawAxisOfDilatation(ctx, x, y, axisU, axisV, color = "#1f5fbf") {
 }
 
 /* =========================================================================================
+   GEOSTROPHIC Q-VECTOR ARROWS (NOT WIND BARBS)
+   ========================================================================================= */
+function drawQVectorArrow(ctx, x, y, qx, qy, color = "#000000") {
+    const magnitude = Math.hypot(qx, qy);
+    if (!Number.isFinite(magnitude) || magnitude < 1e-20) return;
+    // Q-vectors have extremely small SI magnitudes. Use a logarithmic, capped
+    // display scale so weaker vectors remain visible without enormous arrows.
+    const length = Math.max(9, Math.min(35, 12 + 7 * Math.log10(1 + magnitude / 1e-13)));
+    const dx = qx / magnitude;
+    const dy = -qy / magnitude; // screen Y points south
+    const ex = x + dx * length;
+    const ey = y + dy * length;
+    const head = Math.max(5, Math.min(9, length * 0.32));
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.8;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - dx * head - dy * head * 0.45, ey - dy * head + dx * head * 0.45);
+    ctx.lineTo(ex - dx * head + dy * head * 0.45, ey - dy * head - dx * head * 0.45);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+}
+
+/* =========================================================================================
    RENDER ONE VECTOR FIELD
    ========================================================================================= */
 
@@ -7658,6 +7700,11 @@ async function renderVectorField(
                     vector.u,
                     vector.v,
                     vectorColors[field] || vectorDefinition.defaultColor || "#1f5fbf"
+                );
+            } else if (vectorDefinition.renderType === "arrows") {
+                drawQVectorArrow(
+                    vectorCtx, x, y, vector.u, vector.v,
+                    vectorColors[field] || vectorDefinition.defaultColor || "#000000"
                 );
             } else {
                 drawWindBarb(
@@ -9239,8 +9286,8 @@ async function renderContourField(
                 field === "warm_cloud_depth" ||
                 field === "lcl_height"
             )
-                ? 1.25
-                : 1.15;
+                ? 1.5
+                : 1.5;
 
     contourCtx.lineJoin = "round";
     contourCtx.lineCap = "round";
@@ -9296,7 +9343,7 @@ async function renderContourField(
             (colorScheme === "shp_spc" && Math.abs(level - 0.5) < 0.001) ||
             (colorScheme === "lhp_spc" && Math.abs(level - 4) < 0.001)
         ) {
-            contourCtx.lineWidth = 1.25;
+            contourCtx.lineWidth = 1.5;
             contourCtx.setLineDash([7, 6]);
         } else if (
             colorScheme === "dcp_spc" ||
@@ -9307,8 +9354,8 @@ async function renderContourField(
                 (colorScheme === "shp_spc" && level >= 5) ||
                 (colorScheme === "lhp_spc" && level >= 16) ||
                 (colorScheme === "dcp_spc" && level >= 8)
-                    ? 2.0
-                    : 1.5;
+                    ? 2.2
+                    : 1.6;
             contourCtx.setLineDash([]);
         } else {
             contourCtx.setLineDash([]);
