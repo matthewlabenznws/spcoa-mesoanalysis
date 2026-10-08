@@ -1443,6 +1443,7 @@ const WEATHER_FIELDS = {
         type: "rh"
     },
 
+    petterssen_fgen_surface: { name: "Surface 2D Petterssen Frontogenesis", shortName: "Surface 2D Petterssen Frontogenesis", units: "K/(100 km)/3 h", type: "petterssen_fgen" },
     petterssen_fgen_925mb: { name: "925 mb 2-D Petterssen Frontogenesis", shortName: "925 mb 2-D FGEN", units: "K/(100 km)/3 h", type: "petterssen_fgen" },
     petterssen_fgen_850mb: { name: "850 mb 2-D Petterssen Frontogenesis", shortName: "850 mb 2-D FGEN", units: "K/(100 km)/3 h", type: "petterssen_fgen" },
     petterssen_fgen_700mb: { name: "700 mb 2-D Petterssen Frontogenesis", shortName: "700 mb 2-D FGEN", units: "K/(100 km)/3 h", type: "petterssen_fgen" },
@@ -13748,3 +13749,4 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
