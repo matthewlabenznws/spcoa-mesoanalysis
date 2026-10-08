@@ -1336,11 +1336,20 @@ const QDIV_COLORS = [
     "#ffd0d0", "#ffa2a2", "#ff7777", "#ff4444", "#ff1010"
 ];
 function getQDivColor(value) {
-    if (!Number.isFinite(value)) return null;
-    if (value >= -5 && value < 5) return "rgba(255,255,255,0)";
+    // The scalar canvas renderer requires an {r, g, b} object, not a CSS string.
+    // Missing data and the neutral -5 to +5 interval remain transparent.
+    if (!Number.isFinite(value) || (value >= -5 && value < 5)) return null;
+
     let i = 0;
     while (i < QDIV_BOUNDS.length - 2 && value >= QDIV_BOUNDS[i + 1]) i++;
-    return QDIV_COLORS[i];
+    const hex = QDIV_COLORS[i];
+    if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) return null;
+
+    return {
+        r: parseInt(hex.slice(1, 3), 16),
+        g: parseInt(hex.slice(3, 5), 16),
+        b: parseInt(hex.slice(5, 7), 16)
+    };
 }
 
 const WEATHER_FIELDS = {
