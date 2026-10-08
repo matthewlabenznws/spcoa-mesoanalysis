@@ -1328,7 +1328,25 @@ const RELATIVE_VORTICITY_COLORS = [
     "#fd933f","#fd8239","#fc6c33","#fc572c","#f74327","#ed3022","#e51e1d","#d9131f","#cb0a22","#be0126","#aa0026","#950026","#800026"
 ];
 
+/* Discrete Unidata-inspired -2 div(Q) palette; transparent -5 to +5. */
+const QDIV_BOUNDS = [-30,-25,-20,-15,-10,-5,5,10,15,20,25,30];
+const QDIV_COLORS = [
+    "#1500ff", "#4034ff", "#7168ff", "#a39dff", "#d4d1ff",
+    "rgba(255,255,255,0)",
+    "#ffd0d0", "#ffa2a2", "#ff7777", "#ff4444", "#ff1010"
+];
+function getQDivColor(value) {
+    if (!Number.isFinite(value)) return null;
+    if (value >= -5 && value < 5) return "rgba(255,255,255,0)";
+    let i = 0;
+    while (i < QDIV_BOUNDS.length - 2 && value >= QDIV_BOUNDS[i + 1]) i++;
+    return QDIV_COLORS[i];
+}
+
 const WEATHER_FIELDS = {
+    q_vector_divergence_925mb: { name: "925 mb Q-Vector Div.", shortName: "925 mb Q-Vector Div.", units: "×10⁻¹⁸ m s⁻¹ kg⁻¹", type: "q_vector_divergence" },
+    q_vector_divergence_850mb: { name: "850 mb Q-Vector Div.", shortName: "850 mb Q-Vector Div.", units: "×10⁻¹⁸ m s⁻¹ kg⁻¹", type: "q_vector_divergence" },
+    q_vector_divergence_700mb: { name: "700 mb Q-Vector Div.", shortName: "700 mb Q-Vector Div.", units: "×10⁻¹⁸ m s⁻¹ kg⁻¹", type: "q_vector_divergence" },
     sbcin: { name: "Surface-Based CIN", shortName: "SBCIN", units: "J/kg", type: "cin" },
     mlcin: { name: "Mixed-Layer CIN", shortName: "MLCIN", units: "J/kg", type: "cin" },
     mucin: { name: "Most-Unstable CIN", shortName: "MUCIN", units: "J/kg", type: "cin" },
@@ -2294,6 +2312,9 @@ function ensureFilledWindFieldOptions() {
     }
 
     const fields = [
+        "q_vector_divergence_925mb",
+        "q_vector_divergence_850mb",
+        "q_vector_divergence_700mb",
         "wind_speed_925mb",
         "wind_speed_850mb",
         "wind_speed_700mb",
@@ -2655,6 +2676,8 @@ function ensureVectorControls() {
                 colorInput.style.border = "none";
                 colorInput.style.background = "transparent";
                 colorInput.style.cursor = "pointer";
+                colorInput.addEventListener("click", event => event.stopPropagation());
+                colorInput.addEventListener("pointerdown", event => event.stopPropagation());
                 colorInput.style.marginLeft = "auto";
                 label.appendChild(colorInput);
             }
@@ -6476,6 +6499,7 @@ function getFieldColor(
     }
 
 
+    if (definition.type === "q_vector_divergence") return getQDivColor(value);
     if (definition.type === "cin") return getCinColor(value);
 
     if (
@@ -11098,6 +11122,11 @@ function updateLegend() {
             : field.name;
 
 
+    if (field.type === "q_vector_divergence") {
+        drawColorLegend(QDIV_COLORS);
+        renderLegendLabels([-30,-20,-10,-5,5,10,20,30], QDIV_BOUNDS);
+    }
+
     /* CIN: discrete bins matching the numerical tile values. */
     if (field.type === "cin") {
         const displayedColors = CIN_BOUNDS.slice(0, -1).map((_, i) => {
@@ -13855,4 +13884,5 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
