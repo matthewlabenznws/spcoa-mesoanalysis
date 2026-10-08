@@ -805,6 +805,33 @@ const sectors = {
    CAPE COLOR TABLE
    ========================================================================================= */
 
+/* CIN shading: exact user-provided boundaries and colors. */
+const CIN_BOUNDS = [-1050, -1000, -950, -900, -850, -800, -750, -700, -650, -600, -580, -560, -540, -520, -500, -480, -460, -440, -420, -400, -380, -360, -340, -320, -300, -280, -260, -240, -220, -200, -190, -180, -170, -160, -150, -140, -130, -120, -110, -100, -95, -80, -75, -70, -65, -60, -55, -50, -47.5, -45, -42.5, -40, -37.5, -35, -32.5, -30, -27.5, -25, -22.5, -20, -17.5, -15, -12.5, -10, -7.5, -5, -2.5, 0];
+const CIN_COLORS = ["#b99295", "#b2878c", "#ab7d83", "#a57279", "#9e6970", "#985e66", "#91545c", "#8a4953", "#844049", "#ac485b", "#b25667", "#b86272", "#be707e", "#c57c8a", "#cc8a95", "#d297a1", "#d9a4ad", "#dfb1b7", "#e6bfc3", "#d79ae6", "#cc8adc", "#c07ad1", "#b56ac7", "#a95bbd", "#9e4ab2", "#923aa8", "#872b9e", "#7b1c93", "#700e89", "#861550", "#8e1a4a", "#971f44", "#9f253d", "#a82b37", "#b13131", "#b9362b", "#c23d27", "#cb4323", "#d3491f", "#d9731c", "#da7e24", "#dc8a2f", "#dd963c", "#dfa24b", "#dfae5a", "#e1b96a", "#e3c679", "#e4d289", "#e6de99", "#abc7ce", "#9fbac2", "#92adb7", "#86a0ac", "#7993a1", "#6d8695", "#60798a", "#546c7f", "#475f74", "#3b5269", "#696969", "#787878", "#878787", "#969696", "#a5a5a5", "#c3c3c3", "#d2d2d2", "#e1e1e1", "#f0f0f0", "#ffffff"];
+const CIN_RGB = CIN_COLORS.map(hexToRgb);
+function getCinColor(value) {
+    if (!Number.isFinite(value)) return null;
+    let bin = 0;
+    while (bin < CIN_BOUNDS.length - 2 && value >= CIN_BOUNDS[bin + 1]) bin++;
+    // Matplotlib BoundaryNorm distributes 67 intervals across 69 colors.
+    const index = Math.floor(bin * (CIN_COLORS.length - 1) / (CIN_BOUNDS.length - 2));
+    return CIN_RGB[Math.min(CIN_RGB.length - 1, index)];
+}
+// Equivalent to the backend's matplotlib Blues sampling, darker for more-negative CIN.
+const CIN_BLUES_LEVELS = Array.from({length: 40}, (_, i) => -1000 + i * 25);
+const CIN_BLUES_COLORS = ["#083c7d", "#084285", "#08468b", "#084b93", "#084f99", "#0a549e", "#0e58a2", "#125da6", "#1561a9", "#1966ad", "#1c6ab0", "#206fb4", "#2373b6", "#2979b9", "#2d7dbb", "#3181bd", "#3686c0", "#3a8ac2", "#3f8fc5", "#4493c7", "#4a98c9", "#4f9bcb", "#56a0ce", "#5ba3d0", "#61a7d2", "#66abd4", "#6dafd7", "#74b3d8", "#7cb7da", "#82bbdb", "#8abfdd", "#91c3de", "#99c7e0", "#9fcae1", "#a5cde3", "#aacfe5", "#b0d2e7", "#b5d4e9", "#bcd7eb", "#c1d9ed"];
+function getCinBluesColor(level) {
+    const idx = Math.round((level + 1000) / 25);
+    if (idx >= 0 && idx < CIN_BLUES_COLORS.length && Math.abs(level - CIN_BLUES_LEVELS[idx]) < 0.01) return CIN_BLUES_COLORS[idx];
+    const t = Math.max(0, Math.min(1, 0.25 + 0.70 * (-level / 1000)));
+    // Matplotlib Blues lookup table, interpolated at 256-sample resolution.
+    const stops = [[0,'#f7fbff'],[.125,'#deebf7'],[.25,'#c6dbef'],[.375,'#9ecae1'],[.5,'#6baed6'],[.625,'#4292c6'],[.75,'#2171b5'],[.875,'#08519c'],[1,'#08306b']];
+    let j = 0; while (j < stops.length - 2 && t > stops[j+1][0]) j++;
+    const w = (t - stops[j][0]) / (stops[j+1][0]-stops[j][0]);
+    const a = hexToRgb(stops[j][1]), b = hexToRgb(stops[j+1][1]);
+    return '#' + a.map((v,i)=>Math.round(v+(b[i]-v)*w).toString(16).padStart(2,'0')).join('');
+}
+
 const CAPE_BOUNDS = [
     0,100,200,300,400,500,600,700,800,900,
     1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,
@@ -1302,6 +1329,10 @@ const RELATIVE_VORTICITY_COLORS = [
 ];
 
 const WEATHER_FIELDS = {
+    sbcin: { name: "Surface-Based CIN", shortName: "SBCIN", units: "J/kg", type: "cin" },
+    mlcin: { name: "Mixed-Layer CIN", shortName: "MLCIN", units: "J/kg", type: "cin" },
+    mucin: { name: "Most-Unstable CIN", shortName: "MUCIN", units: "J/kg", type: "cin" },
+
 
     sbcape: {
         name: "Surface-Based CAPE",
@@ -1679,6 +1710,10 @@ const vectorColors = Object.fromEntries(
    ========================================================================================= */
 
 const CONTOUR_FIELDS = {
+    sbcin_contours: { name: "Surface-Based CIN Contours", shortName: "SBCIN Contours", units: "J/kg", interval: 25, minimum: -1000, maximum: -25, anchor: -1000, colorScheme: "blues", smoothGeometry: false, smoothIterations: 4 },
+    mlcin_contours: { name: "Mixed-Layer CIN Contours", shortName: "MLCIN Contours", units: "J/kg", interval: 25, minimum: -1000, maximum: -25, anchor: -1000, colorScheme: "blues", smoothGeometry: false, smoothIterations: 4 },
+    mucin_contours: { name: "Most-Unstable CIN Contours", shortName: "MUCIN Contours", units: "J/kg", interval: 25, minimum: -1000, maximum: -25, anchor: -1000, colorScheme: "blues", smoothGeometry: false, smoothIterations: 4 },
+
 
     dcp_contours: {
         name: "Derecho Composite Parameter", shortName: "DCP", units: "",
@@ -1941,6 +1976,9 @@ let runMetadata = null;
 let activeField = "none";
 
 const activeOverlays = {
+    sbcinContours: false,
+    mlcinContours: false,
+    mucinContours: false,
     surfaceWind: false,
     sfcAxesDilatation: false,
     srWind02: false,
@@ -2835,6 +2873,10 @@ for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
    ========================================================================================= */
 
 const THERMODYNAMIC_CONTOUR_OVERLAYS = [
+    { field: "sbcin_contours", stateKey: "sbcinContours", toggleId: "sbcin-contours-toggle", label: "SBCIN Contours" },
+    { field: "mlcin_contours", stateKey: "mlcinContours", toggleId: "mlcin-contours-toggle", label: "MLCIN Contours" },
+    { field: "mucin_contours", stateKey: "mucinContours", toggleId: "mucin-contours-toggle", label: "MUCIN Contours" },
+
     {
         field: "lcl_height",
         stateKey: "lclHeight",
@@ -6425,6 +6467,8 @@ function getFieldColor(
     }
 
 
+    if (definition.type === "cin") return getCinColor(value);
+
     if (
         definition.type ===
         "cape"
@@ -9204,6 +9248,7 @@ async function renderContourField(
     for (const level of levelsToRender) {
 
         const contourColor =
+            colorScheme === "blues" ? getCinBluesColor(level) :
             colorScheme === "pressure_temperature_isotherms"
                 ? (level > 0 ? "#d7191c" : "#0066ff")
                 : colorScheme === "dcape"
@@ -11006,6 +11051,16 @@ function updateLegend() {
             : field.name;
 
 
+    /* CIN: discrete bins matching the numerical tile values. */
+    if (field.type === "cin") {
+        const displayedColors = CIN_BOUNDS.slice(0, -1).map((_, i) => {
+            const idx = Math.floor(i * (CIN_COLORS.length - 1) / (CIN_BOUNDS.length - 2));
+            return CIN_COLORS[idx];
+        });
+        drawColorLegend(displayedColors);
+        renderLegendLabels([-1050, -800, -600, -400, -200, -100, -50, 0], CIN_BOUNDS);
+    }
+
     /* CAPE family. */
     if (field.type === "cape") {
 
@@ -11259,6 +11314,9 @@ function getActiveContourSamples() {
     add(activeOverlays.warmCloudDepth, "warm_cloud_depth");
     add(activeOverlays.lclHeight, "lcl_height");
     add(activeOverlays.stpEff, "stp_eff_contours");
+    for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
+        add(activeOverlays[config.stateKey], config.field);
+    }
 
     for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
         add(activeOverlays[config.stateKey], config.field);
@@ -11360,6 +11418,7 @@ function formatContourSample(field, value) {
     if (field === "dcape") return `${Math.round(value)} J/kg`;
     if (field === "lcl_height") return `${Math.round(value)} m AGL`;
     if (field === "warm_cloud_depth") return `${Math.round(value)} m`;
+    if (field.endsWith("cin_contours")) return `${Math.round(value)} J/kg`;
     if (field === "stp_eff_contours") return value.toFixed(1);
     if (field === "theta_2m_contours" || field === "thetae_2m_contours") return `${Math.round(value)} K`;
     if (field.startsWith("divergence_")) return `${value.toFixed(1)} ${units}`;
