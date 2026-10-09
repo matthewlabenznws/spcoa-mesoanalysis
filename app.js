@@ -4,23 +4,91 @@
 const __MP_PARAMS = new URLSearchParams(window.location.search);
 const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 
-/* Personal map starting extent. Saved locally in each visitor's browser. */
-const SPCOA_START_VIEW_KEY = "spcoa_start_view_v1";
+/* Per-browser saved starting view and named custom domains.
+ * Preset sectors remain static. No backend or account storage is used. */
+const SPCOA_START_VIEW_KEY = "spcoa_start_view_v1"; // Preserve existing visitor preferences.
+const SPCOA_CUSTOM_DOMAINS_KEY = "spcoa_custom_domains_v1";
+const SPCOA_SAVED_VIEW_OPTION = "__spcoa_saved_start_view__";
+const SPCOA_CUSTOM_DOMAIN_LIMIT = 40;
 function validateSpcoaStartView(value) {
     if (!value || !Array.isArray(value.center) || value.center.length !== 2) return null;
-    const lng = Number(value.center[0]);
-    const lat = Number(value.center[1]);
-    const zoom = Number(value.zoom);
-    if (!Number.isFinite(lng) || !Number.isFinite(lat) || !Number.isFinite(zoom) ||
-        Math.abs(lng) > 180 || Math.abs(lat) > 85 || zoom < 3 || zoom > 9) return null;
-    return {center: [lng, lat], zoom};
+    const lng = Number(value.center[0]), lat = Number(value.center[1]), zoom = Number(value.zoom);
+    if (![lng, lat, zoom].every(Number.isFinite) || Math.abs(lng) > 180 ||
+        Math.abs(lat) > 85 || zoom < 3 || zoom > 9) return null;
+    const sectorId = typeof value.sectorId === "string" && value.sectorId.length < 90
+        ? value.sectorId : null;
+    return {center: [lng, lat], zoom, sectorId};
 }
 function readSpcoaStartView() {
+    try { return validateSpcoaStartView(JSON.parse(localStorage.getItem(SPCOA_START_VIEW_KEY))); }
+    catch (_) { return null; }
+}
+function validateSpcoaDomain(domain) {
+    if (!domain || typeof domain.id !== "string" ||
+        !/^custom:[a-zA-Z0-9_-]{5,64}$/.test(domain.id)) return null;
+    const name = String(domain.name || "").trim().slice(0, 48);
+    const view = validateSpcoaStartView(domain);
+    const b = domain.bounds;
+    if (!name || !view || !Array.isArray(b) || b.length !== 2 ||
+        !b.every(point => Array.isArray(point) && point.length === 2 && point.every(Number.isFinite))) return null;
+    const [[west, south], [east, north]] = b;
+    if (west < -180 || east > 180 || east <= west || south < -85 || north > 85 || north <= south) return null;
+    return {id: domain.id, name, center: view.center, zoom: view.zoom,
+        bounds: [[west, south], [east, north]]};
+}
+function readSpcoaCustomDomains() {
     try {
-        return validateSpcoaStartView(JSON.parse(localStorage.getItem(SPCOA_START_VIEW_KEY)));
-    } catch (_) {
-        return null; // Private browsing or unavailable localStorage: use normal sector.
+        const raw = JSON.parse(localStorage.getItem(SPCOA_CUSTOM_DOMAINS_KEY));
+        if (!Array.isArray(raw)) return [];
+        const unique = new Set();
+        return raw.map(validateSpcoaDomain).filter(item => {
+            if (!item || unique.has(item.id)) return false;
+            unique.add(item.id); return true;
+        }).slice(0, SPCOA_CUSTOM_DOMAIN_LIMIT);
+    } catch (_) { return []; }
+}
+function refreshSpcoaSectorOptions(select) {
+    if (!select) return;
+    const domains = readSpcoaCustomDomains();
+    const hasSaved = !!readSpcoaStartView();
+    // The host synchronizes frequently: do not rebuild an open dropdown
+    // every 350 ms when neither its names nor its options have changed.
+    const signature = JSON.stringify(domains.map(d => [d.id, d.name])) + (hasSaved ? "|saved" : "|none");
+    if (select.__spcoaOptionsSignature === signature) return;
+    const previous = select.value;
+    select.querySelectorAll('optgroup[data-spcoa-custom="1"], option[data-spcoa-saved="1"]').forEach(node => node.remove());
+    if (domains.length) {
+        const group = document.createElement("optgroup");
+        group.label = "My Custom Domains";
+        group.dataset.spcoaCustom = "1";
+        for (const domain of domains) {
+            const option = document.createElement("option");
+            option.value = domain.id;
+            option.textContent = domain.name;
+            group.appendChild(option);
+        }
+        select.appendChild(group);
     }
+    if (hasSaved) {
+        const savedOption = document.createElement("option");
+        savedOption.dataset.spcoaSaved = "1";
+        savedOption.value = SPCOA_SAVED_VIEW_OPTION;
+        savedOption.textContent = "My Saved Start View";
+        select.appendChild(savedOption);
+    }
+    if (Array.from(select.options).some(opt => opt.value === previous)) select.value = previous;
+    else if (select.options.length) select.value = "lbf";
+    select.__spcoaOptionsSignature = signature;
+}
+function spcoaInitialSectorValue(select) {
+    const saved = readSpcoaStartView();
+    if (!saved) return "lbf";
+    const possible = saved.sectorId || SPCOA_SAVED_VIEW_OPTION;
+    return Array.from(select.options).some(o => o.value === possible) ? possible : SPCOA_SAVED_VIEW_OPTION;
+}
+function spcoaCameraMatches(a, b) {
+    return !!a && !!b && Math.abs(a.center[0] - b.center[0]) < 0.001 &&
+        Math.abs(a.center[1] - b.center[1]) < 0.001 && Math.abs(a.zoom - b.zoom) < 0.025;
 }
 
 if (!__MP_CHILD) {
@@ -52,66 +120,156 @@ if (!__MP_CHILD) {
         const parameterScope = document.getElementById("parameter-scope");
         const drawingScope = document.getElementById("drawing-scope");
 
-        /* User-specific map startup view, controlled from the visible host sidebar. */
-        (function installSavedStartViewButtons() {
-            const sectorSelect = document.getElementById("sector-select");
-            const sectorCard = sectorSelect && sectorSelect.closest(".sector");
+        /* Named custom sectors live next to the original preset domain options. */
+        (function installPersonalDomainsControls() {
+            const select = document.getElementById("sector-select");
+            const sectorCard = select && select.closest(".sector");
             if (!sectorCard || sectorCard.querySelector("#start-view-actions")) return;
+            refreshSpcoaSectorOptions(select);
+            select.value = spcoaInitialSectorValue(select);
+
+            const makeButton = (id, label) => {
+                const b = document.createElement("button");
+                b.type = "button"; b.id = id; b.textContent = label;
+                b.style.cssText = "min-width:0;border:1px solid #52738b;border-radius:4px;" +
+                    "background:#203e53;color:#eef6fb;padding:7px 6px;" +
+                    "font:600 11px Inter,Arial,sans-serif;cursor:pointer;";
+                return b;
+            };
             const actions = document.createElement("div");
             actions.id = "start-view-actions";
             actions.style.cssText = "display:flex;gap:6px;margin-top:9px;";
-            const save = document.createElement("button");
-            save.type = "button";
-            save.id = "save-start-view";
-            save.textContent = "Save Start View";
-            const reset = document.createElement("button");
-            reset.type = "button";
-            reset.id = "reset-start-view";
-            reset.textContent = "Reset";
-            for (const button of [save, reset]) {
-                button.style.cssText = "flex:1;min-width:0;border:1px solid #52738b;border-radius:4px;" +
-                    "background:#203e53;color:#eef6fb;padding:7px 5px;font:600 11px Inter,Arial,sans-serif;cursor:pointer;";
-            }
-            reset.style.flex = "0 0 58px";
+            const saveStart = makeButton("save-start-view", "Set As Start View");
+            const resetStart = makeButton("reset-start-view", "Reset Start");
+            saveStart.style.flex = "1";
+            actions.append(saveStart, resetStart);
+
+            const customControls = document.createElement("div");
+            customControls.id = "custom-domain-controls";
+            customControls.style.cssText = "display:flex;flex-direction:column;gap:6px;margin-top:10px;";
+            const input = document.createElement("input");
+            input.id = "custom-domain-name";
+            input.type = "text"; input.maxLength = 48;
+            input.placeholder = "Name this map view...";
+            input.setAttribute("aria-label", "Custom domain name");
+            input.style.cssText = "width:100%;box-sizing:border-box;border:1px solid #52738b;" +
+                "border-radius:4px;background:#132c3d;color:#fff;padding:8px;font:12px Inter,Arial,sans-serif;";
+            const customButtons = document.createElement("div");
+            customButtons.style.cssText = "display:flex;gap:6px;";
+            const saveDomain = makeButton("save-custom-domain", "Save Custom Domain");
+            saveDomain.style.flex = "1";
+            const deleteDomain = makeButton("delete-custom-domain", "Delete Selected");
+            customButtons.append(saveDomain, deleteDomain);
+            customControls.append(input, customButtons);
+
             const note = document.createElement("div");
             note.id = "saved-start-view-note";
-            note.style.cssText = "margin-top:6px;color:#9fb7c9;font-size:10.5px;line-height:1.3;";
-            function updateNote(message) {
-                note.textContent = message || (readSpcoaStartView()
-                    ? "Custom starting view saved on this browser."
-                    : "Default: selected sector (LBF CWA). ");
-            }
-            save.addEventListener("click", () => {
-                const childWindow = panels[activePanel]?.frame?.contentWindow;
-                let camera = null;
+            note.setAttribute("role", "status");
+            note.style.cssText = "margin-top:7px;color:#9fb7c9;font-size:10.5px;line-height:1.4;";
+            const updateNote = message => {
+                const saved = readSpcoaStartView();
+                const savedLabel = Array.from(select.options).find(o => o.value === saved?.sectorId)?.textContent;
+                note.textContent = message || (saved
+                    ? `Start view: ${savedLabel || "My Saved Start View"} (on this browser).`
+                    : "Start view: LBF CWA. Saved domains are private to this browser.");
+            };
+            const activeSnapshot = () => {
                 try {
-                    camera = childWindow && typeof childWindow.__mpGetCamera === "function"
-                        ? childWindow.__mpGetCamera() : null;
+                    const w = panels[activePanel]?.frame?.contentWindow;
+                    return typeof w?.__mpGetDomainSnapshot === "function" ? w.__mpGetDomainSnapshot() : null;
+                } catch (_) { return null; }
+            };
+            const refreshAllSelectors = () => {
+                refreshSpcoaSectorOptions(select);
+                for (const panel of panels) {
+                    try { panel.frame.contentWindow.__mpRefreshSectorOptions?.(); } catch (_) {}
+                }
+            };
+            const selectEveryPanel = value => {
+                refreshAllSelectors();
+                if (Array.from(select.options).some(o => o.value === value)) select.value = value;
+                for (const panel of panels) {
+                    try {
+                        const childSelect = panel.frame.contentDocument?.getElementById("sector-select");
+                        if (childSelect && Array.from(childSelect.options).some(o => o.value === value)) childSelect.value = value;
+                    } catch (_) {}
+                }
+            };
+
+            saveDomain.addEventListener("click", () => {
+                const name = input.value.trim();
+                if (!name) { updateNote("Enter a name for this custom domain first."); input.focus(); return; }
+                const snapshot = activeSnapshot();
+                if (!snapshot) { updateNote("Wait until the map finishes moving, then try again."); return; }
+                const domains = readSpcoaCustomDomains();
+                if (domains.length >= SPCOA_CUSTOM_DOMAIN_LIMIT) {
+                    updateNote("40-domain limit reached. Delete one before saving another."); return;
+                }
+                const id = "custom:" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+                const domain = validateSpcoaDomain({id, name, ...snapshot});
+                if (!domain) { updateNote("Could not save this extent. Try a smaller map region."); return; }
+                try {
+                    localStorage.setItem(SPCOA_CUSTOM_DOMAINS_KEY, JSON.stringify([...domains, domain]));
+                } catch (_) { updateNote("Browser storage is unavailable or full."); return; }
+                selectEveryPanel(id);
+                input.value = "";
+                updateNote(`Saved “${domain.name}” in My Custom Domains. Use Set As Start View to open here next time.`);
+            });
+            input.addEventListener("keydown", e => {
+                if (e.key === "Enter") { e.preventDefault(); saveDomain.click(); }
+            });
+            deleteDomain.addEventListener("click", () => {
+                const id = select.value;
+                const domain = readSpcoaCustomDomains().find(d => d.id === id);
+                if (!domain) { updateNote("Select a domain under My Custom Domains to delete it."); return; }
+                if (!window.confirm(`Delete custom domain “${domain.name}” from this browser?`)) return;
+                try {
+                    localStorage.setItem(SPCOA_CUSTOM_DOMAINS_KEY,
+                        JSON.stringify(readSpcoaCustomDomains().filter(d => d.id !== id)));
+                    const saved = readSpcoaStartView();
+                    if (saved?.sectorId === id) localStorage.removeItem(SPCOA_START_VIEW_KEY);
+                } catch (_) { updateNote("Could not update browser storage."); return; }
+                selectEveryPanel("lbf");
+                select.dispatchEvent(new Event("change", {bubbles: true}));
+                updateNote(`Deleted “${domain.name}”.`);
+            });
+            saveStart.addEventListener("click", () => {
+                const snapshot = activeSnapshot();
+                const view = validateSpcoaStartView(snapshot);
+                if (!view) { updateNote("Wait until the map finishes moving, then try again."); return; }
+                const selectedId = select.value;
+                const domain = readSpcoaCustomDomains().find(d => d.id === selectedId);
+                let presetMatch = null;
+                try {
+                    const w = panels[activePanel]?.frame?.contentWindow;
+                    presetMatch = w?.__mpGetMatchedPresetSector?.() || null;
                 } catch (_) {}
-                const valid = validateSpcoaStartView(camera);
-                if (!valid) {
-                    updateNote("Map still loading. Try again once it appears.");
-                    return;
-                }
-                try {
-                    localStorage.setItem(SPCOA_START_VIEW_KEY, JSON.stringify(valid));
-                    updateNote("Saved! This will be your starting map view on this browser.");
-                } catch (_) {
-                    updateNote("Browser storage unavailable; cannot save this preference.");
-                }
+                view.sectorId = (domain && spcoaCameraMatches(view, domain))
+                    ? domain.id : (presetMatch || SPCOA_SAVED_VIEW_OPTION);
+                try { localStorage.setItem(SPCOA_START_VIEW_KEY, JSON.stringify(view)); }
+                catch (_) { updateNote("Browser storage unavailable; couldn't save start view."); return; }
+                selectEveryPanel(view.sectorId);
+                const label = Array.from(select.options).find(o => o.value === view.sectorId)?.textContent;
+                updateNote(`Starting view saved${label ? ` as “${label}”` : ""}.`);
             });
-            reset.addEventListener("click", () => {
-                try {
-                    localStorage.removeItem(SPCOA_START_VIEW_KEY);
-                    updateNote("Starting view reset. The default sector loads next visit.");
-                } catch (_) {
-                    updateNote("Browser storage unavailable.");
-                }
+            resetStart.addEventListener("click", () => {
+                try { localStorage.removeItem(SPCOA_START_VIEW_KEY); }
+                catch (_) { updateNote("Browser storage unavailable."); return; }
+                selectEveryPanel("lbf");
+                select.dispatchEvent(new Event("change", {bubbles: true}));
+                updateNote("Starting view reset to LBF CWA. Custom domains are preserved.");
             });
-            actions.append(save, reset);
-            sectorCard.append(actions, note);
+            sectorCard.append(actions, customControls, note);
             updateNote();
         })();
+        window.addEventListener("storage", event => {
+            if (event.key === SPCOA_CUSTOM_DOMAINS_KEY || event.key === SPCOA_START_VIEW_KEY) {
+                refreshSpcoaSectorOptions(document.getElementById("sector-select"));
+                for (const panel of panels) {
+                    try { panel.frame.contentWindow.__mpRefreshSectorOptions?.(); } catch (_) {}
+                }
+            }
+        });
         const sharedCanvas = document.createElement("canvas");
         sharedCanvas.id = "mp-shared-annotation-canvas";
         panelGrid.appendChild(sharedCanvas);
@@ -466,6 +624,9 @@ if (!__MP_CHILD) {
                 hostCwa.replaceChildren(...Array.from(childCwa.options, o => new Option(o.textContent, o.value)));
                 hostCwa.value = childCwa.value || "ALL";
             }
+            // Update both option lists before copying selection from the active panel.
+            refreshSpcoaSectorOptions(document.getElementById("sector-select"));
+            refreshSpcoaSectorOptions(d.getElementById("sector-select"));
             document.querySelectorAll("#sidebar input[id], #sidebar select[id], #drawing-toolbar input[id], #timeline-bar input[id], #timeline-bar select[id]").forEach(host => {
                 if (host.id === "layout-select" || host.id === "parameter-scope" || host.id === "drawing-scope") return;
                 const child = d.getElementById(host.id);
@@ -636,6 +797,7 @@ if (!__MP_CHILD) {
                         panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*");
                     } catch (_) {}
                 }
+                try { panels[i]?.frame?.contentWindow?.__mpRefreshSectorOptions?.(); } catch (_) {}
                 if (i === activePanel) syncHostFromActiveChild();
             } else if (msg.type === "mp-activate") {
                 setActivePanel(Number(msg.panel) - 1);
@@ -2626,6 +2788,15 @@ ensureFilledWindFieldOptions();
 
 const sectorSelect =
     document.getElementById("sector-select");
+
+refreshSpcoaSectorOptions(sectorSelect);
+if (sectorSelect) sectorSelect.value = spcoaInitialSectorValue(sectorSelect);
+window.__mpRefreshSectorOptions = () => refreshSpcoaSectorOptions(sectorSelect);
+window.addEventListener("storage", event => {
+    if (event.key === SPCOA_CUSTOM_DOMAINS_KEY || event.key === SPCOA_START_VIEW_KEY) {
+        refreshSpcoaSectorOptions(sectorSelect);
+    }
+});
 
 const citiesToggle =
     document.getElementById("cities-toggle");
@@ -11462,11 +11633,15 @@ function fitSector(
     options = {}
 ) {
 
-    const sector =
-        sectors[
-            sectorKey
-        ];
-
+    // Preset sectors, saved custom bounds, and the personal start view all use
+    // the same native MapLibre camera, so numerical canvas redraws are unchanged.
+    if (sectorKey === SPCOA_SAVED_VIEW_OPTION) {
+        const saved = readSpcoaStartView();
+        if (saved) map.easeTo({center: saved.center, zoom: saved.zoom, duration: options.duration ?? 700});
+        return;
+    }
+    const sector = sectors[sectorKey] ||
+        readSpcoaCustomDomains().find(domain => domain.id === sectorKey);
 
     if (!sector) {
 
@@ -11486,10 +11661,12 @@ function fitSector(
             : 700;
 
 
+    // A saved domain records the exact visible bounds. Zero padding
+    // reproduces the original framing when selected again.
     const padding =
         options.padding !== undefined
             ? options.padding
-            : 20;
+            : (sectorKey.startsWith("custom:") ? 0 : 20);
 
 
     map.fitBounds(
@@ -12497,7 +12674,13 @@ async function initialize() {
 
         const personalStartView = readSpcoaStartView();
         if (personalStartView) {
-            map.jumpTo(personalStartView);
+            map.jumpTo({center: personalStartView.center, zoom: personalStartView.zoom});
+            // Match the menu label to the restored start view, including
+            // named custom domains and views saved before this update.
+            if (sectorSelect) {
+                refreshSpcoaSectorOptions(sectorSelect);
+                sectorSelect.value = spcoaInitialSectorValue(sectorSelect);
+            }
         } else {
             fitSector(initialSector, {duration: 0});
         }
@@ -13558,6 +13741,28 @@ document.addEventListener("visibilitychange", () => {
         const c = map.getCenter();
         return {center: [c.lng, c.lat], zoom: map.getZoom()};
     };
+    window.__mpGetDomainSnapshot = function() {
+        const camera = window.__mpGetCamera();
+        if (!camera) return null;
+        const bounds = map.getBounds();
+        return {...camera, bounds: [
+            [bounds.getWest(), bounds.getSouth()],
+            [bounds.getEast(), bounds.getNorth()]
+        ]};
+    };
+    window.__mpGetMatchedPresetSector = function() {
+        const selected = sectorSelect?.value;
+        if (!selected || !sectors[selected]) return null;
+        const actual = window.__mpGetCamera();
+        if (!actual || typeof map.cameraForBounds !== "function") return null;
+        const expected = map.cameraForBounds(sectors[selected].bounds, {padding: 20});
+        if (!expected) return null;
+        const c = expected.center;
+        const expectedCenter = Array.isArray(c) ? c : [c.lng, c.lat];
+        return spcoaCameraMatches(actual, {
+            center: expectedCenter, zoom: expected.zoom
+        }) ? selected : null;
+    };
 
     function sendAnnotationState() {
         const data = cloneAnnotationState();
@@ -13705,3 +13910,4 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
