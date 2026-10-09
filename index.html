@@ -126,7 +126,7 @@ body.mp-child.mp-layout-4 .legend-label{top:0}
 #mp-shared-annotation-canvas.drawing-active{pointer-events:auto;cursor:crosshair}
 #mp-shared-annotation-canvas.erasing-active{pointer-events:auto;cursor:not-allowed}
 
-.layer-clear-buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.layer-clear-buttons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
 .layer-clear-buttons button{min-width:0;min-height:34px;padding:7px 5px;border:1px solid #577a95;border-radius:5px;background:#21445d;color:#ecf7ff;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
 .layer-clear-buttons button:hover,.layer-clear-buttons button:focus-visible{background:#2c6486;border-color:#94cef1}
 .layer-clear-buttons button:focus-visible{outline:2px solid #a3dcff;outline-offset:2px}
@@ -153,8 +153,10 @@ body.mp-child.mp-layout-4 .legend-label{top:0}
     <div class="sector layer-clear-sector" aria-label="Clear numerical layers">
       <span class="small-heading">Layer Controls</span>
       <div class="layer-clear-buttons">
-        <button id="clear-fill" type="button" title="Clear only the selected filled field">Clear Fill</button>
-        <button id="clear-contours" type="button" title="Turn off contour overlays without changing filled fields or vectors">Clear Contours</button>
+        <button id="clear-fill" type="button" title="Remove the selected filled shading">Clear Fill</button>
+        <button id="clear-contours" type="button" title="Remove all contour overlays">Clear Contours</button>
+        <button id="clear-vectors" type="button" title="Remove wind barbs, Q-vectors, axes of dilatation, and all other vector overlays">Clear Vectors</button>
+        <button id="clear-all" type="button" title="Remove all numerical fields, contours, and vectors; keep the basemap and geography">Clear All</button>
       </div>
     </div>
 
@@ -262,7 +264,7 @@ body.mp-child.mp-layout-4 .legend-label{top:0}
       <label class="toggle-row"><input id="counties-toggle" type="checkbox" checked><span>Counties</span></label>
       <label class="toggle-row"><input id="cities-toggle" type="checkbox"><span>Cities</span></label>
       <div id="cwa-controls-wrapper">
-        <label class="toggle-row"><input id="cwa-borders-toggle" type="checkbox" checked><span>CWA Borders</span><input id="cwa-border-color" type="color" value="#6f42c1" title="CWA border color" aria-label="CWA border color"></label>
+        <label class="toggle-row"><input id="cwa-borders-toggle" type="checkbox"><span>CWA Borders</span><input id="cwa-border-color" type="color" value="#6f42c1" title="CWA border color" aria-label="CWA border color"></label>
         <div class="cwa-control-options">
           <select id="cwa-selector" aria-label="CWA office"><option value="ALL">All CWAs</option></select>
           <select id="cwa-border-width" aria-label="CWA border width"><option value="1">1px</option><option value="1.5">1.5px</option><option value="2" selected>2px</option><option value="2.5">2.5px</option><option value="3">3px</option><option value="4">4px</option><option value="5">5px</option></select>
