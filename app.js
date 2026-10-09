@@ -8,6 +8,19 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
  * Preset sectors remain static. No backend or account storage is used. */
 const SPCOA_START_VIEW_KEY = "spcoa_start_view_v1"; // Preserve existing visitor preferences.
 const SPCOA_CUSTOM_DOMAINS_KEY = "spcoa_custom_domains_v1";
+// CWA border color is a browser preference, just like saved custom domains.
+const SPCOA_CWA_COLOR_KEY = "spcoa_cwa_border_color_v1";
+function readSpcoaCwaBorderColor() {
+    try {
+        const saved = localStorage.getItem(SPCOA_CWA_COLOR_KEY);
+        return /^#[0-9a-fA-F]{6}$/.test(saved || "") ? saved : "#6f42c1";
+    } catch (_) { return "#6f42c1"; }
+}
+function saveSpcoaCwaBorderColor(color) {
+    if (!/^#[0-9a-fA-F]{6}$/.test(color || "")) return;
+    try { localStorage.setItem(SPCOA_CWA_COLOR_KEY, color); } catch (_) {}
+}
+
 const SPCOA_SAVED_VIEW_OPTION = "__spcoa_saved_start_view__";
 const SPCOA_CUSTOM_DOMAIN_LIMIT = 40;
 function validateSpcoaStartView(value) {
@@ -98,6 +111,9 @@ if (!__MP_CHILD) {
         const mapWrapper = document.getElementById("map-wrapper");
         const layoutSelect = document.getElementById("layout-select");
         const sidebar = document.getElementById("sidebar");
+        const hostCwaColor = document.getElementById("cwa-border-color");
+        if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
+
         const toolbar = document.getElementById("drawing-toolbar");
         const timeline = document.getElementById("timeline-bar");
         const savePng = document.getElementById("save-png");
@@ -631,6 +647,7 @@ if (!__MP_CHILD) {
                 if (host.id === "layout-select" || host.id === "parameter-scope" || host.id === "drawing-scope") return;
                 const child = d.getElementById(host.id);
                 if (!child) return;
+                if (host.id === "cwa-border-color" && document.activeElement === host) return;
                 if (host.type === "checkbox" || host.type === "radio") host.checked = child.checked;
                 else host.value = child.value;
             });
@@ -701,11 +718,23 @@ if (!__MP_CHILD) {
             }
         }, true);
 
+        // Native color controls primarily emit input while the user picks a color.
+        // Forward it immediately rather than letting the 350-ms host sync restore purple.
+        sidebar.addEventListener("input", event => {
+            const el = event.target;
+            if (!el || el.id !== "cwa-border-color") return;
+            saveSpcoaCwaBorderColor(el.value);
+            for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
+        });
+
         sidebar.addEventListener("change", event => {
             const el = event.target;
             if (!el || !el.id || el.id === "layout-select" || el.id === "parameter-scope") return;
             if (el.id === "sector-select") {
                 for (let i = 0; i < layoutCount; i++) dispatchChildValue(el, i, "change");
+            } else if (el.id === "cwa-border-color") {
+                saveSpcoaCwaBorderColor(el.value);
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
             } else if (el.tagName === "SELECT" || (el.tagName === "INPUT" && el.type !== "checkbox")) {
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "change");
             }
@@ -2353,7 +2382,7 @@ let countiesEnabled = true;
 
 let cwaBordersEnabled = true;
 
-let cwaBorderColor = "#6f42c1";
+let cwaBorderColor = readSpcoaCwaBorderColor();
 
 let cwaBorderWidth = 2.0;
 
@@ -2674,7 +2703,8 @@ if (!contourLabelCanvas) {
  * contour labels
  * wind barbs
  *
- * Wind barbs intentionally render above every other custom canvas.
+ * Wind barbs render above geography. Numerical contour labels render
+ * above wind barbs and annotations for readability.
  */
 
 weatherCanvas.style.zIndex =
@@ -2689,8 +2719,11 @@ contourCanvas.style.zIndex =
 geographyCanvas.style.zIndex =
     "5";
 
+// Draw all contour numbers (including heights and MSLP) above barbs,
+// CWA/state/county boundaries, cities, and map annotations.
+// Keep the legend (z=10) and cursor (z=16) above these labels.
 contourLabelCanvas.style.zIndex =
-    "6";
+    "9";
 
 
 /* =========================================================================================
@@ -2864,6 +2897,10 @@ let cwaBorderColorInput =
 
 let cwaBorderWidthSelect =
     document.getElementById("cwa-border-width");
+
+// index.html gives the picker a purple default. Apply the visitor's choice first.
+if (cwaBorderColorInput) cwaBorderColorInput.value = cwaBorderColor;
+
 
 function ensureCwaBorderControls() {
 
@@ -10697,7 +10734,7 @@ function renderGeography() {
      * county and state boundaries.
      *
      * MSLP pressure labels remain above cities because those labels use
-     * contourLabelCanvas at z-index 6.
+     * contourLabelCanvas at z-index 9.
      */
     renderCities();
 
@@ -11748,8 +11785,8 @@ async function renderAll() {
      * geographyCanvas has z-index 5, so this remains above the filled
      * fields, barbs, and contour lines.
      *
-     * contourLabelCanvas is z-index 6, so MSLP numbers remain above
-     * geography even after this redraw.
+     * contourLabelCanvas is z-index 9, so height/MSLP numbers remain
+     * above geography, vectors, and annotations after this redraw.
      */
     renderGeography();
 
@@ -12150,15 +12187,15 @@ if (cwaSelector) {
 }
 
 if (cwaBorderColorInput) {
-
-    cwaBorderColorInput.addEventListener(
-        "input",
-        event => {
-            cwaBorderColor = event.target.value || "#6f42c1";
-            renderGeography();
-        }
-    );
-
+    const applyCwaColor = event => {
+        const color = event.target.value;
+        if (!/^#[0-9a-fA-F]{6}$/.test(color || "")) return;
+        cwaBorderColor = color;
+        saveSpcoaCwaBorderColor(color);
+        renderGeography();
+    };
+    cwaBorderColorInput.addEventListener("input", applyCwaColor);
+    cwaBorderColorInput.addEventListener("change", applyCwaColor);
 }
 
 if (cwaBorderWidthSelect) {
@@ -13106,11 +13143,11 @@ async function saveCurrentMapPng4k() {
         const layers = [
             map.getCanvas(),
             weatherCanvas,
-            vectorCanvas,
             contourCanvas,
             geographyCanvas,
-            contourLabelCanvas,
-            annotationCanvas
+            vectorCanvas,
+            annotationCanvas,
+            contourLabelCanvas
         ].filter(Boolean);
 
         for (const layer of layers) {
@@ -13326,11 +13363,11 @@ async function buildGifFrameCanvas(outW = 1920) {
     const layers = [
         map.getCanvas(),
         weatherCanvas,
-        vectorCanvas,
         contourCanvas,
         geographyCanvas,
-        contourLabelCanvas,
-        annotationCanvas
+        vectorCanvas,
+        annotationCanvas,
+        contourLabelCanvas
     ].filter(Boolean);
 
     for (const layer of layers) {
@@ -13804,7 +13841,7 @@ document.addEventListener("visibilitychange", () => {
         const ctx = out.getContext("2d", { alpha: false });
         ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, outW, outH);
         const mapH = outH - footerH;
-        const layers = [map.getCanvas(), weatherCanvas, vectorCanvas, contourCanvas, geographyCanvas, contourLabelCanvas, annotationCanvas].filter(Boolean);
+        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
         for (const layer of layers) ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, outW, mapH);
 
         if (legend && legend.style.display !== "none") {
