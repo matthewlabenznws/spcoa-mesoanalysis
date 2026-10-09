@@ -1,6 +1,3 @@
-/* SPCOA frontend responsive map optimization: quicker visible-tile loading,
-   prefetch on pan/zoom, flat-map pixel sampling, preserves CWA off by default,
-   full-layer clear controls, and previous-frame holdovers for panning; no stale zoom frames. */
 /* =========================================================================================
    MULTI-PANEL HOST / CHILD MODE
    ========================================================================================= */
@@ -428,7 +425,7 @@ if (!__MP_CHILD) {
         layoutSelect.addEventListener("change", () => applyLayout(layoutSelect.value));
 
         sidebar.addEventListener("click", event => {
-            const clearButton = event.target.closest("button#clear-fill, button#clear-contours, button#clear-vectors, button#clear-all");
+            const clearButton = event.target.closest("button#clear-fill, button#clear-contours");
             if (clearButton) {
                 event.preventDefault();
                 for (const i of parameterTargets()) clickChildById(clearButton.id, i);
@@ -724,8 +721,6 @@ const S3_BASE_URL =
    ========================================================================================= */
 
 const TILE_SIZE = 256;
-// Add ?perf=1 to a child-view URL to profile browser-side rendering.
-const DEBUG_MAP_PERFORMANCE = new URLSearchParams(window.location.search).get('perf') === '1';
 
 const SCALAR_NODATA = 65535;
 
@@ -2104,7 +2099,7 @@ let citiesEnabled = false;
 // County outlines are visible by default and can be toggled under Map Layers.
 let countiesEnabled = true;
 
-let cwaBordersEnabled = false;
+let cwaBordersEnabled = true;
 
 let cwaBorderColor = "#6f42c1";
 
@@ -2514,7 +2509,7 @@ function ensureCwaBorderControls() {
     cwaBordersToggle = document.createElement("input");
     cwaBordersToggle.type = "checkbox";
     cwaBordersToggle.id = "cwa-borders-toggle";
-    cwaBordersToggle.checked = false;
+    cwaBordersToggle.checked = true;
 
     const text = document.createElement("span");
     text.textContent = "CWA Borders";
@@ -3659,8 +3654,6 @@ function transformCanvasToCurrentCamera(
 
 function transformNumericalCanvases() {
 
-    if (zoomReplacementPending) return; // Never stretch an obsolete zoom frame.
-
     // The holdover canvases remain attached to the map if the user resumes panning.
     for (const ghost of numericalHoldovers) {
         transformCanvasToCurrentCamera(ghost);
@@ -3729,43 +3722,16 @@ function resetNumericalCanvasTransforms() {
 /* =========================================================================================
    KEEP-PREVIOUS-FRAME REDRAW
 
-   Vector and contour renderers clear visible canvases before awaiting tiles.
-   Starting at camera movement, put a frozen copy above each numerical canvas so
+   Existing numerical renderers clear visible canvases before awaiting tiles.
+   During a camera redraw, put a frozen copy above each numerical canvas so
    the previous image stays visible until ALL new canvases are ready.
    These snapshots are display-only; the original binary tiles, resolution,
    map geography, export behavior, and product sampling are unchanged.
    ========================================================================================= */
 let numericalHoldovers = [];
 let numericalHoldoverId = 0;
-let hasCompletedNumericalFrame = false;
-let zoomReplacementPending = false;
-let mapMovementSerial = 0;
-
-// A stretched screenshot looks incorrect after a zoom because it represents a
-// DIFFERENT camera scale. Unlike ordinary panning, zooming must not keep the
-// prior numerical image visible while the new view loads.
-function hideOutdatedNumericalLayersForZoom() {
-    zoomReplacementPending = true;
-    clearNumericalHoldovers();
-    invalidateNumericalRenders();
-    resetNumericalCanvasTransforms();
-    for (const canvas of [weatherCanvas, vectorCanvas, contourCanvas, contourLabelCanvas]) {
-        if (canvas) canvas.style.visibility = "hidden";
-    }
-}
-
-function revealNewNumericalLayersAfterZoom() {
-    if (!zoomReplacementPending) return;
-    zoomReplacementPending = false;
-    for (const canvas of [weatherCanvas, vectorCanvas, contourCanvas, contourLabelCanvas]) {
-        if (canvas) canvas.style.visibility = "visible";
-    }
-}
-
 
 function beginNumericalHoldover() {
-    // On initial load there is no finished numerical frame to preserve.
-    if (!hasCompletedNumericalFrame || zoomReplacementPending) return ++numericalHoldoverId;
     // An in-flight redraw might still be active; reuse its visible snapshots.
     if (numericalHoldovers.length) return ++numericalHoldoverId;
 
@@ -3793,15 +3759,10 @@ function beginNumericalHoldover() {
     return ++numericalHoldoverId;
 }
 
-function clearNumericalHoldovers() {
-    ++numericalHoldoverId;
-    for (const ghost of numericalHoldovers) ghost.remove();
-    numericalHoldovers = [];
-}
-
 function finishNumericalHoldover(token) {
     if (token !== numericalHoldoverId) return;
-    clearNumericalHoldovers();
+    for (const ghost of numericalHoldovers) ghost.remove();
+    numericalHoldovers = [];
 }
 
 /* =========================================================================================
@@ -4046,71 +4007,6 @@ function selectedProductKeys() {
     if (activeOverlays.dcape) contours.push("dcape");
     if (activeOverlays.warmCloudDepth) contours.push("warm_cloud_depth");
     return { scalar: [...new Set(scalar)], vectors: [...new Set(vectors)], contours: [...new Set(contours)] };
-}
-
-/* =========================================================================================
-   RESPONSIVE NEARBY TILE WARMUP
-
-   Initial rendering awaits ONLY the standard 2-tile margin. After rendering,
-   warm a larger neighborhood for selected products in a low-priority, bounded
-   queue. Fetches use the exact same cached binary tiles as normal rendering;
-   do not pre-load 11.6 GB of every product/domain at page start.
-   ========================================================================================= */
-let nearbyWarmupSerial = 0;
-
-function scheduleNearbyActiveTileWarmup() {
-    const serial = ++nearbyWarmupSerial;
-    const run = currentRun;
-    if (!run || !map || typeof map.getBounds !== "function") return;
-    const zoom = getDataZoom();
-    const products = selectedProductKeys();
-    const categories = [
-        ...products.scalar.slice(0, 1).map(field => ({kind: "scalar", field})),
-        ...products.vectors.slice(0, 2).map(field => ({kind: "vector", field})),
-        ...products.contours.slice(0, 2).map(field => ({kind: "contour", field}))
-    ];
-    if (!categories.length) return;
-    const bounds = getVisibleTileRange(zoom, 3);
-    const centerX = (bounds.x0 + bounds.x1) / 2;
-    const centerY = (bounds.y0 + bounds.y1) / 2;
-    const jobs = [];
-    for (const {kind, field} of categories) {
-        const cache = kind === "scalar" ? scalarTileCache :
-                      kind === "vector" ? vectorTileCache : contourTileCache;
-        const keyFor = kind === "scalar" ? scalarTileKey :
-                       kind === "vector" ? vectorTileKey : contourTileKey;
-        const load = kind === "scalar" ? loadScalarTile :
-                     kind === "vector" ? loadVectorTile : loadContourTile;
-        for (let y = bounds.y0; y <= bounds.y1; y++) {
-            for (let x = bounds.x0; x <= bounds.x1; x++) {
-                const nx = normalizeTileX(x, zoom);
-                if (cache.has(keyFor(field, run, zoom, nx, y))) continue;
-                jobs.push({ distance: Math.abs(x-centerX) + Math.abs(y-centerY),
-                            fetch: () => load(field, zoom, x, y, run) });
-            }
-        }
-    }
-    // Warm only a bounded neighborhood per pan; avoids flooding the network
-    // when users enable many overlays or four independent map panels.
-    jobs.sort((a,b) => a.distance - b.distance);
-    jobs.length = Math.min(jobs.length, 120);
-    const start = async () => {
-        if (serial !== nearbyWarmupSerial || run !== currentRun || zoom !== getDataZoom()) return;
-        let cursor = 0;
-        const worker = async () => {
-            while (cursor < jobs.length) {
-                if (serial !== nearbyWarmupSerial || run !== currentRun || zoom !== getDataZoom()) return;
-                const job = jobs[cursor++];
-                try { await job.fetch(); } catch (_) { /* display retry handles failures */ }
-            }
-        };
-        await Promise.all(Array.from({length: Math.min(6, jobs.length)}, () => worker()));
-    };
-    if (typeof window.requestIdleCallback === "function") {
-        window.requestIdleCallback(() => { void start(); }, {timeout: 600});
-    } else {
-        setTimeout(() => { void start(); }, 180);
-    }
 }
 
 async function preloadRunProducts(runItem) {
@@ -5205,7 +5101,7 @@ async function preloadScalarTiles(
     const range =
         getVisibleTileRange(
             z,
-            1
+            2
         );
 
 
@@ -5267,7 +5163,7 @@ async function preloadVectorTiles(
     const range =
         getVisibleTileRange(
             z,
-            1
+            2
         );
 
 
@@ -5329,7 +5225,7 @@ async function preloadContourTiles(
     const range =
         getVisibleTileRange(
             z,
-            1
+            2
         );
 
 
@@ -6927,104 +6823,26 @@ function getFieldColor(
 
 
 /* =========================================================================================
-   FAST FLAT-MAP NUMERICAL SAMPLING (DISPLAY ONLY)
-
-   The normal map is Web Mercator, bearing=0, pitch=0. MapLibre.unproject()
-   for every raster pixel is unnecessarily expensive. Convert screen pixels
-   directly to the existing binary-tile coordinate system instead. For any
-   rotated/pitched view, fall back to the original MapLibre-based sampler.
-
-   Encoding, nodata treatment, color decisions, data zooms and tiles are NOT
-   changed. The fast sampler handles wrapped tile-X and cross-tile edges.
-   ========================================================================================= */
-function getFlatMapTileCoordinates(width, height, dataZoom) {
-    if (Math.abs(map.getBearing()) > 0.000001 || Math.abs(map.getPitch()) > 0.000001) return null;
-    const mapCanvas = map.getCanvas();
-    if (Math.abs(mapCanvas.clientWidth - width) > 2 ||
-        Math.abs(mapCanvas.clientHeight - height) > 2) return null;
-    const center = map.getCenter();
-    const step = Math.pow(2, dataZoom - map.getZoom());
-    const startX = lonToTileX(center.lng, dataZoom) * TILE_SIZE - 0.5 * width * step;
-    const startY = latToTileY(center.lat, dataZoom) * TILE_SIZE - 0.5 * height * step;
-    // Confirm the fast camera mapping against MapLibre once per render.
-    // This also protects future site changes (nonstandard camera projections).
-    const checkX = width * 0.73;
-    const checkY = height * 0.37;
-    const checkLL = map.unproject([checkX, checkY]);
-    const referenceX = lonToTileX(checkLL.lng, dataZoom) * TILE_SIZE;
-    const referenceY = latToTileY(checkLL.lat, dataZoom) * TILE_SIZE;
-    const predictedX = startX + checkX * step;
-    const predictedY = startY + checkY * step;
-    const wrap = TILE_SIZE * (2 ** dataZoom);
-    const dx = Math.abs(((referenceX - predictedX + wrap / 2) % wrap + wrap) % wrap - wrap / 2);
-    if (dx > 0.05 || Math.abs(referenceY - predictedY) > 0.05) return null;
-    return { startX, startY, step };
-}
-
-function sampleScalarGlobalPixelsFast(field, z, gx, gy, encoding, contour = false) {
-    const worldPixels = TILE_SIZE * (2 ** z);
-    const iy = Math.floor(gy);
-    if (iy < 0 || iy + 1 >= worldPixels) return null;
-    const rawX = Math.floor(gx);
-    const ix = ((rawX % worldPixels) + worldPixels) % worldPixels;
-    const tx = Math.floor(ix / TILE_SIZE);
-    const ty = Math.floor(iy / TILE_SIZE);
-    const px = ix - tx * TILE_SIZE;
-    const py = iy - ty * TILE_SIZE;
-    const fx = gx - rawX;
-    const fy = gy - iy;
-    const tile = contour ? getCachedContourTile(field, z, tx, ty)
-                         : getCachedScalarTile(field, z, tx, ty);
-    if (!tile) return null;
-
-    let a, b, c, d;
-    if (px < TILE_SIZE - 1 && py < TILE_SIZE - 1) {
-        const i = py * TILE_SIZE + px;
-        a = tile[i]; b = tile[i + 1];
-        c = tile[i + TILE_SIZE]; d = tile[i + TILE_SIZE + 1];
-    } else {
-        // Crossing a tile boundary is rare; use the original correct sampler.
-        // It handles both x wrapping and missing neighbor tiles.
-        const a0 = getRawScalarPixel(field, z, rawX, iy, contour);
-        const b0 = getRawScalarPixel(field, z, rawX + 1, iy, contour);
-        const c0 = getRawScalarPixel(field, z, rawX, iy + 1, contour);
-        const d0 = getRawScalarPixel(field, z, rawX + 1, iy + 1, contour);
-        if (a0 === null || b0 === null || c0 === null || d0 === null) return null;
-        return ((a0 * (1 - fx) + b0 * fx) * (1 - fy)) +
-               ((c0 * (1 - fx) + d0 * fx) * fy);
-    }
-
-    if (a === encoding.nodata || b === encoding.nodata ||
-        c === encoding.nodata || d === encoding.nodata ||
-        a === SCALAR_NODATA || b === SCALAR_NODATA ||
-        c === SCALAR_NODATA || d === SCALAR_NODATA) return null;
-    // Interpolation and affine decoding commute; numerically equivalent to
-    // the original per-neighbor decode (within floating-point rounding).
-    const top = a * (1 - fx) + b * fx;
-    const bottom = c * (1 - fx) + d * fx;
-    return (top * (1 - fy) + bottom * fy) * encoding.scale + encoding.offset;
-}
-
-/* =========================================================================================
    WEATHER RENDERER
    ========================================================================================= */
 
 async function renderWeather() {
 
-    const weatherStart = DEBUG_MAP_PERFORMANCE ? performance.now() : 0;
     const generation =
         ++scalarRenderGeneration;
 
 
-    // Keep the last complete numerical frame visible while replacement tiles
-    // are fetched and sampled. An early prepareContext() cleared this canvas
-    // BEFORE the asynchronous preload and caused bright white flashes.
-    // The new image is still cleared and committed after processing below.
-    if (!activeField || activeField === "none" || !WEATHER_FIELDS[activeField]) {
-        prepareContext(weatherCanvas, weatherCtx);
-        weatherCanvas.style.transform = "none";
-        return;
-    }
+    prepareContext(
+
+        weatherCanvas,
+
+        weatherCtx
+
+    );
+
+
+    weatherCanvas.style.transform =
+        "none";
 
 
     /*
@@ -7065,7 +6883,7 @@ async function renderWeather() {
         z
 
     );
-    const weatherLoaded = DEBUG_MAP_PERFORMANCE ? performance.now() : 0;
+
 
     if (
         generation !==
@@ -7176,8 +6994,6 @@ async function renderWeather() {
         image.data;
 
 
-    const fastMapping = getFlatMapTileCoordinates(width, height, z);
-    const fastEncoding = getEncoding(fieldMetadata[activeField]);
     let pixelIndex =
         0;
 
@@ -7208,17 +7024,30 @@ async function renderWeather() {
                 renderScale;
 
 
-            const value = fastMapping
-                ? sampleScalarGlobalPixelsFast(
-                    activeField, z,
-                    fastMapping.startX + screenX * fastMapping.step,
-                    fastMapping.startY + screenY * fastMapping.step,
-                    fastEncoding, false
-                )
-                : (() => {
-                    const lngLat = map.unproject([screenX, screenY]);
-                    return sampleScalar(activeField, lngLat.lng, lngLat.lat, z, false);
-                })();
+            const lngLat =
+                map.unproject([
+
+                    screenX,
+
+                    screenY
+
+                ]);
+
+
+            const value =
+                sampleScalar(
+
+                    activeField,
+
+                    lngLat.lng,
+
+                    lngLat.lat,
+
+                    z,
+
+                    false
+
+                );
 
 
             const color =
@@ -7356,7 +7185,6 @@ async function renderWeather() {
     );
 
 
-    weatherCanvas.style.transform = "none";
     weatherCtx.drawImage(
 
         offscreen,
@@ -7370,14 +7198,7 @@ async function renderWeather() {
         height
 
     );
-    // Fresh fill is complete: reveal it as soon as possible rather than
-    // waiting for slow contour and vector overlays to finish downloading.
-    if (zoomReplacementPending && !map.isMoving()) {
-        weatherCanvas.style.visibility = "visible";
-    }
-    if (DEBUG_MAP_PERFORMANCE) {
-        console.info(`[SPCOA performance] filled field ${activeField}: tiles ${(weatherLoaded-weatherStart).toFixed(0)}ms; render ${(performance.now()-weatherLoaded).toFixed(0)}ms; fast=${Boolean(fastMapping)}`);
-    }
+
 }
 /* =========================================================================================
    WIND BARB SPACING
@@ -9314,8 +9135,6 @@ async function renderContourField(
 
     values.fill(NaN);
 
-    const fastMapping = getFlatMapTileCoordinates(width, height, z);
-    const fastEncoding = getEncoding(contourMetadata[field]);
     let minimumValue = Infinity;
     let maximumValue = -Infinity;
 
@@ -9343,17 +9162,20 @@ async function renderContourField(
                     column * step
                 );
 
-            const value = fastMapping
-                ? sampleScalarGlobalPixelsFast(
-                    field, z,
-                    fastMapping.startX + screenX * fastMapping.step,
-                    fastMapping.startY + screenY * fastMapping.step,
-                    fastEncoding, true
-                )
-                : (() => {
-                    const lngLat = map.unproject([screenX, screenY]);
-                    return sampleScalar(field, lngLat.lng, lngLat.lat, z, true);
-                })();
+            const lngLat =
+                map.unproject([
+                    screenX,
+                    screenY
+                ]);
+
+            const value =
+                sampleScalar(
+                    field,
+                    lngLat.lng,
+                    lngLat.lat,
+                    z,
+                    true
+                );
 
             if (
                 value === null ||
@@ -12023,81 +11845,9 @@ async function renderAll() {
 
 
     captureCanvasCamera();
-    hasCompletedNumericalFrame = true;
-    if (!map.isMoving()) revealNewNumericalLayersAfterZoom();
-    scheduleNearbyActiveTileWarmup();
 
 }
 
-
-/* =========================================================================================
-   INTERACTION-AWARE WARMUP
-
-   Start fetching visible tiles AS the camera moves, rather than waiting for
-   moveend. Restrict concurrent speculative requests to avoid congesting the
-   page, and never fetch inactive products or entire map-domain archives.
-   ========================================================================================= */
-let movementTileWarmupLast = 0;
-let movementTileWarmupSerial = 0;
-function scheduleMovementTileWarmup() {
-    const now = performance.now();
-    if (now - movementTileWarmupLast < 180) return;
-    movementTileWarmupLast = now;
-    const serial = ++movementTileWarmupSerial;
-    const run = currentRun;
-    if (!run) return;
-    const z = getDataZoom();
-    const selected = selectedProductKeys();
-    const active = [
-        ...selected.scalar.map(field => ({kind:'scalar',field})),
-        ...selected.contours.slice(0,3).map(field => ({kind:'contour',field})),
-        ...selected.vectors.slice(0,3).map(field => ({kind:'vector',field}))
-    ];
-    if (!active.length) return;
-    const range = getVisibleTileRange(z, 1);
-    const jobs = [];
-    const midX = (range.x0 + range.x1) / 2;
-    const midY = (range.y0 + range.y1) / 2;
-    for (const {kind,field} of active) {
-        const cache = kind === 'scalar' ? scalarTileCache :
-            kind === 'vector' ? vectorTileCache : contourTileCache;
-        const keyFn = kind === 'scalar' ? scalarTileKey :
-            kind === 'vector' ? vectorTileKey : contourTileKey;
-        const loadFn = kind === 'scalar' ? loadScalarTile :
-            kind === 'vector' ? loadVectorTile : loadContourTile;
-        for (let y = range.y0; y <= range.y1; y++) {
-            for (let x = range.x0; x <= range.x1; x++) {
-                const wrapped = normalizeTileX(x,z);
-                if (cache.has(keyFn(field,run,z,wrapped,y))) continue;
-                jobs.push({priority: Math.abs(x-midX)+Math.abs(y-midY),
-                           load: () => loadFn(field,z,x,y,run)});
-            }
-        }
-    }
-    jobs.sort((a,b)=>a.priority-b.priority);
-    jobs.length=Math.min(36,jobs.length);
-    let next = 0;
-    const worker = async () => {
-        while (next < jobs.length) {
-            if (serial !== movementTileWarmupSerial || run !== currentRun) return;
-            const job = jobs[next++];
-            try { await job.load(); } catch (_) {}
-        }
-    };
-    // Only 3 speculative downloads in flight per movement tick.
-    void Promise.all(Array.from({length:Math.min(3,jobs.length)},()=>worker()));
-}
-
-/* =========================================================================================
-   ZOOM TRANSITIONS
-   Stale numerical pixels must not be stretched across zoom levels. Keep the
-   geographic basemap visible; draw the new numerical frame when tiles arrive.
-   Normal panning still uses the holdover to prevent blank panels.
-   ========================================================================================= */
-map.on("zoomstart", () => {
-    hideOutdatedNumericalLayersForZoom();
-    scheduleMovementTileWarmup();
-});
 
 /* =========================================================================================
    MAP MOVE START
@@ -12110,15 +11860,11 @@ map.on(
     () => {
 
         /*
-         * Preserve the last COMPLETE visible numerical layers as soon as a
-         * pan begins. Holding them only at moveend was too late if another
-         * async renderer had already cleared a canvas. capturedCamera was
-         * recorded after the last completed numerical render; don't replace
-         * it with a newer camera while the old image is still displayed.
+         * Capture the exact camera represented by the existing numerical
+         * canvases. During movement those canvases will be transformed to
+         * follow the live MapLibre camera.
          */
-        ++mapMovementSerial;
-        if (!capturedCamera) captureCanvasCamera();
-        if (!zoomReplacementPending) beginNumericalHoldover();
+        captureCanvasCamera();
 
     }
 
@@ -12146,7 +11892,6 @@ map.on(
          * Geography is inexpensive enough to redraw live.
          */
         renderGeography();
-        scheduleMovementTileWarmup();
 
     }
 
@@ -12183,7 +11928,6 @@ map.on(
                      */
                     invalidateNumericalRenders();
 
-                    const movementAtStart = mapMovementSerial;
                     const holdover = beginNumericalHoldover();
                     resetNumericalCanvasTransforms();
 
@@ -12193,23 +11937,15 @@ map.on(
                             renderVectors(),
                             renderContours()
                         ]);
-                        if (movementAtStart !== mapMovementSerial) return;
                         renderGeography();
                         captureCanvasCamera();
-                        hasCompletedNumericalFrame = true;
-                        revealNewNumericalLayersAfterZoom();
-                        scheduleNearbyActiveTileWarmup();
                     } finally {
-                        if (movementAtStart === mapMovementSerial) {
-                            // Also recover visibility if a tile failed to load.
-                            revealNewNumericalLayersAfterZoom();
-                            finishNumericalHoldover(holdover);
-                        }
+                        finishNumericalHoldover(holdover);
                     }
 
                 },
 
-                35
+                100
 
             );
 
@@ -12260,7 +11996,6 @@ map.on(
 
     () => {
 
-        clearNumericalHoldovers();
         invalidateNumericalRenders();
 
 
@@ -12285,7 +12020,6 @@ const clearContoursButton = document.getElementById("clear-contours");
 
 if (clearFillButton) {
     clearFillButton.addEventListener("click", async () => {
-        clearNumericalHoldovers();
         activeField = "none";
         if (fieldSelect) fieldSelect.value = "none";
         document.querySelectorAll("#sidebar .field-choice.active")
@@ -12304,7 +12038,6 @@ if (clearFillButton) {
 
 if (clearContoursButton) {
     clearContoursButton.addEventListener("click", async () => {
-        clearNumericalHoldovers();
         const contourKeys = new Set(["mslp", "dcape", "warmCloudDepth"]);
         const configs = [
             ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
@@ -12328,75 +12061,6 @@ if (clearContoursButton) {
         await renderContours();
         renderGeography();
         captureCanvasCamera();
-        updateActiveLayersStrip();
-    });
-}
-
-/* =========================================================================================
-   CLEAR VECTOR / ALL NUMERICAL OVERLAYS
-   All vector configurations, including wind barbs, Q-vectors and dilatation
-   axes, share VECTOR_OVERLAY_CONFIG. Keep geography/annotations untouched.
-   ========================================================================================= */
-const clearVectorsButton = document.getElementById("clear-vectors");
-const clearAllButton = document.getElementById("clear-all");
-
-function disableNumericalOverlayToggles() {
-    // This intentionally includes all contour and vector state keys. It does
-    // NOT change the CWA, state/county, city, or drawing controls.
-    for (const key of Object.keys(activeOverlays)) activeOverlays[key] = false;
-    const ids = new Set([
-        "mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle",
-        ...VECTOR_OVERLAY_CONFIG.map(config => config.toggleId),
-        ...GEOPOTENTIAL_HEIGHT_OVERLAYS.map(config => config.toggleId),
-        ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS.map(config => config.toggleId),
-        ...FRONTOGENESIS_CONTOUR_OVERLAYS.map(config => config.toggleId),
-        ...THERMODYNAMIC_CONTOUR_OVERLAYS.map(config => config.toggleId)
-    ]);
-    // Some switches are registered dynamically. Derive the remaining contour
-    // toggle IDs using the definitions instead of toggling geography switches.
-    for (const id of ids) {
-        const toggle = document.getElementById(id);
-        if (toggle && toggle.type === "checkbox") toggle.checked = false;
-    }
-    for (const toggle of document.querySelectorAll(
-        '#sidebar input[type="checkbox"], #map-wrapper input[type="checkbox"]'
-    )) {
-        if (toggle.id && /(?:contours?|divergence|frontogenesis|fgen|q-vector|wind|shear|bunkers|dilatation|srwind|barbs|stp-eff|dcp|lhp|shp|lcl)/i.test(toggle.id)
-            && !/^(?:cwa-borders-toggle|counties-toggle|cities-toggle)$/.test(toggle.id)) {
-            toggle.checked = false;
-        }
-    }
-}
-
-if (clearVectorsButton) {
-    clearVectorsButton.addEventListener("click", async () => {
-        clearNumericalHoldovers();
-        for (const config of VECTOR_OVERLAY_CONFIG) {
-            activeOverlays[config.stateKey] = false;
-            const toggle = vectorToggleElements[config.field] || document.getElementById(config.toggleId);
-            if (toggle) toggle.checked = false;
-        }
-        vectorRenderGeneration++;
-        await renderVectors();
-        renderGeography();
-        updateActiveLayersStrip();
-    });
-}
-
-if (clearAllButton) {
-    clearAllButton.addEventListener("click", async () => {
-        // Old held frames must not cover the newly empty canvases.
-        clearNumericalHoldovers();
-        disableNumericalOverlayToggles();
-        activeField = "none";
-        if (fieldSelect) fieldSelect.value = "none";
-        document.querySelectorAll("#sidebar .field-choice.active")
-            .forEach(button => button.classList.remove("active"));
-        invalidateNumericalRenders();
-        clearCursor();
-        updateLegend();
-        resetNumericalCanvasTransforms();
-        await renderAll();
         updateActiveLayersStrip();
     });
 }
@@ -12883,7 +12547,6 @@ window.addEventListener(
 
     () => {
 
-        clearNumericalHoldovers();
         invalidateNumericalRenders();
 
 
@@ -12974,8 +12637,10 @@ async function initialize() {
 
 
         if (cwaBordersToggle) {
-            cwaBordersToggle.checked = false;
-            cwaBordersEnabled = false;
+
+            cwaBordersEnabled =
+                cwaBordersToggle.checked;
+
         }
 
 
@@ -14302,3 +13967,4 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
