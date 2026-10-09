@@ -642,7 +642,9 @@ if (!__MP_CHILD) {
    2026-10-09 MAP-ANCHORED FILLED FIELD RENDERER
    - Weather fill uses MapLibre raster tiles, not a screen-sized repaint on moveend.
    - Existing numerical .bin files, encoding, field palettes, timestamps unchanged.
-   - Contours, barbs, geography, annotation, timeline remain separate/unchanged.
+   - Contours and vectors now use independent geographically anchored raster tiles.
+   - Geographic source z4-z7; virtual z8-z11 generated from interpolation of source values.
+   - No additional meteorological resolution is created beyond source z7.
    - Set USE_MAPLIBRE_WEATHER_TILES=false to use the prior canvas fill as fallback.
    ========================================================================================= */
 
@@ -3765,7 +3767,7 @@ function revealNewNumericalLayersAfterZoom() {
     if (!zoomReplacementPending) return;
     zoomReplacementPending = false;
     for (const canvas of [vectorCanvas, contourCanvas, contourLabelCanvas]) {
-        if (canvas) canvas.style.visibility = "visible";
+        if (canvas && !USE_GEO_NUMERICAL_OVERLAYS) canvas.style.visibility = "visible";
     }
 }
 
@@ -3778,7 +3780,7 @@ function beginNumericalHoldover() {
 
     const sources = [vectorCanvas, contourCanvas, contourLabelCanvas];
     for (const source of sources) {
-        if (!source || !source.width || !source.height) continue;
+        if (!source || !source.width || !source.height || source.style.visibility === "hidden") continue;
         const ghost = document.createElement("canvas");
         ghost.width = source.width;
         ghost.height = source.height;
@@ -6974,36 +6976,133 @@ async function transparentGeographicWeatherTile() {
     return await createImageBitmap(bitmap);
 }
 
-async function encodeScalarWeatherAsImageBitmap(field, run, z, x, y) {
-    // Reuse the existing full-precision binary tile loader and its Promise cache.
-    const raw = await loadScalarTile(field, z, x, y, run);
-    if (!raw) return transparentGeographicWeatherTile();
+/* ============================================================
+   GEOGRAPHIC NUMERICAL SAMPLING
+   The archive contains true meteorological tiles at z4-z7. At z8-z11,
+   derive finer DISPLAY tiles by interpolation of the z7 numeric values.
+   This makes color boundaries sharp at close zoom levels; it does NOT
+   invent additional atmospheric information beyond z7.
+   ============================================================ */
+const SPCOA_MAX_DISPLAY_ZOOM = 11;
+const USE_GEO_NUMERICAL_OVERLAYS = true;
 
-    const surface = typeof OffscreenCanvas !== "undefined"
-        ? new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
-        : Object.assign(document.createElement("canvas"), {
-            width: TILE_SIZE, height: TILE_SIZE
-          });
-    const ctx = surface.getContext("2d", {willReadFrequently: false});
-    if (!ctx) throw new Error("Unable to create numerical tile canvas");
-    const frame = ctx.createImageData(TILE_SIZE, TILE_SIZE);
-    const rgba = frame.data;
-    const encoding = getEncoding(fieldMetadata[field]);
-    const scale = encoding.scale, offset = encoding.offset;
-    const nodata = encoding.nodata;
-    // Colorize at native binary tile resolution. Unlike a screen-wide canvas,
-    // this operation happens only for tiles requested for a selected product.
-    for (let i = 0, j = 0; i < raw.length; ++i, j += 4) {
-        const encoded = raw[i];
-        if (encoded === nodata || encoded === SCALAR_NODATA) continue;
-        const color = getFieldColor(field, encoded * scale + offset);
-        if (!color) continue;
-        rgba[j] = color.r;
-        rgba[j + 1] = color.g;
-        rgba[j + 2] = color.b;
-        rgba[j + 3] = 235;   // Preserve the former fill transparency.
+function geoDataZoom(z) { return Math.min(7, Math.max(4, z)); }
+function createGeoSurface(size) {
+    if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(size, size);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    return canvas;
+}
+
+// Underlying x/y are Web Mercator coordinates measured in numerical
+// tile pixels, NOT lat/lon. Use the same coordinates for every product.
+async function geoPrefetch(kind, field, run, z, x, y, margin = 2) {
+    if (run !== currentRun) return;
+    const sz = geoDataZoom(z);
+    const factor = Math.pow(2, sz - z);
+    const minX = Math.floor(((x * TILE_SIZE - margin) * factor - 1) / TILE_SIZE);
+    const maxX = Math.floor((((x + 1) * TILE_SIZE + margin) * factor + 1) / TILE_SIZE);
+    const minY = Math.floor(((y * TILE_SIZE - margin) * factor - 1) / TILE_SIZE);
+    const maxY = Math.floor((((y + 1) * TILE_SIZE + margin) * factor + 1) / TILE_SIZE);
+    const loader = kind === "scalar" ? loadScalarTile :
+                   kind === "contour" ? loadContourTile : loadVectorTile;
+    const n = Math.pow(2, sz);
+    const jobs = [];
+    for (let ty = minY; ty <= maxY; ty++) {
+        if (ty < 0 || ty >= n) continue;
+        for (let tx = minX; tx <= maxX; tx++) {
+            jobs.push(loader(field, sz, normalizeTileX(tx, sz), ty, run));
+        }
     }
-    ctx.putImageData(frame, 0, 0);
+    await Promise.all(jobs);
+}
+
+function geoInterpolateScalar(field, srcZ, gx, gy, contour = false) {
+    // Tile data represent pixel centers. Subtract half a pixel when
+    // interpolating so adjoining virtual tiles share exactly the same edge.
+    const x0 = Math.floor(gx - 0.5);
+    const y0 = Math.floor(gy - 0.5);
+    const fx = gx - 0.5 - x0;
+    const fy = gy - 0.5 - y0;
+    const a = getRawScalarPixel(field, srcZ, x0, y0, contour);
+    const b = getRawScalarPixel(field, srcZ, x0 + 1, y0, contour);
+    const c = getRawScalarPixel(field, srcZ, x0, y0 + 1, contour);
+    const d = getRawScalarPixel(field, srcZ, x0 + 1, y0 + 1, contour);
+    if (a === null || b === null || c === null || d === null) return null;
+    return (a * (1 - fx) + b * fx) * (1 - fy) +
+           (c * (1 - fx) + d * fx) * fy;
+}
+
+function geoInterpolateVector(field, srcZ, gx, gy) {
+    const x0 = Math.floor(gx - 0.5);
+    const y0 = Math.floor(gy - 0.5);
+    const fx = gx - 0.5 - x0;
+    const fy = gy - 0.5 - y0;
+    const a = getRawVectorPixel(field, srcZ, x0, y0);
+    const b = getRawVectorPixel(field, srcZ, x0 + 1, y0);
+    const c = getRawVectorPixel(field, srcZ, x0, y0 + 1);
+    const d = getRawVectorPixel(field, srcZ, x0 + 1, y0 + 1);
+    if (!a || !b || !c || !d) return null;
+    const wA = (1 - fx) * (1 - fy), wB = fx * (1 - fy);
+    const wC = (1 - fx) * fy, wD = fx * fy;
+    return {u:a.u*wA+b.u*wB+c.u*wC+d.u*wD,
+            v:a.v*wA+b.v*wB+c.v*wC+d.v*wD};
+}
+
+async function encodeScalarWeatherAsImageBitmap(field, run, z, x, y) {
+    if (run !== currentRun) return transparentGeographicWeatherTile();
+    await geoPrefetch("scalar", field, run, z, x, y, 2);
+    const size = z <= 7 ? 512 : 256;
+    const surface = createGeoSurface(size);
+    const ctx = surface.getContext("2d", {willReadFrequently:false});
+    if (!ctx) throw new Error("Unable to create geographic weather tile");
+    const frame = ctx.createImageData(size,size);
+    const rgba = frame.data;
+    const sz = geoDataZoom(z);
+    const factor = Math.pow(2, sz-z);
+    const xStart = x * TILE_SIZE * factor;
+    const yStart = y * TILE_SIZE * factor;
+    const increment = TILE_SIZE * factor / size;
+    const enc=getEncoding(fieldMetadata[field]);
+    const scale=enc.scale,offset=enc.offset,nodata=enc.nodata;
+    // The tight loop accesses typed arrays directly, avoiding four Map
+    // lookups, metadata parsing and function nesting for EVERY image pixel.
+    const loaded=new Map();
+    const n=Math.pow(2,sz);
+    function rawAt(ix,iy) {
+        if (iy < 0 || iy >= TILE_SIZE*n) return null;
+        const tx=Math.floor(ix/TILE_SIZE),ty=Math.floor(iy/TILE_SIZE);
+        const wrapped=normalizeTileX(tx,sz);
+        const key=`${wrapped}/${ty}`;
+        let tile=loaded.get(key);
+        if (tile===undefined) {
+            tile=scalarTileCache.get(scalarTileKey(field,run,sz,wrapped,ty)) || null;
+            if(tile && typeof tile.then==="function")tile=null;
+            loaded.set(key,tile);
+        }
+        if(!tile)return null;
+        const ixIn=ix-tx*TILE_SIZE,iyIn=iy-ty*TILE_SIZE;
+        const raw=tile[iyIn*TILE_SIZE+ixIn];
+        return (raw===nodata||raw===SCALAR_NODATA)?null:raw;
+    }
+    for (let row=0; row<size; row++) {
+        const gy=yStart+(row+0.5)*increment-.5;
+        const iy=Math.floor(gy),fy=gy-iy;
+        for (let col=0; col<size; col++) {
+            const gx=xStart+(col+0.5)*increment-.5;
+            const ix=Math.floor(gx),fx=gx-ix;
+            const a=rawAt(ix,iy),b=rawAt(ix+1,iy);
+            const c=rawAt(ix,iy+1),d=rawAt(ix+1,iy+1);
+            if(a===null||b===null||c===null||d===null)continue;
+            const raw=(a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy;
+            const color=getFieldColor(field,raw*scale+offset);
+            if(!color)continue;
+            const off=(row*size+col)*4;
+            rgba[off]=color.r;rgba[off+1]=color.g;
+            rgba[off+2]=color.b;rgba[off+3]=235;
+        }
+    }
+    ctx.putImageData(frame,0,0);
     return await createImageBitmap(surface);
 }
 
@@ -7021,7 +7120,7 @@ function registerGeographicWeatherProtocol() {
             const z = Number(found[3]), x = Number(found[4]), y = Number(found[5]);
             if (!/^[0-9]{8}_[0-9]{2}$/.test(run) ||
                 !Object.prototype.hasOwnProperty.call(WEATHER_FIELDS, field) ||
-                z < 4 || z > 7 || y < 0 || y >= (2 ** z)) {
+                z < 4 || z > SPCOA_MAX_DISPLAY_ZOOM || y < 0 || y >= (2 ** z)) {
                 return { data: await transparentGeographicWeatherTile() };
             }
             if (abortController?.signal?.aborted) throw new Error("SPCOA tile aborted");
@@ -7066,9 +7165,11 @@ function syncGeographicWeatherLayer() {
         tiles: [`${WEATHER_RASTER_SCHEME}://${run}/${field}/{z}/{x}/{y}.png`],
         tileSize: TILE_SIZE,
         minzoom: 4,
-        maxzoom: 7,
+        maxzoom: SPCOA_MAX_DISPLAY_ZOOM,
         scheme: "xyz"
     });
+    const firstOverlay = typeof firstGeographicNumericalOverlay === "function"
+        ? firstGeographicNumericalOverlay() : undefined;
     map.addLayer({
         id: WEATHER_RASTER_LAYER,
         type: "raster",
@@ -7078,9 +7179,309 @@ function syncGeographicWeatherLayer() {
             "raster-fade-duration": 100,
             "raster-resampling": "linear"
         }
-    });
+    }, firstOverlay);
     installedWeatherIdentity = identity;
     return true;
+}
+
+/* =========================================================================================
+   GEOGRAPHIC CONTOUR + VECTOR RASTER OVERLAYS
+   Each overlay is independently positioned by MapLibre's tile pyramid.
+   Barbs, arrows and axes are drawn on a fixed global grid, not a grid that
+   shifts when the viewport is dragged. Contour lines share numeric boundaries
+   across adjoining tiles. Existing canvas engines remain as a fallback.
+   ========================================================================================= */
+const GEO_CONTOUR_SCHEME = "spcoacontour";
+const GEO_VECTOR_SCHEME = "spcoavector";
+const installedGeoOverlayLayers = new Map();
+let geoOverlayProtocolsReady = false;
+let geoOverlayWarningIssued = false;
+
+function geoLayerId(kind, field) { return `spcoa-geo-${kind}-${field}`; }
+function geoSourceId(kind, field) { return `spcoa-geo-src-${kind}-${field}`; }
+function firstGeographicNumericalOverlay() {
+    for (const id of installedGeoOverlayLayers.keys()) {
+        if (map.getLayer(id)) return id;
+    }
+    return undefined;
+}
+
+function geoContourLevels(field, minVal, maxVal) {
+    const meta=contourMetadata[field] || {};
+    const display=meta.display || {};
+    const def=CONTOUR_FIELDS[field] || {};
+    const interval=Number(display.interval) || Number(def.interval) || 2;
+    if (!(interval>0)) return [];
+    const min=field==="dcape" ? 200 : (display.minimum !== undefined && display.minimum !== null)
+        ? Number(display.minimum) :
+        (def.minimum !== undefined && def.minimum !== null ? Number(def.minimum):null);
+    const max=(display.maximum !== undefined && display.maximum !== null)
+        ? Number(display.maximum) :
+        (def.maximum !== undefined && def.maximum !== null ? Number(def.maximum):null);
+    const anchor=Number(display.anchor ?? def.anchor ?? 0);
+    const explicit=(Array.isArray(display.levels) && display.levels.length
+        ? display.levels : def.levels);
+    if (Array.isArray(explicit)) return explicit.filter(v=>Number.isFinite(Number(v)) &&
+        v>=minVal && v<=maxVal && (min===null || v>=min) && (max===null || v<=max)).map(Number);
+    let first=anchor+Math.ceil((minVal-anchor)/interval)*interval;
+    if (min!==null) first=Math.max(first,anchor+Math.ceil((min-anchor)/interval)*interval);
+    let last=anchor+Math.floor((maxVal-anchor)/interval)*interval;
+    if (max!==null) last=Math.min(last,anchor+Math.floor((max-anchor)/interval)*interval);
+    const levels=[];
+    for(let v=first; v<=last+interval*.001 && levels.length<300; v+=interval) levels.push(v);
+    return levels;
+}
+
+function geoContourStyle(field, level) {
+    const meta=(contourMetadata[field] || {}).display || {};
+    const def=CONTOUR_FIELDS[field] || {};
+    const scheme = field.startsWith("temperature_contours_")
+      ? "pressure_temperature_isotherms" :
+      field==="dcape" ? "dcape" : field==="warm_cloud_depth" ? "wcd" :
+      (meta.color_scheme || def.colorScheme || "fixed");
+    let color = meta.color || def.color || "#000000";
+    if (scheme==="blues") color=getCinBluesColor(level);
+    else if (scheme==="pressure_temperature_isotherms") color=level>0?"#d7191c":"#0066ff";
+    else if (scheme==="dcape") color=getDcapeColor(level);
+    else if (scheme==="wcd") color=getWcdColor(level);
+    else if (scheme==="cape") color=getContourCapeColor(level);
+    else if (scheme==="lcl") color=getLclColor(level);
+    else if (scheme==="stp") color=getDiscreteContourColor(level,STP_BOUNDS,STP_COLORS);
+    else if (scheme==="dcp_spc") color=level>=12?"#a00000":level>=10?"#c40000":level>=8?"#e00000":level>=6?"#ff1f1f":level>=4?"#ff3b1f":level>=2?"#ff6500":"#e88924";
+    else if (scheme==="lhp_spc") color=level>=20?"#ff1f1f":level>=16?"#ff3b1f":level>=12?"#f2c300":level>=8?"#f0b800":level>=6?"#e89b16":"#b46b2a";
+    else if (scheme==="shp_spc") color=level>=5?"#ff00ff":level>=3?"#ff2a1a":level>=2?"#f2c300":level>=1?"#f39a18":"#9b542b";
+    else if (scheme==="theta") color="#d7191c";
+    else if (scheme==="thetae") color=level>=330?"#138a13":"#a64b22";
+    const temp=scheme==="pressure_temperature_isotherms";
+    const fgen=field.startsWith("frontogenesis_");
+    let width=temp ? (Math.abs(level)<.001?2.8:1.5) :
+        (field==="sfc_mslp"||field.startsWith("hght_")||fgen?2.0:1.5);
+    let dash=temp && level<-.001?[7,5]:[];
+    if(scheme==="theta")width=1.75;
+    if(scheme==="thetae")width=level>=350?2.5:(level>=330?1.75:1.5);
+    if (scheme==="shp_spc" && Math.abs(level-.5)<.001 ||
+        scheme==="lhp_spc" && Math.abs(level-4)<.001) dash=[7,6];
+    if(scheme==="dcp_spc"||scheme==="lhp_spc"||scheme==="shp_spc") {
+        if(!dash.length) width=(scheme==="shp_spc"&&level>=5)||
+            (scheme==="lhp_spc"&&level>=16)||
+            (scheme==="dcp_spc"&&level>=8)?2.2:1.6;
+    }
+    return {color,width,dash};
+}
+
+async function renderGeoContourTile(run,field,z,x,y) {
+    if (run!==currentRun || !contourMetadata[field]) return transparentGeographicWeatherTile();
+    // 16-pixel gutter keeps smoothed contour derivatives consistent on edges.
+    await geoPrefetch("contour",field,run,z,x,y,24);
+    const surface=createGeoSurface(512),ctx=surface.getContext("2d");
+    ctx.scale(2,2);
+    const step=field.startsWith("divergence_") || field.startsWith("frontogenesis_") ? 2 : 4;
+    const margin=16;
+    const count=Math.ceil((TILE_SIZE+2*margin)/step)+1;
+    const values=new Float32Array(count*count);values.fill(NaN);
+    const srcZ=geoDataZoom(z),factor=Math.pow(2,srcZ-z);
+    let min=Infinity,max=-Infinity;
+    for(let row=0;row<count;row++) for(let col=0;col<count;col++) {
+        const px=col*step-margin,py=row*step-margin;
+        const val=geoInterpolateScalar(field,srcZ,(x*TILE_SIZE+px)*factor,
+            (y*TILE_SIZE+py)*factor,true);
+        if(val===null || !Number.isFinite(val)) continue;
+        values[row*count+col]=val;
+        min=Math.min(min,val);max=Math.max(max,val);
+    }
+    if (!Number.isFinite(min)||!Number.isFinite(max)) return await createImageBitmap(surface);
+    const definition=CONTOUR_FIELDS[field] || {};
+    const isSmooth=definition.smoothGeometry===true || field==="dcape" || field==="warm_cloud_depth";
+    let smoothed=isSmooth?smoothContourGrid(values,count,count,
+        definition.smoothGeometry===true?1.5:1.0):values;
+    if(isSmooth) {
+        for(let i=0;i<values.length;i++) if(!Number.isFinite(values[i])) smoothed[i]=NaN;
+    }
+    const levels=geoContourLevels(field,min,max);
+    const candidates=[];
+    const labelsOn=(contourMetadata[field].display || {}).labels!==false;
+    ctx.save();ctx.lineJoin="round";ctx.lineCap="round";
+    for(const level of levels) {
+        const style=geoContourStyle(field,level);
+        ctx.strokeStyle=style.color;ctx.lineWidth=style.width;
+        ctx.setLineDash(style.dash);ctx.beginPath();
+        let candidate=null, candidateD=Infinity;
+        for(let row=0;row<count-1;row++) for(let col=0;col<count-1;col++) {
+            const ix=row*count+col;
+            const tl=smoothed[ix],tr=smoothed[ix+1],br=smoothed[ix+count+1],bl=smoothed[ix+count];
+            if(![tl,tr,br,bl].every(Number.isFinite))continue;
+            const px=col*step-margin,py=row*step-margin;
+            const segments=getMarchingSegments(px,py,step,tl,tr,br,bl,level);
+            for(const seg of segments) {
+                ctx.moveTo(seg[0].x,seg[0].y);ctx.lineTo(seg[1].x,seg[1].y);
+                if(labelsOn) {
+                    const mx=(seg[0].x+seg[1].x)/2,my=(seg[0].y+seg[1].y)/2;
+                    const dist=(mx-128)**2+(my-128)**2;
+                    if(mx>35&&mx<221&&my>35&&my<221&&dist<candidateD) {
+                        candidateD=dist;
+                        candidate={x:mx,y:my,angle:Math.atan2(seg[1].y-seg[0].y,seg[1].x-seg[0].x),level,color:style.color};
+                    }
+                }
+            }
+        }
+        ctx.stroke();
+        if(candidate)candidates.push(candidate);
+    }
+    ctx.restore();
+    if(labelsOn) {
+        const placed=[];
+        // At most 3 labels per tile, spread apart. Deterministic per tile.
+        for(const p of candidates.sort((a,b)=>(a.x-128)**2+(a.y-128)**2-(b.x-128)**2-(b.y-128)**2)) {
+            if(placed.length>=3)break;
+            if(placed.some(q=>Math.hypot(q.x-p.x,q.y-p.y)<70))continue;
+            // White halo makes labels readable over weather shading; the text
+            // remains geographically anchored, rather than viewport-relative.
+            drawMslpLabel(ctx,p.x,p.y,p.angle,p.level,p.color,"rgba(255,255,255,0.0)");
+            placed.push(p);
+        }
+    }
+    return await createImageBitmap(surface);
+}
+
+async function renderGeoVectorTile(run,field,color,z,x,y) {
+    if(run!==currentRun || !vectorMetadata[field])return transparentGeographicWeatherTile();
+    await geoPrefetch("vector",field,run,z,x,y,55);
+    const surface=createGeoSurface(512),ctx=surface.getContext("2d");
+    ctx.scale(2,2);
+    const def=VECTOR_FIELDS[field] || {};
+    const sz=geoDataZoom(z),factor=Math.pow(2,sz-z);
+    // Global coordinates produce a stationary array of barbs/arrows while
+    // panning. Include a gutter so symbols spanning tile edges are complete.
+    const spacing=z<5?60:z<6?54:z<7?48:z<8?42:38;
+    const minX=x*TILE_SIZE-55,maxX=(x+1)*TILE_SIZE+55;
+    const minY=y*TILE_SIZE-55,maxY=(y+1)*TILE_SIZE+55;
+    for(let wy=Math.ceil(minY/spacing)*spacing;wy<=maxY;wy+=spacing) {
+        for(let wx=Math.ceil(minX/spacing)*spacing;wx<=maxX;wx+=spacing) {
+            const v=geoInterpolateVector(field,sz,wx*factor,wy*factor);
+            if(!v || !Number.isFinite(v.u)||!Number.isFinite(v.v))continue;
+            const px=wx-x*TILE_SIZE,py=wy-y*TILE_SIZE;
+            if(def.renderType==="axis_segments")drawAxisOfDilatation(ctx,px,py,v.u,v.v,color);
+            else if(def.renderType==="arrows")drawQVectorArrow(ctx,px,py,v.u,v.v,color);
+            else drawWindBarb(ctx,px,py,v.u,v.v,color);
+        }
+    }
+    return await createImageBitmap(surface);
+}
+
+function registerGeoOverlayProtocols() {
+    if(geoOverlayProtocolsReady)return true;
+    if(!USE_GEO_NUMERICAL_OVERLAYS || typeof maplibregl.addProtocol!=="function" ||
+       typeof createImageBitmap!=="function")return false;
+    try {
+        maplibregl.addProtocol(GEO_CONTOUR_SCHEME,async(params,abortController)=>{
+            const m=/^spcoacontour:\/\/([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.png/.exec(params.url);
+            if(!m)throw Error("Unrecognized SPCOA contour tile");
+            const run=decodeURIComponent(m[1]),field=decodeURIComponent(m[2]);
+            const z=+m[3],x=+m[4],y=+m[5];
+            if(z<4||z>SPCOA_MAX_DISPLAY_ZOOM||y<0||y>=2**z||!CONTOUR_FIELDS[field])
+                return {data:await transparentGeographicWeatherTile()};
+            if(abortController?.signal?.aborted)throw Error("Contour request aborted");
+            return {data:await renderGeoContourTile(run,field,z,normalizeTileX(x,z),y)};
+        });
+        maplibregl.addProtocol(GEO_VECTOR_SCHEME,async(params,abortController)=>{
+            const m=/^spcoavector:\/\/([^/]+)\/([^/]+)\/([0-9a-fA-F]{6})\/(\d+)\/(\d+)\/(\d+)\.png/.exec(params.url);
+            if(!m)throw Error("Unrecognized SPCOA vector tile");
+            const run=decodeURIComponent(m[1]),field=decodeURIComponent(m[2]);
+            const color="#"+m[3];const z=+m[4],x=+m[5],y=+m[6];
+            if(z<4||z>SPCOA_MAX_DISPLAY_ZOOM||y<0||y>=2**z||!VECTOR_FIELDS[field])
+                return {data:await transparentGeographicWeatherTile()};
+            if(abortController?.signal?.aborted)throw Error("Vector request aborted");
+            return {data:await renderGeoVectorTile(run,field,color,z,normalizeTileX(x,z),y)};
+        });
+        geoOverlayProtocolsReady=true;
+        return true;
+    }catch(error){
+        console.warn("SPCOA geographic overlay protocol not available",error);
+        return false;
+    }
+}
+
+function desiredGeoOverlays() {
+    if(!currentRun)return [];
+    const out=[];
+    for(const field of getActiveContourSamples()) {
+        if(!contourMetadata[field] || !CONTOUR_FIELDS[field])continue;
+        out.push({kind:"contour",field,color:"",identity:currentRun});
+    }
+    for(const field of getActiveVectorSamples()) {
+        if(!vectorMetadata[field] || !VECTOR_FIELDS[field])continue;
+        const rawColor=vectorColors[field] || VECTOR_FIELDS[field].defaultColor || "#000000";
+        const color=/^#[0-9a-f]{6}$/i.test(rawColor)?rawColor.toLowerCase():"#000000";
+        out.push({kind:"vector",field,color,identity:currentRun+"/"+color});
+    }
+    return out;
+}
+
+function removeGeoOverlayLayer(id) {
+    const record=installedGeoOverlayLayers.get(id);
+    if(map.getLayer(id))map.removeLayer(id);
+    if(record && map.getSource(record.source))map.removeSource(record.source);
+    installedGeoOverlayLayers.delete(id);
+}
+
+function syncGeographicNumericalLayers() {
+    if(!registerGeoOverlayProtocols() || !map.getStyle())return false;
+    const desired=desiredGeoOverlays();
+    const wanted=new Set(desired.map(x=>geoLayerId(x.kind,x.field)));
+    for(const id of [...installedGeoOverlayLayers.keys()]) {
+        if(!wanted.has(id))removeGeoOverlayLayer(id);
+    }
+    for(const overlay of desired) {
+        const id=geoLayerId(overlay.kind,overlay.field);
+        const source=geoSourceId(overlay.kind,overlay.field);
+        const installed=installedGeoOverlayLayers.get(id);
+        if(installed && installed.identity===overlay.identity && map.getLayer(id) && map.getSource(source))continue;
+        if(installed)removeGeoOverlayLayer(id);
+        const run=encodeURIComponent(currentRun),field=encodeURIComponent(overlay.field);
+        const path=overlay.kind==="contour" ? `${GEO_CONTOUR_SCHEME}://${run}/${field}` :
+            `${GEO_VECTOR_SCHEME}://${run}/${field}/${overlay.color.slice(1)}`;
+        map.addSource(source,{type:"raster",tiles:[`${path}/{z}/{x}/{y}.png`],
+            minzoom:4,maxzoom:SPCOA_MAX_DISPLAY_ZOOM,tileSize:TILE_SIZE,scheme:"xyz"});
+        map.addLayer({id,type:"raster",source,paint:{"raster-opacity":1,
+            "raster-fade-duration":0,"raster-resampling":"linear"}});
+        installedGeoOverlayLayers.set(id,{source,identity:overlay.identity});
+    }
+    // Keep contour lines below barb/vector layers and fill below both, even
+    // when an individual overlay is enabled after the others.
+    let before;
+    for(const overlay of [...desired].reverse()) {
+        const id=geoLayerId(overlay.kind,overlay.field);
+        if(map.getLayer(id)) {if(before)map.moveLayer(id,before);before=id;}
+    }
+    if(map.getLayer(WEATHER_RASTER_LAYER) && before)map.moveLayer(WEATHER_RASTER_LAYER,before);
+    return true;
+}
+
+async function renderVectors() {
+    if(USE_GEO_NUMERICAL_OVERLAYS) {
+        try{if(syncGeographicNumericalLayers()){
+            vectorCanvas.style.visibility="hidden";
+            vectorCtx.clearRect(0,0,vectorCanvas.width,vectorCanvas.height);
+            return;
+        }}catch(error){if(!geoOverlayWarningIssued){console.warn("Vector tile fallback",error);geoOverlayWarningIssued=true;}}
+    }
+    vectorCanvas.style.visibility="visible";
+    return renderVectorsLegacy();
+}
+
+async function renderContours() {
+    if(USE_GEO_NUMERICAL_OVERLAYS) {
+        try{if(syncGeographicNumericalLayers()){
+            contourCanvas.style.visibility="hidden";
+            contourLabelCanvas.style.visibility="hidden";
+            contourCtx.clearRect(0,0,contourCanvas.width,contourCanvas.height);
+            contourLabelCtx.clearRect(0,0,contourLabelCanvas.width,contourLabelCanvas.height);
+            return;
+        }}catch(error){if(!geoOverlayWarningIssued){console.warn("Contour tile fallback",error);geoOverlayWarningIssued=true;}}
+    }
+    contourCanvas.style.visibility="visible";
+    contourLabelCanvas.style.visibility="visible";
+    return renderContoursLegacy();
 }
 
 async function renderWeather() {
@@ -8194,7 +8595,7 @@ async function renderVectorField(
    VECTOR RENDERER
    ========================================================================================= */
 
-async function renderVectors() {
+async function renderVectorsLegacy() {
 
     const generation =
         ++vectorRenderGeneration;
@@ -10214,7 +10615,7 @@ async function renderContourField(
    CONTOUR RENDERER
    ========================================================================================= */
 
-async function renderContours() {
+async function renderContoursLegacy() {
 
     const generation =
         ++contourRenderGeneration;
