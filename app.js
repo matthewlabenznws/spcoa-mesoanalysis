@@ -425,7 +425,7 @@ if (!__MP_CHILD) {
         layoutSelect.addEventListener("change", () => applyLayout(layoutSelect.value));
 
         sidebar.addEventListener("click", event => {
-            const clearButton = event.target.closest("button#clear-fill, button#clear-contours");
+            const clearButton = event.target.closest("button#clear-fill, button#clear-contours, button#clear-vectors, button#clear-all");
             if (clearButton) {
                 event.preventDefault();
                 for (const i of parameterTargets()) clickChildById(clearButton.id, i);
@@ -2099,7 +2099,7 @@ let citiesEnabled = false;
 // County outlines are visible by default and can be toggled under Map Layers.
 let countiesEnabled = true;
 
-let cwaBordersEnabled = true;
+let cwaBordersEnabled = false;
 
 let cwaBorderColor = "#6f42c1";
 
@@ -2509,7 +2509,7 @@ function ensureCwaBorderControls() {
     cwaBordersToggle = document.createElement("input");
     cwaBordersToggle.type = "checkbox";
     cwaBordersToggle.id = "cwa-borders-toggle";
-    cwaBordersToggle.checked = true;
+    cwaBordersToggle.checked = false;
 
     const text = document.createElement("span");
     text.textContent = "CWA Borders";
@@ -3722,16 +3722,19 @@ function resetNumericalCanvasTransforms() {
 /* =========================================================================================
    KEEP-PREVIOUS-FRAME REDRAW
 
-   Existing numerical renderers clear visible canvases before awaiting tiles.
-   During a camera redraw, put a frozen copy above each numerical canvas so
+   Vector and contour renderers clear visible canvases before awaiting tiles.
+   Starting at camera movement, put a frozen copy above each numerical canvas so
    the previous image stays visible until ALL new canvases are ready.
    These snapshots are display-only; the original binary tiles, resolution,
    map geography, export behavior, and product sampling are unchanged.
    ========================================================================================= */
 let numericalHoldovers = [];
 let numericalHoldoverId = 0;
+let hasCompletedNumericalFrame = false;
 
 function beginNumericalHoldover() {
+    // On initial load there is no finished numerical frame to preserve.
+    if (!hasCompletedNumericalFrame) return ++numericalHoldoverId;
     // An in-flight redraw might still be active; reuse its visible snapshots.
     if (numericalHoldovers.length) return ++numericalHoldoverId;
 
@@ -3759,10 +3762,15 @@ function beginNumericalHoldover() {
     return ++numericalHoldoverId;
 }
 
-function finishNumericalHoldover(token) {
-    if (token !== numericalHoldoverId) return;
+function clearNumericalHoldovers() {
+    ++numericalHoldoverId;
     for (const ghost of numericalHoldovers) ghost.remove();
     numericalHoldovers = [];
+}
+
+function finishNumericalHoldover(token) {
+    if (token !== numericalHoldoverId) return;
+    clearNumericalHoldovers();
 }
 
 /* =========================================================================================
@@ -4007,6 +4015,71 @@ function selectedProductKeys() {
     if (activeOverlays.dcape) contours.push("dcape");
     if (activeOverlays.warmCloudDepth) contours.push("warm_cloud_depth");
     return { scalar: [...new Set(scalar)], vectors: [...new Set(vectors)], contours: [...new Set(contours)] };
+}
+
+/* =========================================================================================
+   RESPONSIVE NEARBY TILE WARMUP
+
+   Initial rendering awaits ONLY the standard 2-tile margin. After rendering,
+   warm a larger neighborhood for selected products in a low-priority, bounded
+   queue. Fetches use the exact same cached binary tiles as normal rendering;
+   do not pre-load 11.6 GB of every product/domain at page start.
+   ========================================================================================= */
+let nearbyWarmupSerial = 0;
+
+function scheduleNearbyActiveTileWarmup() {
+    const serial = ++nearbyWarmupSerial;
+    const run = currentRun;
+    if (!run || !map || typeof map.getBounds !== "function") return;
+    const zoom = getDataZoom();
+    const products = selectedProductKeys();
+    const categories = [
+        ...products.scalar.slice(0, 1).map(field => ({kind: "scalar", field})),
+        ...products.vectors.slice(0, 2).map(field => ({kind: "vector", field})),
+        ...products.contours.slice(0, 2).map(field => ({kind: "contour", field}))
+    ];
+    if (!categories.length) return;
+    const bounds = getVisibleTileRange(zoom, 4);
+    const centerX = (bounds.x0 + bounds.x1) / 2;
+    const centerY = (bounds.y0 + bounds.y1) / 2;
+    const jobs = [];
+    for (const {kind, field} of categories) {
+        const cache = kind === "scalar" ? scalarTileCache :
+                      kind === "vector" ? vectorTileCache : contourTileCache;
+        const keyFor = kind === "scalar" ? scalarTileKey :
+                       kind === "vector" ? vectorTileKey : contourTileKey;
+        const load = kind === "scalar" ? loadScalarTile :
+                     kind === "vector" ? loadVectorTile : loadContourTile;
+        for (let y = bounds.y0; y <= bounds.y1; y++) {
+            for (let x = bounds.x0; x <= bounds.x1; x++) {
+                const nx = normalizeTileX(x, zoom);
+                if (cache.has(keyFor(field, run, zoom, nx, y))) continue;
+                jobs.push({ distance: Math.abs(x-centerX) + Math.abs(y-centerY),
+                            fetch: () => load(field, zoom, x, y, run) });
+            }
+        }
+    }
+    // Warm only a bounded neighborhood per pan; avoids flooding the network
+    // when users enable many overlays or four independent map panels.
+    jobs.sort((a,b) => a.distance - b.distance);
+    jobs.length = Math.min(jobs.length, 120);
+    const start = async () => {
+        if (serial !== nearbyWarmupSerial || run !== currentRun || zoom !== getDataZoom()) return;
+        let cursor = 0;
+        const worker = async () => {
+            while (cursor < jobs.length) {
+                if (serial !== nearbyWarmupSerial || run !== currentRun || zoom !== getDataZoom()) return;
+                const job = jobs[cursor++];
+                try { await job.fetch(); } catch (_) { /* display retry handles failures */ }
+            }
+        };
+        await Promise.all(Array.from({length: Math.min(6, jobs.length)}, () => worker()));
+    };
+    if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(() => { void start(); }, {timeout: 600});
+    } else {
+        setTimeout(() => { void start(); }, 180);
+    }
 }
 
 async function preloadRunProducts(runItem) {
@@ -6832,17 +6905,15 @@ async function renderWeather() {
         ++scalarRenderGeneration;
 
 
-    prepareContext(
-
-        weatherCanvas,
-
-        weatherCtx
-
-    );
-
-
-    weatherCanvas.style.transform =
-        "none";
+    // Keep the last complete numerical frame visible while replacement tiles
+    // are fetched and sampled. An early prepareContext() cleared this canvas
+    // BEFORE the asynchronous preload and caused bright white flashes.
+    // The new image is still cleared and committed after processing below.
+    if (!activeField || activeField === "none" || !WEATHER_FIELDS[activeField]) {
+        prepareContext(weatherCanvas, weatherCtx);
+        weatherCanvas.style.transform = "none";
+        return;
+    }
 
 
     /*
@@ -7185,6 +7256,7 @@ async function renderWeather() {
     );
 
 
+    weatherCanvas.style.transform = "none";
     weatherCtx.drawImage(
 
         offscreen,
@@ -11845,6 +11917,8 @@ async function renderAll() {
 
 
     captureCanvasCamera();
+    hasCompletedNumericalFrame = true;
+    scheduleNearbyActiveTileWarmup();
 
 }
 
@@ -11860,11 +11934,14 @@ map.on(
     () => {
 
         /*
-         * Capture the exact camera represented by the existing numerical
-         * canvases. During movement those canvases will be transformed to
-         * follow the live MapLibre camera.
+         * Preserve the last COMPLETE visible numerical layers as soon as a
+         * pan begins. Holding them only at moveend was too late if another
+         * async renderer had already cleared a canvas. capturedCamera was
+         * recorded after the last completed numerical render; don't replace
+         * it with a newer camera while the old image is still displayed.
          */
-        captureCanvasCamera();
+        if (!capturedCamera) captureCanvasCamera();
+        beginNumericalHoldover();
 
     }
 
@@ -11939,6 +12016,8 @@ map.on(
                         ]);
                         renderGeography();
                         captureCanvasCamera();
+                        hasCompletedNumericalFrame = true;
+                        scheduleNearbyActiveTileWarmup();
                     } finally {
                         finishNumericalHoldover(holdover);
                     }
@@ -11996,6 +12075,7 @@ map.on(
 
     () => {
 
+        clearNumericalHoldovers();
         invalidateNumericalRenders();
 
 
@@ -12020,6 +12100,7 @@ const clearContoursButton = document.getElementById("clear-contours");
 
 if (clearFillButton) {
     clearFillButton.addEventListener("click", async () => {
+        clearNumericalHoldovers();
         activeField = "none";
         if (fieldSelect) fieldSelect.value = "none";
         document.querySelectorAll("#sidebar .field-choice.active")
@@ -12038,6 +12119,7 @@ if (clearFillButton) {
 
 if (clearContoursButton) {
     clearContoursButton.addEventListener("click", async () => {
+        clearNumericalHoldovers();
         const contourKeys = new Set(["mslp", "dcape", "warmCloudDepth"]);
         const configs = [
             ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
@@ -12061,6 +12143,75 @@ if (clearContoursButton) {
         await renderContours();
         renderGeography();
         captureCanvasCamera();
+        updateActiveLayersStrip();
+    });
+}
+
+/* =========================================================================================
+   CLEAR VECTOR / ALL NUMERICAL OVERLAYS
+   All vector configurations, including wind barbs, Q-vectors and dilatation
+   axes, share VECTOR_OVERLAY_CONFIG. Keep geography/annotations untouched.
+   ========================================================================================= */
+const clearVectorsButton = document.getElementById("clear-vectors");
+const clearAllButton = document.getElementById("clear-all");
+
+function disableNumericalOverlayToggles() {
+    // This intentionally includes all contour and vector state keys. It does
+    // NOT change the CWA, state/county, city, or drawing controls.
+    for (const key of Object.keys(activeOverlays)) activeOverlays[key] = false;
+    const ids = new Set([
+        "mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle",
+        ...VECTOR_OVERLAY_CONFIG.map(config => config.toggleId),
+        ...GEOPOTENTIAL_HEIGHT_OVERLAYS.map(config => config.toggleId),
+        ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS.map(config => config.toggleId),
+        ...FRONTOGENESIS_CONTOUR_OVERLAYS.map(config => config.toggleId),
+        ...THERMODYNAMIC_CONTOUR_OVERLAYS.map(config => config.toggleId)
+    ]);
+    // Some switches are registered dynamically. Derive the remaining contour
+    // toggle IDs using the definitions instead of toggling geography switches.
+    for (const id of ids) {
+        const toggle = document.getElementById(id);
+        if (toggle && toggle.type === "checkbox") toggle.checked = false;
+    }
+    for (const toggle of document.querySelectorAll(
+        '#sidebar input[type="checkbox"], #map-wrapper input[type="checkbox"]'
+    )) {
+        if (toggle.id && /(?:contours?|divergence|frontogenesis|fgen|q-vector|wind|shear|bunkers|dilatation|srwind|barbs|stp-eff|dcp|lhp|shp|lcl)/i.test(toggle.id)
+            && !/^(?:cwa-borders-toggle|counties-toggle|cities-toggle)$/.test(toggle.id)) {
+            toggle.checked = false;
+        }
+    }
+}
+
+if (clearVectorsButton) {
+    clearVectorsButton.addEventListener("click", async () => {
+        clearNumericalHoldovers();
+        for (const config of VECTOR_OVERLAY_CONFIG) {
+            activeOverlays[config.stateKey] = false;
+            const toggle = vectorToggleElements[config.field] || document.getElementById(config.toggleId);
+            if (toggle) toggle.checked = false;
+        }
+        vectorRenderGeneration++;
+        await renderVectors();
+        renderGeography();
+        updateActiveLayersStrip();
+    });
+}
+
+if (clearAllButton) {
+    clearAllButton.addEventListener("click", async () => {
+        // Old held frames must not cover the newly empty canvases.
+        clearNumericalHoldovers();
+        disableNumericalOverlayToggles();
+        activeField = "none";
+        if (fieldSelect) fieldSelect.value = "none";
+        document.querySelectorAll("#sidebar .field-choice.active")
+            .forEach(button => button.classList.remove("active"));
+        invalidateNumericalRenders();
+        clearCursor();
+        updateLegend();
+        resetNumericalCanvasTransforms();
+        await renderAll();
         updateActiveLayersStrip();
     });
 }
@@ -12547,6 +12698,7 @@ window.addEventListener(
 
     () => {
 
+        clearNumericalHoldovers();
         invalidateNumericalRenders();
 
 
@@ -12637,10 +12789,8 @@ async function initialize() {
 
 
         if (cwaBordersToggle) {
-
-            cwaBordersEnabled =
-                cwaBordersToggle.checked;
-
+            cwaBordersToggle.checked = false;
+            cwaBordersEnabled = false;
         }
 
 
