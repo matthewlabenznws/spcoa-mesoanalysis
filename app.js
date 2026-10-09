@@ -1,6 +1,6 @@
 /* SPCOA frontend responsive map optimization: quicker visible-tile loading,
    prefetch on pan/zoom, flat-map pixel sampling, preserves CWA off by default,
-   full-layer clear controls, and previous-frame holdovers. */
+   full-layer clear controls, and previous-frame holdovers for panning; no stale zoom frames. */
 /* =========================================================================================
    MULTI-PANEL HOST / CHILD MODE
    ========================================================================================= */
@@ -639,6 +639,14 @@ if (!__MP_CHILD) {
 "use strict";
 
 /* =========================================================================================
+   2026-10-09 MAP-ANCHORED FILLED FIELD RENDERER
+   - Weather fill uses MapLibre raster tiles, not a screen-sized repaint on moveend.
+   - Existing numerical .bin files, encoding, field palettes, timestamps unchanged.
+   - Contours, barbs, geography, annotation, timeline remain separate/unchanged.
+   - Set USE_MAPLIBRE_WEATHER_TILES=false to use the prior canvas fill as fallback.
+   ========================================================================================= */
+
+/* =========================================================================================
    SPCOA MESOANALYSIS VIEWER
    =========================================================================================
 
@@ -685,8 +693,9 @@ if (!__MP_CHILD) {
      - 250 mb Geopotential Height
 
    RENDERING
-     - Full-resolution scalar canvas
-     - Bilinear numerical interpolation
+     - Geographic MapLibre raster tiles for filled weather (cached and camera-anchored)
+     - Existing canvas-based contours and barbs retained
+     - Original full-screen scalar renderer available as fallback
      - Numerical canvas follows camera during pan/zoom
      - Fresh numerical redraw after movement ends
      - MSLP numerical contours every 2 hPa
@@ -3659,14 +3668,14 @@ function transformCanvasToCurrentCamera(
 
 function transformNumericalCanvases() {
 
+    if (zoomReplacementPending) return; // Never stretch an obsolete zoom frame.
+
     // The holdover canvases remain attached to the map if the user resumes panning.
     for (const ghost of numericalHoldovers) {
         transformCanvasToCurrentCamera(ghost);
     }
 
-    transformCanvasToCurrentCamera(
-        weatherCanvas
-    );
+    if (!USE_MAPLIBRE_WEATHER_TILES) transformCanvasToCurrentCamera(weatherCanvas);
 
 
     transformCanvasToCurrentCamera(
@@ -3736,14 +3745,38 @@ function resetNumericalCanvasTransforms() {
 let numericalHoldovers = [];
 let numericalHoldoverId = 0;
 let hasCompletedNumericalFrame = false;
+let zoomReplacementPending = false;
+let mapMovementSerial = 0;
+
+// A stretched screenshot looks incorrect after a zoom because it represents a
+// DIFFERENT camera scale. Unlike ordinary panning, zooming must not keep the
+// prior numerical image visible while the new view loads.
+function hideOutdatedNumericalLayersForZoom() {
+    zoomReplacementPending = true;
+    clearNumericalHoldovers();
+    invalidateNumericalRenders();
+    resetNumericalCanvasTransforms();
+    for (const canvas of [vectorCanvas, contourCanvas, contourLabelCanvas]) {
+        if (canvas) canvas.style.visibility = "hidden";
+    }
+}
+
+function revealNewNumericalLayersAfterZoom() {
+    if (!zoomReplacementPending) return;
+    zoomReplacementPending = false;
+    for (const canvas of [vectorCanvas, contourCanvas, contourLabelCanvas]) {
+        if (canvas) canvas.style.visibility = "visible";
+    }
+}
+
 
 function beginNumericalHoldover() {
     // On initial load there is no finished numerical frame to preserve.
-    if (!hasCompletedNumericalFrame) return ++numericalHoldoverId;
+    if (!hasCompletedNumericalFrame || zoomReplacementPending) return ++numericalHoldoverId;
     // An in-flight redraw might still be active; reuse its visible snapshots.
     if (numericalHoldovers.length) return ++numericalHoldoverId;
 
-    const sources = [weatherCanvas, vectorCanvas, contourCanvas, contourLabelCanvas];
+    const sources = [vectorCanvas, contourCanvas, contourLabelCanvas];
     for (const source of sources) {
         if (!source || !source.width || !source.height) continue;
         const ghost = document.createElement("canvas");
@@ -6901,6 +6934,179 @@ function getFieldColor(
 
 
 /* =========================================================================================
+   MAPLIBRE-GEOGRAPHIC FILLED SHADING
+
+   MapLibre now owns *map-positioned*, cached raster tiles for filled shading.
+   The custom protocol turns existing 256x256 uint16 .bin tiles into ImageBitmap
+   raster tiles entirely in the browser. No backend change or additional host
+   is required. The old full-screen canvas renderer remains as a fallback.
+
+   MapLibre handles pan/zoom camera transformations and parent-tile overzoom.
+   Contour lines and barb/vector canvases remain independent.
+   ========================================================================================= */
+const USE_MAPLIBRE_WEATHER_TILES = true;
+const WEATHER_RASTER_SOURCE = "spcoa-geographic-weather-src";
+const WEATHER_RASTER_LAYER = "spcoa-geographic-weather-layer";
+const WEATHER_RASTER_SCHEME = "spcoafill";
+let geographicWeatherProtocolReady = false;
+let installedWeatherIdentity = "";
+let geographicWeatherWarningIssued = false;
+const transparentWeatherTilePromises = new Map();
+
+async function transparentGeographicWeatherTile() {
+    // Missing source tiles represent actual missing/out-of-domain coverage.
+    // Returning transparent raster data is preferable to surfacing many 404s
+    // as repeated MapLibre requests during long-distance pans.
+    if (!transparentWeatherTilePromises.has("blank")) {
+        const promise = (async () => {
+            const surface = typeof OffscreenCanvas !== "undefined"
+                ? new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
+                : Object.assign(document.createElement("canvas"), {
+                    width: TILE_SIZE, height: TILE_SIZE
+                  });
+            return await createImageBitmap(surface);
+        })();
+        transparentWeatherTilePromises.set("blank", promise);
+    }
+    // ImageBitmap objects should not be transferred/shared between tiles:
+    // some MapLibre rendering paths take ownership of their contents.
+    const bitmap = await transparentWeatherTilePromises.get("blank");
+    return await createImageBitmap(bitmap);
+}
+
+async function encodeScalarWeatherAsImageBitmap(field, run, z, x, y) {
+    // Reuse the existing full-precision binary tile loader and its Promise cache.
+    const raw = await loadScalarTile(field, z, x, y, run);
+    if (!raw) return transparentGeographicWeatherTile();
+
+    const surface = typeof OffscreenCanvas !== "undefined"
+        ? new OffscreenCanvas(TILE_SIZE, TILE_SIZE)
+        : Object.assign(document.createElement("canvas"), {
+            width: TILE_SIZE, height: TILE_SIZE
+          });
+    const ctx = surface.getContext("2d", {willReadFrequently: false});
+    if (!ctx) throw new Error("Unable to create numerical tile canvas");
+    const frame = ctx.createImageData(TILE_SIZE, TILE_SIZE);
+    const rgba = frame.data;
+    const encoding = getEncoding(fieldMetadata[field]);
+    const scale = encoding.scale, offset = encoding.offset;
+    const nodata = encoding.nodata;
+    // Colorize at native binary tile resolution. Unlike a screen-wide canvas,
+    // this operation happens only for tiles requested for a selected product.
+    for (let i = 0, j = 0; i < raw.length; ++i, j += 4) {
+        const encoded = raw[i];
+        if (encoded === nodata || encoded === SCALAR_NODATA) continue;
+        const color = getFieldColor(field, encoded * scale + offset);
+        if (!color) continue;
+        rgba[j] = color.r;
+        rgba[j + 1] = color.g;
+        rgba[j + 2] = color.b;
+        rgba[j + 3] = 235;   // Preserve the former fill transparency.
+    }
+    ctx.putImageData(frame, 0, 0);
+    return await createImageBitmap(surface);
+}
+
+function registerGeographicWeatherProtocol() {
+    if (geographicWeatherProtocolReady) return true;
+    if (!USE_MAPLIBRE_WEATHER_TILES ||
+        typeof maplibregl.addProtocol !== "function" ||
+        typeof createImageBitmap !== "function") return false;
+    try {
+        maplibregl.addProtocol(WEATHER_RASTER_SCHEME, async (params, abortController) => {
+            const found = /^spcoafill:\/\/([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.png(?:\?.*)?$/.exec(params.url);
+            if (!found) throw new Error(`Unrecognized SPCOA tile URL: ${params.url}`);
+            const run = decodeURIComponent(found[1]);
+            const field = decodeURIComponent(found[2]);
+            const z = Number(found[3]), x = Number(found[4]), y = Number(found[5]);
+            if (!/^[0-9]{8}_[0-9]{2}$/.test(run) ||
+                !Object.prototype.hasOwnProperty.call(WEATHER_FIELDS, field) ||
+                z < 4 || z > 7 || y < 0 || y >= (2 ** z)) {
+                return { data: await transparentGeographicWeatherTile() };
+            }
+            if (abortController?.signal?.aborted) throw new Error("SPCOA tile aborted");
+            const bitmap = await encodeScalarWeatherAsImageBitmap(field, run, z, normalizeTileX(x,z), y);
+            // addProtocol supports decoded ImageBitmap data for raster sources.
+            return { data: bitmap };
+        });
+        geographicWeatherProtocolReady = true;
+        return true;
+    } catch(error) {
+        console.warn("SPCOA geographic weather protocol unavailable; using canvas fallback", error);
+        return false;
+    }
+}
+
+function removeGeographicWeatherLayer() {
+    if (map.getLayer(WEATHER_RASTER_LAYER)) map.removeLayer(WEATHER_RASTER_LAYER);
+    if (map.getSource(WEATHER_RASTER_SOURCE)) map.removeSource(WEATHER_RASTER_SOURCE);
+    installedWeatherIdentity = "";
+}
+
+function syncGeographicWeatherLayer() {
+    if (!USE_MAPLIBRE_WEATHER_TILES || !registerGeographicWeatherProtocol()) return false;
+    // Initialization calls this after the base style load event. Do not use
+    // map.isStyleLoaded(): it becomes false while raster tiles are loading.
+    if (!map.getStyle()) return false;
+
+    const hasField = currentRun && activeField && activeField !== "none" &&
+        WEATHER_FIELDS[activeField] && fieldMetadata[activeField];
+    const identity = hasField ? `${currentRun}/${activeField}` : "";
+    if (identity === installedWeatherIdentity &&
+        (!identity || (map.getSource(WEATHER_RASTER_SOURCE) && map.getLayer(WEATHER_RASTER_LAYER)))) {
+        return true;
+    }
+
+    removeGeographicWeatherLayer();
+    if (!hasField) return true;
+    const run = encodeURIComponent(currentRun);
+    const field = encodeURIComponent(activeField);
+    map.addSource(WEATHER_RASTER_SOURCE, {
+        type: "raster",
+        tiles: [`${WEATHER_RASTER_SCHEME}://${run}/${field}/{z}/{x}/{y}.png`],
+        tileSize: TILE_SIZE,
+        minzoom: 4,
+        maxzoom: 7,
+        scheme: "xyz"
+    });
+    map.addLayer({
+        id: WEATHER_RASTER_LAYER,
+        type: "raster",
+        source: WEATHER_RASTER_SOURCE,
+        paint: {
+            "raster-opacity": 1,
+            "raster-fade-duration": 100,
+            "raster-resampling": "linear"
+        }
+    });
+    installedWeatherIdentity = identity;
+    return true;
+}
+
+async function renderWeather() {
+    // No screen-wide redraw on pan or zoom: MapLibre keeps tiles geographic.
+    if (USE_MAPLIBRE_WEATHER_TILES) {
+        try {
+            if (syncGeographicWeatherLayer()) {
+                // Old canvas could still hold a frame from before switching engines.
+                if (weatherCanvas.style.visibility !== "hidden") {
+                    weatherCtx.clearRect(0, 0, weatherCanvas.width, weatherCanvas.height);
+                    weatherCanvas.style.visibility = "hidden";
+                }
+                return;
+            }
+        } catch (error) {
+            if (!geographicWeatherWarningIssued) {
+                console.warn("MapLibre weather tiles could not initialize; falling back", error);
+                geographicWeatherWarningIssued = true;
+            }
+        }
+    }
+    weatherCanvas.style.visibility = "visible";
+    return await renderWeatherLegacy();
+}
+
+/* =========================================================================================
    FAST FLAT-MAP NUMERICAL SAMPLING (DISPLAY ONLY)
 
    The normal map is Web Mercator, bearing=0, pitch=0. MapLibre.unproject()
@@ -6983,7 +7189,7 @@ function sampleScalarGlobalPixelsFast(field, z, gx, gy, encoding, contour = fals
    WEATHER RENDERER
    ========================================================================================= */
 
-async function renderWeather() {
+async function renderWeatherLegacy() {
 
     const weatherStart = DEBUG_MAP_PERFORMANCE ? performance.now() : 0;
     const generation =
@@ -7344,6 +7550,11 @@ async function renderWeather() {
         height
 
     );
+    // Fresh fill is complete: reveal it as soon as possible rather than
+    // waiting for slow contour and vector overlays to finish downloading.
+    if (zoomReplacementPending && !map.isMoving()) {
+        weatherCanvas.style.visibility = "visible";
+    }
     if (DEBUG_MAP_PERFORMANCE) {
         console.info(`[SPCOA performance] filled field ${activeField}: tiles ${(weatherLoaded-weatherStart).toFixed(0)}ms; render ${(performance.now()-weatherLoaded).toFixed(0)}ms; fast=${Boolean(fastMapping)}`);
     }
@@ -11993,6 +12204,7 @@ async function renderAll() {
 
     captureCanvasCamera();
     hasCompletedNumericalFrame = true;
+    if (!map.isMoving()) revealNewNumericalLayersAfterZoom();
     scheduleNearbyActiveTileWarmup();
 
 }
@@ -12057,6 +12269,17 @@ function scheduleMovementTileWarmup() {
 }
 
 /* =========================================================================================
+   ZOOM TRANSITIONS
+   Stale numerical pixels must not be stretched across zoom levels. Keep the
+   geographic basemap visible; draw the new numerical frame when tiles arrive.
+   Normal panning still uses the holdover to prevent blank panels.
+   ========================================================================================= */
+map.on("zoomstart", () => {
+    hideOutdatedNumericalLayersForZoom();
+    scheduleMovementTileWarmup();
+});
+
+/* =========================================================================================
    MAP MOVE START
    ========================================================================================= */
 
@@ -12073,8 +12296,9 @@ map.on(
          * recorded after the last completed numerical render; don't replace
          * it with a newer camera while the old image is still displayed.
          */
+        ++mapMovementSerial;
         if (!capturedCamera) captureCanvasCamera();
-        beginNumericalHoldover();
+        if (!zoomReplacementPending) beginNumericalHoldover();
 
     }
 
@@ -12139,6 +12363,7 @@ map.on(
                      */
                     invalidateNumericalRenders();
 
+                    const movementAtStart = mapMovementSerial;
                     const holdover = beginNumericalHoldover();
                     resetNumericalCanvasTransforms();
 
@@ -12148,12 +12373,18 @@ map.on(
                             renderVectors(),
                             renderContours()
                         ]);
+                        if (movementAtStart !== mapMovementSerial) return;
                         renderGeography();
                         captureCanvasCamera();
                         hasCompletedNumericalFrame = true;
+                        revealNewNumericalLayersAfterZoom();
                         scheduleNearbyActiveTileWarmup();
                     } finally {
-                        finishNumericalHoldover(holdover);
+                        if (movementAtStart === mapMovementSerial) {
+                            // Also recover visibility if a tile failed to load.
+                            revealNewNumericalLayersAfterZoom();
+                            finishNumericalHoldover(holdover);
+                        }
                     }
 
                 },
@@ -14251,6 +14482,5 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
 
 
