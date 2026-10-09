@@ -126,6 +126,14 @@ body.mp-child.mp-layout-4 .legend-label{top:0}
 #mp-shared-annotation-canvas.drawing-active{pointer-events:auto;cursor:crosshair}
 #mp-shared-annotation-canvas.erasing-active{pointer-events:auto;cursor:not-allowed}
 
+.layer-clear-buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.layer-clear-buttons button{min-width:0;min-height:34px;padding:7px 5px;border:1px solid #577a95;border-radius:5px;background:#21445d;color:#ecf7ff;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
+.layer-clear-buttons button:hover,.layer-clear-buttons button:focus-visible{background:#2c6486;border-color:#94cef1}
+.layer-clear-buttons button:focus-visible{outline:2px solid #a3dcff;outline-offset:2px}
+#cwa-controls-wrapper{display:flex;flex-direction:column;gap:4px;margin:1px 0 8px}
+.cwa-control-options{display:grid;grid-template-columns:minmax(0,1fr) 75px;gap:6px;padding:2px 0 3px 22px}
+.cwa-control-options select{min-width:0;width:100%;font-size:11px;padding:6px 4px}
+#cwa-border-color{margin-left:auto;width:28px;height:22px;padding:0;border:0;background:transparent;cursor:pointer}
 </style>
 </head>
 <body>
@@ -141,6 +149,14 @@ body.mp-child.mp-layout-4 .legend-label{top:0}
   <div class="sidebar-body">
     <div class="sector"><label class="small-heading" for="sector-select">Sector</label><select id="sector-select"><option value="lbf">LBF CWA</option><option value="regional">LBF Regional</option><option value="nebraska">Nebraska</option><option value="northern_plains">Northern Plains</option><option value="central_plains">Central Plains</option><option value="southern_plains">Southern Plains</option><option value="high_plains">High Plains</option><option value="midwest">Midwest</option><option value="rockies">Rockies</option><option value="conus">CONUS</option></select></div>
     <div class="layout-card"><label class="small-heading" for="layout-select">Panel Layout</label><select id="layout-select"><option value="1">1 Panel</option><option value="2">2 Panels</option><option value="4">4 Panels</option></select><label class="small-heading panel-scope-heading" for="parameter-scope">Parameter Changes</label><select id="parameter-scope"><option value="active">Active Panel</option><option value="all">All Panels</option></select></div>
+
+    <div class="sector layer-clear-sector" aria-label="Clear numerical layers">
+      <span class="small-heading">Layer Controls</span>
+      <div class="layer-clear-buttons">
+        <button id="clear-fill" type="button" title="Clear only the selected filled field">Clear Fill</button>
+        <button id="clear-contours" type="button" title="Turn off contour overlays without changing filled fields or vectors">Clear Contours</button>
+      </div>
+    </div>
 
     <details class="category" id="surface-category"><summary class="cat-head">Surface</summary><div class="cat-content">
       <button class="field-row field-choice" data-field="sfc_temperature"><span class="field-dot"></span>2 m Temperature</button>
@@ -241,7 +257,19 @@ body.mp-child.mp-layout-4 .legend-label{top:0}
       </div></details>
     </div></details>
 
-    <div class="utility"><div class="small-heading">Map Layers</div><label class="toggle-row"><input id="cities-toggle" type="checkbox"><span>Cities</span></label><label class="toggle-row"><input id="cursor-sample-toggle" type="checkbox"><span>Cursor Sample</span></label></div>
+    <div class="utility">
+      <div class="small-heading">Map Layers</div>
+      <label class="toggle-row"><input id="counties-toggle" type="checkbox" checked><span>Counties</span></label>
+      <label class="toggle-row"><input id="cities-toggle" type="checkbox"><span>Cities</span></label>
+      <div id="cwa-controls-wrapper">
+        <label class="toggle-row"><input id="cwa-borders-toggle" type="checkbox" checked><span>CWA Borders</span><input id="cwa-border-color" type="color" value="#6f42c1" title="CWA border color" aria-label="CWA border color"></label>
+        <div class="cwa-control-options">
+          <select id="cwa-selector" aria-label="CWA office"><option value="ALL">All CWAs</option></select>
+          <select id="cwa-border-width" aria-label="CWA border width"><option value="1">1px</option><option value="1.5">1.5px</option><option value="2" selected>2px</option><option value="2.5">2.5px</option><option value="3">3px</option><option value="4">4px</option><option value="5">5px</option></select>
+        </div>
+      </div>
+      <label class="toggle-row"><input id="cursor-sample-toggle" type="checkbox"><span>Cursor Sample</span></label>
+    </div>
 
     <div class="compat"><select id="field-select"><option value="none" selected>None</option><option value="sbcin">Surface-Based CIN</option><option value="mlcin">Mixed-Layer CIN</option><option value="mucin">Most-Unstable CIN</option><option value="sbcape">Surface-Based CAPE</option><option value="mlcape">Mixed-Layer CAPE</option><option value="mucape">Most-Unstable CAPE</option><option value="mlcape_0_3km">0–3 km Mixed-Layer CAPE</option><option value="sfc_dewpoint">Surface Dewpoint</option><option value="petterssen_fgen_surface">Surface 2D Petterssen Frontogenesis</option><option value="petterssen_fgen_925mb">925 mb 2-D FGEN</option><option value="petterssen_fgen_850mb">850 mb 2-D FGEN</option><option value="petterssen_fgen_700mb">700 mb 2-D FGEN</option><option value="temperature_925mb">925 mb Temperature</option><option value="temperature_850mb">850 mb Temperature</option><option value="temperature_700mb">700 mb Temperature</option><option value="temperature_500mb">500 mb Temperature</option><option value="temperature_250mb">250 mb Temperature</option><option value="temperature_advection_925mb">925 mb Temperature Advection</option><option value="temperature_advection_850mb">850 mb Temperature Advection</option><option value="temperature_advection_700mb">700 mb Temperature Advection</option><option value="lapse_rate_700_500hPa">700–500 mb Lapse Rate</option><option value="lapse_rate_0_3km">0–3 km Lapse Rate</option><option value="lapse_rate_0_1km">0–1 km Lapse Rate</option><option value="lapse_rate_3_6km">3–6 km Lapse Rate</option><option value="lapse_rate_2_6km_max">2–6 km Max 2-km Lapse Rate</option><option value="srh_0_500m">0–500 m SRH</option><option value="srh_0_1km">0–1 km SRH</option><option value="srh_0_3km">0–3 km SRH</option><option value="srh_eff">Effective SRH</option><option value="ehi_0_1km">0–1 km EHI</option><option value="ehi_0_3km">0–3 km EHI</option><option value="stp_fix">Fixed-Layer STP</option><option value="theta_2m">2 m Potential Temperature</option><option value="wetbulb_2m">2 m Wet-Bulb Temperature</option><option value="thetae_2m">2 m Theta-e</option><option value="relative_vorticity_925mb">925 mb Relative Vorticity</option><option value="relative_vorticity_850mb">850 mb Relative Vorticity</option><option value="relative_vorticity_700mb">700 mb Relative Vorticity</option><option value="relative_vorticity_500mb">500 mb Relative Vorticity</option><option value="relative_vorticity_250mb">250 mb Relative Vorticity</option><option value="scp_right">Right-Moving SCP</option><option value="scp_left">Left-Moving SCP</option></select><input id="stp-eff-toggle" type="checkbox"></div>
 
