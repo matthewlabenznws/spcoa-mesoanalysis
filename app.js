@@ -7186,6 +7186,7 @@ function syncGeographicWeatherLayer() {
 
 /* =========================================================================================
    GEOGRAPHIC CONTOUR + VECTOR RASTER OVERLAYS
+   Geo contour labels preserve transparent INLINE line gaps (not halo stickers).
    Each overlay is independently positioned by MapLibre's tile pyramid.
    Barbs, arrows and axes are drawn on a fixed global grid, not a grid that
    shifts when the viewport is dragged. Contour lines share numeric boundaries
@@ -7269,10 +7270,97 @@ function geoContourStyle(field, level) {
     return {color,width,dash};
 }
 
+/* ============================================================================
+   FAST MAP-ANCHORED OVERLAY SAMPLERS
+
+   Previously every contour grid point called getRawScalarPixel four times;
+   every call repeated Map lookups, metadata parsing, and world wrapping.
+   Resolve the encoding once and memoize source-tile typed arrays locally to
+   this geographic tile. The nodata tests and pixel-center bilinear geometry
+   are the same as the earlier implementation.
+   ============================================================================ */
+function makeGeoScalarSampler(field, srcZ, contour = true) {
+    const tileMap = contour ? contourTileCache : scalarTileCache;
+    const keyFn = contour ? contourTileKey : scalarTileKey;
+    const encoding = getEncoding(contour ? contourMetadata[field] : fieldMetadata[field]);
+    const {scale,offset,nodata} = encoding;
+    const worldTiles = 2 ** srcZ;
+    const worldPixels = worldTiles * TILE_SIZE;
+    const memo = new Map();
+
+    function getRaw(ix, iy) {
+        if (iy < 0 || iy >= worldPixels) return null;
+        const tx = Math.floor(ix / TILE_SIZE);
+        const ty = Math.floor(iy / TILE_SIZE);
+        const wrapped = ((tx % worldTiles) + worldTiles) % worldTiles;
+        const localX = ix - tx * TILE_SIZE;
+        const localY = iy - ty * TILE_SIZE;
+        const id = wrapped * worldTiles + ty;
+        let tile = memo.get(id);
+        if (tile === undefined) {
+            tile = tileMap.get(keyFn(field, currentRun, srcZ, wrapped, ty)) || null;
+            if (tile && typeof tile.then === 'function') tile = null;
+            memo.set(id, tile);
+        }
+        if (!tile) return null;
+        const raw = tile[localY * TILE_SIZE + localX];
+        if (raw === nodata || raw === SCALAR_NODATA || raw === undefined) return null;
+        return raw;
+    }
+
+    return function sample(gx, gy) {
+        const px = gx - 0.5, py = gy - 0.5;
+        const x0 = Math.floor(px), y0 = Math.floor(py);
+        const fx = px - x0, fy = py - y0;
+        const a = getRaw(x0, y0), b = getRaw(x0 + 1, y0);
+        const c = getRaw(x0, y0 + 1), d = getRaw(x0 + 1, y0 + 1);
+        if (a === null || b === null || c === null || d === null) return null;
+        const raw = (a * (1-fx) + b * fx) * (1-fy) +
+                    (c * (1-fx) + d * fx) * fy;
+        return raw * scale + offset;
+    };
+}
+
+function makeGeoVectorSampler(field, srcZ) {
+    const enc = getEncoding(vectorMetadata[field], 0.1, 0, VECTOR_NODATA);
+    const {scale,offset,nodata} = enc;
+    const worldTiles = 2 ** srcZ;
+    const worldPixels = worldTiles * TILE_SIZE;
+    const memo = new Map();
+    function getRaw(ix,iy) {
+        if (iy < 0 || iy >= worldPixels) return null;
+        const tx=Math.floor(ix/TILE_SIZE), ty=Math.floor(iy/TILE_SIZE);
+        const wrapped=((tx%worldTiles)+worldTiles)%worldTiles;
+        const id=wrapped*worldTiles+ty;
+        let tile=memo.get(id);
+        if(tile===undefined) {
+            tile=vectorTileCache.get(vectorTileKey(field,currentRun,srcZ,wrapped,ty))||null;
+            if(tile && typeof tile.then==='function')tile=null;
+            memo.set(id,tile);
+        }
+        if(!tile)return null;
+        const index=((iy-ty*TILE_SIZE)*TILE_SIZE+(ix-tx*TILE_SIZE))*2;
+        const u=tile[index],v=tile[index+1];
+        if(u===undefined||v===undefined||u===nodata||v===nodata||
+           u===VECTOR_NODATA||v===VECTOR_NODATA)return null;
+        return [u,v];
+    }
+    return function sample(gx,gy) {
+        const px=gx-.5,py=gy-.5,x0=Math.floor(px),y0=Math.floor(py);
+        const fx=px-x0,fy=py-y0;
+        const a=getRaw(x0,y0),b=getRaw(x0+1,y0),c=getRaw(x0,y0+1),d=getRaw(x0+1,y0+1);
+        if(!a||!b||!c||!d)return null;
+        const wa=(1-fx)*(1-fy),wb=fx*(1-fy),wc=(1-fx)*fy,wd=fx*fy;
+        return {u:(a[0]*wa+b[0]*wb+c[0]*wc+d[0]*wd)*scale+offset,
+                v:(a[1]*wa+b[1]*wb+c[1]*wc+d[1]*wd)*scale+offset};
+    };
+}
+
 async function renderGeoContourTile(run,field,z,x,y) {
     if (run!==currentRun || !contourMetadata[field]) return transparentGeographicWeatherTile();
     // 16-pixel gutter keeps smoothed contour derivatives consistent on edges.
-    await geoPrefetch("contour",field,run,z,x,y,24);
+    await geoPrefetch("contour",field,run,z,x,y,17);
+    if(run!==currentRun) return transparentGeographicWeatherTile();
     const surface=createGeoSurface(512),ctx=surface.getContext("2d");
     ctx.scale(2,2);
     const step=field.startsWith("divergence_") || field.startsWith("frontogenesis_") ? 2 : 4;
@@ -7280,11 +7368,12 @@ async function renderGeoContourTile(run,field,z,x,y) {
     const count=Math.ceil((TILE_SIZE+2*margin)/step)+1;
     const values=new Float32Array(count*count);values.fill(NaN);
     const srcZ=geoDataZoom(z),factor=Math.pow(2,srcZ-z);
+    const sampleContour = makeGeoScalarSampler(field,srcZ,true);
     let min=Infinity,max=-Infinity;
     for(let row=0;row<count;row++) for(let col=0;col<count;col++) {
         const px=col*step-margin,py=row*step-margin;
-        const val=geoInterpolateScalar(field,srcZ,(x*TILE_SIZE+px)*factor,
-            (y*TILE_SIZE+py)*factor,true);
+        const val=sampleContour((x*TILE_SIZE+px)*factor,
+            (y*TILE_SIZE+py)*factor);
         if(val===null || !Number.isFinite(val)) continue;
         values[row*count+col]=val;
         min=Math.min(min,val);max=Math.max(max,val);
@@ -7298,6 +7387,21 @@ async function renderGeoContourTile(run,field,z,x,y) {
         for(let i=0;i<values.length;i++) if(!Number.isFinite(values[i])) smoothed[i]=NaN;
     }
     const levels=geoContourLevels(field,min,max);
+    // Precompute per-cell ranges once; most levels cross only a small
+    // fraction of cells, especially in low-gradient pressure fields.
+    const nCells=(count-1)*(count-1);
+    const cellMin=new Float32Array(nCells),cellMax=new Float32Array(nCells);
+    for(let row=0;row<count-1;row++)for(let col=0;col<count-1;col++) {
+        const ix=row*count+col,id=row*(count-1)+col;
+        const tl=smoothed[ix],tr=smoothed[ix+1],
+              br=smoothed[ix+count+1],bl=smoothed[ix+count];
+        if(!Number.isFinite(tl)||!Number.isFinite(tr)||
+           !Number.isFinite(br)||!Number.isFinite(bl)) {
+            cellMin[id]=Infinity;cellMax[id]=-Infinity;continue;
+        }
+        cellMin[id]=Math.min(tl,tr,br,bl);
+        cellMax[id]=Math.max(tl,tr,br,bl);
+    }
     const candidates=[];
     const labelsOn=(contourMetadata[field].display || {}).labels!==false;
     ctx.save();ctx.lineJoin="round";ctx.lineCap="round";
@@ -7307,9 +7411,10 @@ async function renderGeoContourTile(run,field,z,x,y) {
         ctx.setLineDash(style.dash);ctx.beginPath();
         let candidate=null, candidateD=Infinity;
         for(let row=0;row<count-1;row++) for(let col=0;col<count-1;col++) {
+            const id=row*(count-1)+col;
+            if(level<cellMin[id]||level>cellMax[id])continue;
             const ix=row*count+col;
             const tl=smoothed[ix],tr=smoothed[ix+1],br=smoothed[ix+count+1],bl=smoothed[ix+count];
-            if(![tl,tr,br,bl].every(Number.isFinite))continue;
             const px=col*step-margin,py=row*step-margin;
             const segments=getMarchingSegments(px,py,step,tl,tr,br,bl,level);
             for(const seg of segments) {
@@ -7334,8 +7439,21 @@ async function renderGeoContourTile(run,field,z,x,y) {
         for(const p of candidates.sort((a,b)=>(a.x-128)**2+(a.y-128)**2-(b.x-128)**2-(b.y-128)**2)) {
             if(placed.length>=3)break;
             if(placed.some(q=>Math.hypot(q.x-p.x,q.y-p.y)<70))continue;
-            // White halo makes labels readable over weather shading; the text
-            // remains geographically anchored, rather than viewport-relative.
+            /* Restore the original matplotlib-style INLINE contour labeling.
+               Erase only the line directly under the text on THIS transparent
+               contour tile, leaving the separate filled weather layer intact.
+               Canvas coordinates are already scaled 2x, so draw at CSS pixels. */
+            let labelAngle=p.angle;
+            if(labelAngle>Math.PI/2)labelAngle-=Math.PI;
+            if(labelAngle< -Math.PI/2)labelAngle+=Math.PI;
+            ctx.save();
+            ctx.translate(p.x,p.y);
+            ctx.rotate(labelAngle);
+            ctx.font="bold 11px Arial, Helvetica, sans-serif";
+            const text=String(Math.round(p.level));
+            const w=ctx.measureText(text).width;
+            ctx.clearRect(-w/2-4,-11/2-3,w+8,11+6);
+            ctx.restore();
             drawMslpLabel(ctx,p.x,p.y,p.angle,p.level,p.color,"rgba(255,255,255,0.0)");
             placed.push(p);
         }
@@ -7346,10 +7464,12 @@ async function renderGeoContourTile(run,field,z,x,y) {
 async function renderGeoVectorTile(run,field,color,z,x,y) {
     if(run!==currentRun || !vectorMetadata[field])return transparentGeographicWeatherTile();
     await geoPrefetch("vector",field,run,z,x,y,55);
+    if(run!==currentRun) return transparentGeographicWeatherTile();
     const surface=createGeoSurface(512),ctx=surface.getContext("2d");
     ctx.scale(2,2);
     const def=VECTOR_FIELDS[field] || {};
     const sz=geoDataZoom(z),factor=Math.pow(2,sz-z);
+    const sampleVector=makeGeoVectorSampler(field,sz);
     // Global coordinates produce a stationary array of barbs/arrows while
     // panning. Include a gutter so symbols spanning tile edges are complete.
     const spacing=z<5?60:z<6?54:z<7?48:z<8?42:38;
@@ -7357,7 +7477,7 @@ async function renderGeoVectorTile(run,field,color,z,x,y) {
     const minY=y*TILE_SIZE-55,maxY=(y+1)*TILE_SIZE+55;
     for(let wy=Math.ceil(minY/spacing)*spacing;wy<=maxY;wy+=spacing) {
         for(let wx=Math.ceil(minX/spacing)*spacing;wx<=maxX;wx+=spacing) {
-            const v=geoInterpolateVector(field,sz,wx*factor,wy*factor);
+            const v=sampleVector(wx*factor,wy*factor);
             if(!v || !Number.isFinite(v.u)||!Number.isFinite(v.v))continue;
             const px=wx-x*TILE_SIZE,py=wy-y*TILE_SIZE;
             if(def.renderType==="axis_segments")drawAxisOfDilatation(ctx,px,py,v.u,v.v,color);
@@ -14883,5 +15003,3 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
-
