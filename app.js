@@ -303,8 +303,9 @@ if (!__MP_CHILD) {
             badge.textContent = `Panel ${i + 1}`;
             const frame = document.createElement("iframe");
             frame.title = `Mesoanalysis Panel ${i + 1}`;
-            frame.loading = "eager";
-            frame.src = childUrl(i);
+            frame.loading = i === 0 ? "eager" : "lazy";
+            // Only initialize the first panel until another layout is requested.
+            if (i === 0) frame.src = childUrl(i);
             holder.append(badge, frame);
             panelGrid.appendChild(holder);
             panels.push({ holder, frame, badge, ready: false });
@@ -315,7 +316,12 @@ if (!__MP_CHILD) {
         function applyLayout(count) {
             layoutCount = Number(count) === 4 ? 4 : Number(count) === 2 ? 2 : 1;
             panelGrid.className = `layout-${layoutCount}`;
-            panels.forEach((p, i) => { p.holder.style.display = i < layoutCount ? "block" : "none"; });
+            panels.forEach((p, i) => {
+                p.holder.style.display = i < layoutCount ? "block" : "none";
+                if (i < layoutCount && !p.frame.hasAttribute("src")) {
+                    p.frame.src = childUrl(i);
+                }
+            });
             if (activePanel >= layoutCount) setActivePanel(0);
             requestAnimationFrame(() => {
                 panels.slice(0, layoutCount).forEach(p => {
@@ -396,7 +402,10 @@ if (!__MP_CHILD) {
                 const child = d.querySelector(`.draw-tool[data-tool="${host.dataset.tool}"]`);
                 host.classList.toggle("active", !!child && child.classList.contains("active"));
             });
-            ["timeline-speed-label", "timeline-time-label", "draw-hint"].forEach(id => {
+            // Mirror run information and loading status from the active map panel.
+            // These labels live in the host sidebar and otherwise remain stuck
+            // at the HTML defaults ("Loading..." / "Initializing...").
+            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child) host.textContent = child.textContent;
             });
@@ -2018,6 +2027,7 @@ const timelineState = {
     looping: true,
     playbackSpeed: 1.0,
     isLive: true,
+    pendingLiveSwitch: false,
     switching: false,
     playTimer: null
 };
@@ -2117,6 +2127,141 @@ const scalarTileCache = new Map();
 const vectorTileCache = new Map();
 
 const contourTileCache = new Map();
+
+/* Memory bound applies to decoded tile arrays only (not browser HTTP cache).
+   A single 256x256 scalar tile is 128 KiB; vector tiles are 256 KiB.
+   Map insertion order is our LRU; touches happen when a tile is requested,
+   not for every numerical sample during a canvas redraw. */
+const MAX_NUMERICAL_CACHE_BYTES = 192 * 1024 * 1024;
+const numericalTileLRU = new Map();
+const missingNumericalTiles = new Map();
+let numericalCacheBytes = 0;
+
+function dropNumericalTileRecord(kind, key) {
+    const id = kind + ":" + key;
+    const record = numericalTileLRU.get(id);
+    if (record) {
+        numericalCacheBytes -= record.bytes;
+        numericalTileLRU.delete(id);
+    }
+}
+
+function touchNumericalTile(kind, key) {
+    const id = kind + ":" + key;
+    const record = numericalTileLRU.get(id);
+    if (!record) return;
+    numericalTileLRU.delete(id);
+    numericalTileLRU.set(id, record);
+}
+
+function rememberNumericalTile(kind, cache, key, tile) {
+    if (!tile || !tile.byteLength) return;
+    dropNumericalTileRecord(kind, key);
+    numericalTileLRU.set(kind + ":" + key, {
+        cache, key, tile, bytes: tile.byteLength
+    });
+    numericalCacheBytes += tile.byteLength;
+    // Never evict unfinished Promise entries, and never delete a replacement
+    // value if an earlier asynchronous request finished out of order.
+    while (numericalCacheBytes > MAX_NUMERICAL_CACHE_BYTES && numericalTileLRU.size) {
+        const [oldId, oldest] = numericalTileLRU.entries().next().value;
+        numericalTileLRU.delete(oldId);
+        numericalCacheBytes -= oldest.bytes;
+        if (oldest.cache.get(oldest.key) === oldest.tile) {
+            oldest.cache.delete(oldest.key);
+        }
+    }
+}
+
+function resetNumericalTileCaches() {
+    scalarTileCache.clear();
+    vectorTileCache.clear();
+    contourTileCache.clear();
+    numericalTileLRU.clear();
+    missingNumericalTiles.clear();
+    numericalCacheBytes = 0;
+}
+
+/* One request pool per viewer panel prevents large Promise.all batches from
+   overwhelming the network. Visible-center tiles take precedence over the
+   one-tile margin, cursor sampling, and historical animation warmups. */
+const MAX_ACTIVE_TILE_REQUESTS = 10;
+const numericalRequestQueue = [];
+let activeTileRequests = 0;
+let requestSequence = 0;
+
+function queueNumericalTileFetch(url, priority = 0) {
+    return new Promise(resolve => {
+        numericalRequestQueue.push({url, priority, sequence: requestSequence++, resolve});
+        numericalRequestQueue.sort((a, b) =>
+            a.priority - b.priority || a.sequence - b.sequence);
+        pumpNumericalTileRequests();
+    });
+}
+
+function pumpNumericalTileRequests() {
+    while (activeTileRequests < MAX_ACTIVE_TILE_REQUESTS && numericalRequestQueue.length) {
+        const job = numericalRequestQueue.shift();
+        activeTileRequests++;
+        (async () => {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    const response = await fetch(job.url, {cache: "force-cache"});
+                    if (response.ok) return await response.arrayBuffer();
+                    // 404 usually means no data exists for that geographic tile.
+                    if (response.status !== 429 && response.status < 500) return null;
+                } catch (error) {
+                    if (attempt === 2) console.warn("Tile request failed:", job.url, error);
+                }
+                if (attempt < 2) {
+                    await new Promise(resolve => setTimeout(resolve,
+                        (attempt + 1) * 350 + Math.round(Math.random() * 120)));
+                }
+            }
+            return null;
+        })().then(job.resolve, error => {
+            console.warn("Tile fetch failed:", job.url, error);
+            job.resolve(null);
+        }).finally(() => {
+            activeTileRequests--;
+            pumpNumericalTileRequests();
+        });
+    }
+}
+
+function canRetryMissingTile(kind, key) {
+    const id = kind + ":" + key;
+    const retryTime = missingNumericalTiles.get(id);
+    if (!retryTime) return true;
+    if (Date.now() >= retryTime) {
+        missingNumericalTiles.delete(id);
+        return true;
+    }
+    return false;
+}
+
+function markMissingTile(kind, key) {
+    // Temporary outage or missing coverage: retry on a later view/run refresh.
+    missingNumericalTiles.set(kind + ":" + key, Date.now() + 30000);
+    if (missingNumericalTiles.size > 4096) {
+        missingNumericalTiles.delete(missingNumericalTiles.keys().next().value);
+    }
+}
+
+function priorityOrderedTileCoordinates(z, range) {
+    const visible = getVisibleTileRange(z, 0);
+    const cx = (visible.x0 + visible.x1) * 0.5;
+    const cy = (visible.y0 + visible.y1) * 0.5;
+    const result = [];
+    for (let x = range.x0; x <= range.x1; x++) {
+        for (let y = range.y0; y <= range.y1; y++) {
+            const onScreen = x >= visible.x0 && x <= visible.x1 &&
+                y >= visible.y0 && y <= visible.y1;
+            result.push({x, y, onScreen, distance: (x-cx)**2 + (y-cy)**2});
+        }
+    }
+    return result.sort((a,b) => Number(b.onScreen) - Number(a.onScreen) || a.distance - b.distance);
+}
 
 
 /* =========================================================================================
@@ -3769,38 +3914,29 @@ function finishNumericalHoldover(token) {
    FETCH JSON
    ========================================================================================= */
 
-async function fetchJSON(
-    url
-) {
-
-    const response =
-        await fetch(
-
-            url,
-
-            {
-
-                cache:
-                    "no-store"
-
+async function fetchJSON(url) {
+    const immutableRunMetadata = /\/runs\/[^/]+\/.+metadata\.json(?:\?|$)/.test(url) ||
+        /\/runs\/[^/]+\/metadata\.json(?:\?|$)/.test(url);
+    const options = {cache: immutableRunMetadata ? "default" : "no-store"};
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                if (response.status !== 429 && response.status < 500) {
+                    throw new Error(`HTTP ${response.status}: ${url}`);
+                }
+                lastError = new Error(`HTTP ${response.status}: ${url}`);
+            } else {
+                return await response.json();
             }
-
-        );
-
-
-    if (!response.ok) {
-
-        throw new Error(
-
-            `HTTP ${response.status}: ${url}`
-
-        );
-
+        } catch (error) {
+            lastError = error;
+            if (/HTTP 40[0-8]:/.test(error.message || "")) throw error;
+        }
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
     }
-
-
-    return await response.json();
-
+    throw lastError || new Error(`Could not load ${url}`);
 }
 
 
@@ -3854,14 +3990,23 @@ async function loadRunMetadata(runId) {
         const fields = {};
         const vectors = {};
         const contours = {};
-        await Promise.all((metadata.fields || []).map(async fieldKey => {
-            fields[fieldKey] = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/${fieldKey}/metadata.json`);
-        }));
-        await Promise.all((metadata.overlays || []).map(async overlayKey => {
-            const item = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/overlays/${overlayKey}/metadata.json`);
-            const isContour = item.type === "scalar_contour" || (item.display && item.display.type === "contour");
-            if (isContour) contours[overlayKey] = item; else vectors[overlayKey] = item;
-        }));
+        const results = await Promise.allSettled([
+            ...(metadata.fields || []).map(async fieldKey => {
+                fields[fieldKey] = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/${fieldKey}/metadata.json`);
+            }),
+            ...(metadata.overlays || []).map(async overlayKey => {
+                const item = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/overlays/${overlayKey}/metadata.json`);
+                const isContour = item.type === "scalar_contour" ||
+                    (item.display && item.display.type === "contour");
+                if (isContour) contours[overlayKey] = item; else vectors[overlayKey] = item;
+            })
+        ]);
+        const failures = results.filter(r => r.status === "rejected");
+        if (failures.length) console.warn(`${failures.length} product metadata files unavailable for ${runId}:`,
+            failures.slice(0, 5).map(r => r.reason));
+        if (results.length && failures.length === results.length) {
+            throw new Error(`No SPCOA product metadata could be loaded for ${runId}.`);
+        }
         return { metadata, fields, vectors, contours };
     })();
     runMetadataCache.set(runId, promise);
@@ -3903,6 +4048,7 @@ async function applyRun(runItem, { render = true, preload = true } = {}) {
         requestAnimationFrame(updateActiveLayersStrip);
         if (render) await renderAll();
         if (statusElement) statusElement.textContent = `Loaded ${currentRun}`;
+        if (currentRun === timelineState.latestRun) timelineState.pendingLiveSwitch = false;
         if (preload) scheduleAdjacentPreload();
         return true;
     } catch (error) {
@@ -3928,7 +4074,8 @@ async function loadLatestRun() {
     }
     const latestItem = timelineState.availableRuns.find(item => item.run === timelineState.latestRun) || timelineState.availableRuns.at(-1);
     if (!latestItem) throw new Error("No SPCOA analyses are available.");
-    await applyRun(latestItem, { render: false, preload: false });
+    const loaded = await applyRun(latestItem, { render: false, preload: false });
+    if (!loaded) throw new Error(`Could not initialize analysis ${latestItem.run}`);
 }
 
 function updateTimelineUi() {
@@ -3990,7 +4137,10 @@ async function advanceTimeline(direction, fromPlayback = false) {
         else { if (fromPlayback) setPlaying(false); return; }
     }
     if (next < 0) return;
-    if (!fromPlayback) setPlaying(false);
+    if (!fromPlayback) {
+        setPlaying(false);
+        timelineState.pendingLiveSwitch = false;
+    }
     await applyRun(runs[next]);
 }
 
@@ -4038,14 +4188,18 @@ function scheduleAdjacentPreload() {
 
 async function refreshAvailableTimes() {
     try {
+        if (document.hidden || timelineState.switching) return;
         const wasLive = timelineState.isLive;
         const oldLatest = timelineState.latestRun;
         await loadAvailableTimesManifest();
-        updateTimelineUi();
-        if (wasLive && timelineState.latestRun && timelineState.latestRun !== oldLatest) {
+        const followLive = wasLive || timelineState.pendingLiveSwitch ||
+            (oldLatest && currentRun === oldLatest);
+        if (followLive && timelineState.latestRun && timelineState.latestRun !== currentRun) {
+            timelineState.pendingLiveSwitch = true;
             const latest = timelineState.availableRuns.find(item => item.run === timelineState.latestRun);
             if (latest) await applyRun(latest);
         }
+        updateTimelineUi();
     } catch (error) {
         console.warn("Timeline manifest refresh failed:", error);
     }
@@ -4081,13 +4235,16 @@ function bindTimelineControls() {
             const requestedIndex = Number(event.target.value);
             const runs = filteredTimelineRuns();
             const item = runs[requestedIndex];
-            if (item) await applyRun(item);
-            else updateTimelineUi();
+            if (item) {
+                timelineState.pendingLiveSwitch = false;
+                await applyRun(item);
+            } else updateTimelineUi();
         });
     }
     if (timelineLoopToggle) timelineLoopToggle.addEventListener("change", event => { timelineState.looping = event.target.checked; updateTimelineUi(); });
     if (timelineLiveButton) timelineLiveButton.addEventListener("click", async () => {
         setPlaying(false);
+        timelineState.pendingLiveSwitch = true;
         const item = timelineState.availableRuns.find(x => x.run === timelineState.latestRun) || timelineState.availableRuns.at(-1);
         if (item) await applyRun(item);
     });
@@ -4517,189 +4674,43 @@ function getEncoding(
    LOAD SCALAR TILE
    ========================================================================================= */
 
-async function loadScalarTile(
-    field,
-    z,
-    x,
-    y,
-    run = currentRun
-) {
+async function loadScalarTile(field, z, x, y, run = currentRun, priority = 0) {
+    if (!run) return null;
+    const n = 2 ** z;
+    if (y < 0 || y >= n) return null;
+    const wrappedX = normalizeTileX(x, z);
+    const key = scalarTileKey(field, run, z, wrappedX, y);
 
-    if (!run) {
-
-        return null;
-
+    if (scalarTileCache.has(key)) {
+        touchNumericalTile("scalar", key);
+        return await scalarTileCache.get(key);
     }
+    if (!canRetryMissingTile("scalar", key)) return null;
 
+    const url = `${S3_BASE_URL}/runs/${run}/${field}/z${z}/${wrappedX}/${y}.bin`;
+    const promise = (async () => {
+        const buffer = await queueNumericalTileFetch(url, priority);
+        if (!buffer) return null;
+        if (buffer.byteLength !== 131072) {
+            console.warn("Unexpected scalar tile size:", field, z, wrappedX, y, buffer.byteLength);
+            return null;
+        }
+        return new Uint16Array(buffer);
+    })();
+    scalarTileCache.set(key, promise);
 
-    const n =
-        2 ** z;
-
-
-    if (
-        y < 0 ||
-        y >= n
-    ) {
-
-        return null;
-
+    const tile = await promise;
+    if (scalarTileCache.get(key) === promise) {
+        if (tile) {
+            scalarTileCache.set(key, tile);
+            missingNumericalTiles.delete("scalar:" + key);
+            rememberNumericalTile("scalar", scalarTileCache, key, tile);
+        } else {
+            scalarTileCache.delete(key);
+            markMissingTile("scalar", key);
+        }
     }
-
-
-    const wrappedX =
-        normalizeTileX(
-            x,
-            z
-        );
-
-
-    const key =
-        scalarTileKey(
-
-            field,
-
-            run,
-
-            z,
-
-            wrappedX,
-
-            y
-
-        );
-
-
-    if (
-        scalarTileCache.has(
-            key
-        )
-    ) {
-
-        return await scalarTileCache.get(
-            key
-        );
-
-    }
-
-
-    const promise =
-        (async () => {
-
-            const url =
-                `${S3_BASE_URL}/runs/${run}/${field}/` +
-                `z${z}/${wrappedX}/${y}.bin`;
-
-
-            try {
-
-                const response =
-                    await fetch(
-
-                        url,
-
-                        {
-
-                            cache:
-                                "force-cache"
-
-                        }
-
-                    );
-
-
-                if (!response.ok) {
-
-                    return null;
-
-                }
-
-
-                const buffer =
-                    await response.arrayBuffer();
-
-
-                const expectedBytes =
-                    TILE_SIZE *
-                    TILE_SIZE *
-                    2;
-
-
-                if (
-                    buffer.byteLength !==
-                    expectedBytes
-                ) {
-
-                    console.warn(
-
-                        "Unexpected scalar tile size:",
-
-                        field,
-
-                        z,
-
-                        wrappedX,
-
-                        y,
-
-                        buffer.byteLength
-
-                    );
-
-
-                    return null;
-
-                }
-
-
-                return new Uint16Array(
-                    buffer
-                );
-
-            }
-            catch (error) {
-
-                console.warn(
-
-                    "Scalar tile load failed:",
-
-                    url,
-
-                    error
-
-                );
-
-
-                return null;
-
-            }
-
-        })();
-
-
-    scalarTileCache.set(
-        key,
-        promise
-    );
-
-
-    const tile =
-        await promise;
-
-
-    /*
-     * Replace the Promise with the resolved array.
-     *
-     * This is important because the synchronous numerical samplers below
-     * read directly from the cache while rendering.
-     */
-    scalarTileCache.set(
-        key,
-        tile
-    );
-
-
     return tile;
-
 }
 
 
@@ -4707,192 +4718,43 @@ async function loadScalarTile(
    LOAD VECTOR TILE
    ========================================================================================= */
 
-async function loadVectorTile(
-    field,
-    z,
-    x,
-    y,
-    run = currentRun
-) {
+async function loadVectorTile(field, z, x, y, run = currentRun, priority = 0) {
+    if (!run) return null;
+    const n = 2 ** z;
+    if (y < 0 || y >= n) return null;
+    const wrappedX = normalizeTileX(x, z);
+    const key = vectorTileKey(field, run, z, wrappedX, y);
 
-    if (!run) {
-
-        return null;
-
+    if (vectorTileCache.has(key)) {
+        touchNumericalTile("vector", key);
+        return await vectorTileCache.get(key);
     }
+    if (!canRetryMissingTile("vector", key)) return null;
 
+    const url = `${S3_BASE_URL}/runs/${run}/overlays/${field}/z${z}/${wrappedX}/${y}.bin`;
+    const promise = (async () => {
+        const buffer = await queueNumericalTileFetch(url, priority);
+        if (!buffer) return null;
+        if (buffer.byteLength !== 262144) {
+            console.warn("Unexpected vector tile size:", field, z, wrappedX, y, buffer.byteLength);
+            return null;
+        }
+        return new Int16Array(buffer);
+    })();
+    vectorTileCache.set(key, promise);
 
-    const n =
-        2 ** z;
-
-
-    if (
-        y < 0 ||
-        y >= n
-    ) {
-
-        return null;
-
+    const tile = await promise;
+    if (vectorTileCache.get(key) === promise) {
+        if (tile) {
+            vectorTileCache.set(key, tile);
+            missingNumericalTiles.delete("vector:" + key);
+            rememberNumericalTile("vector", vectorTileCache, key, tile);
+        } else {
+            vectorTileCache.delete(key);
+            markMissingTile("vector", key);
+        }
     }
-
-
-    const wrappedX =
-        normalizeTileX(
-            x,
-            z
-        );
-
-
-    const key =
-        vectorTileKey(
-
-            field,
-
-            run,
-
-            z,
-
-            wrappedX,
-
-            y
-
-        );
-
-
-    if (
-        vectorTileCache.has(
-            key
-        )
-    ) {
-
-        return await vectorTileCache.get(
-            key
-        );
-
-    }
-
-
-    const promise =
-        (async () => {
-
-            const url =
-                `${S3_BASE_URL}/runs/${run}/overlays/${field}/` +
-                `z${z}/${wrappedX}/${y}.bin`;
-
-
-            try {
-
-                const response =
-                    await fetch(
-
-                        url,
-
-                        {
-
-                            cache:
-                                "force-cache"
-
-                        }
-
-                    );
-
-
-                if (!response.ok) {
-
-                    return null;
-
-                }
-
-
-                const buffer =
-                    await response.arrayBuffer();
-
-
-                /*
-                 * Vector tiles contain interleaved int16 U/V:
-                 *
-                 *   U0, V0, U1, V1, ...
-                 *
-                 * 256 × 256 × 2 components × 2 bytes
-                 * = 262144 bytes.
-                 */
-                const expectedBytes =
-                    TILE_SIZE *
-                    TILE_SIZE *
-                    2 *
-                    2;
-
-
-                if (
-                    buffer.byteLength !==
-                    expectedBytes
-                ) {
-
-                    console.warn(
-
-                        "Unexpected vector tile size:",
-
-                        field,
-
-                        z,
-
-                        wrappedX,
-
-                        y,
-
-                        buffer.byteLength
-
-                    );
-
-
-                    return null;
-
-                }
-
-
-                return new Int16Array(
-                    buffer
-                );
-
-            }
-            catch (error) {
-
-                console.warn(
-
-                    "Vector tile load failed:",
-
-                    url,
-
-                    error
-
-                );
-
-
-                return null;
-
-            }
-
-        })();
-
-
-    vectorTileCache.set(
-        key,
-        promise
-    );
-
-
-    const tile =
-        await promise;
-
-
-    vectorTileCache.set(
-        key,
-        tile
-    );
-
-
     return tile;
-
 }
 
 
@@ -4900,191 +4762,43 @@ async function loadVectorTile(
    LOAD CONTOUR TILE
    ========================================================================================= */
 
-async function loadContourTile(
-    field,
-    z,
-    x,
-    y,
-    run = currentRun
-) {
+async function loadContourTile(field, z, x, y, run = currentRun, priority = 0) {
+    if (!run) return null;
+    const n = 2 ** z;
+    if (y < 0 || y >= n) return null;
+    const wrappedX = normalizeTileX(x, z);
+    const key = contourTileKey(field, run, z, wrappedX, y);
 
-    if (!run) {
-
-        return null;
-
+    if (contourTileCache.has(key)) {
+        touchNumericalTile("contour", key);
+        return await contourTileCache.get(key);
     }
+    if (!canRetryMissingTile("contour", key)) return null;
 
+    const url = `${S3_BASE_URL}/runs/${run}/overlays/${field}/z${z}/${wrappedX}/${y}.bin`;
+    const promise = (async () => {
+        const buffer = await queueNumericalTileFetch(url, priority);
+        if (!buffer) return null;
+        if (buffer.byteLength !== 131072) {
+            console.warn("Unexpected contour tile size:", field, z, wrappedX, y, buffer.byteLength);
+            return null;
+        }
+        return new Uint16Array(buffer);
+    })();
+    contourTileCache.set(key, promise);
 
-    const n =
-        2 ** z;
-
-
-    if (
-        y < 0 ||
-        y >= n
-    ) {
-
-        return null;
-
+    const tile = await promise;
+    if (contourTileCache.get(key) === promise) {
+        if (tile) {
+            contourTileCache.set(key, tile);
+            missingNumericalTiles.delete("contour:" + key);
+            rememberNumericalTile("contour", contourTileCache, key, tile);
+        } else {
+            contourTileCache.delete(key);
+            markMissingTile("contour", key);
+        }
     }
-
-
-    const wrappedX =
-        normalizeTileX(
-            x,
-            z
-        );
-
-
-    const key =
-        contourTileKey(
-
-            field,
-
-            run,
-
-            z,
-
-            wrappedX,
-
-            y
-
-        );
-
-
-    if (
-        contourTileCache.has(
-            key
-        )
-    ) {
-
-        return await contourTileCache.get(
-            key
-        );
-
-    }
-
-
-    const promise =
-        (async () => {
-
-            const url =
-                `${S3_BASE_URL}/runs/${run}/overlays/${field}/` +
-                `z${z}/${wrappedX}/${y}.bin`;
-
-
-            try {
-
-                const response =
-                    await fetch(
-
-                        url,
-
-                        {
-
-                            cache:
-                                "force-cache"
-
-                        }
-
-                    );
-
-
-                if (!response.ok) {
-
-                    return null;
-
-                }
-
-
-                const buffer =
-                    await response.arrayBuffer();
-
-
-                /*
-                 * MSLP is encoded as uint16:
-                 *
-                 *   physical hPa =
-                 *       encoded * 0.1 + 900
-                 *
-                 * 256 × 256 × 2 bytes = 131072 bytes.
-                 */
-                const expectedBytes =
-                    TILE_SIZE *
-                    TILE_SIZE *
-                    2;
-
-
-                if (
-                    buffer.byteLength !==
-                    expectedBytes
-                ) {
-
-                    console.warn(
-
-                        "Unexpected contour tile size:",
-
-                        field,
-
-                        z,
-
-                        wrappedX,
-
-                        y,
-
-                        buffer.byteLength
-
-                    );
-
-
-                    return null;
-
-                }
-
-
-                return new Uint16Array(
-                    buffer
-                );
-
-            }
-            catch (error) {
-
-                console.warn(
-
-                    "Contour tile load failed:",
-
-                    url,
-
-                    error
-
-                );
-
-
-                return null;
-
-            }
-
-        })();
-
-
-    contourTileCache.set(
-        key,
-        promise
-    );
-
-
-    const tile =
-        await promise;
-
-
-    contourTileCache.set(
-        key,
-        tile
-    );
-
-
     return tile;
-
 }
 
 
@@ -5092,61 +4806,12 @@ async function loadContourTile(
    PRELOAD SCALAR TILES
    ========================================================================================= */
 
-async function preloadScalarTiles(
-    field,
-    z,
-    run = currentRun
-) {
-
-    const range =
-        getVisibleTileRange(
-            z,
-            2
-        );
-
-
-    const promises = [];
-
-
-    for (
-        let x = range.x0;
-        x <= range.x1;
-        x++
-    ) {
-
-        for (
-            let y = range.y0;
-            y <= range.y1;
-            y++
-        ) {
-
-            promises.push(
-
-                loadScalarTile(
-
-                    field,
-
-                    z,
-
-                    x,
-
-                    y,
-
-                    run
-
-                )
-
-            );
-
-        }
-
-    }
-
-
-    await Promise.all(
-        promises
-    );
-
+async function preloadScalarTiles(field, z, run = currentRun) {
+    const range = getVisibleTileRange(z, 1);
+    const ordered = priorityOrderedTileCoordinates(z, range);
+    await Promise.all(ordered.map(tile =>
+        loadScalarTile(field, z, tile.x, tile.y, run,
+            run !== currentRun ? 7 : (tile.onScreen ? 0 : 3))));
 }
 
 
@@ -5154,61 +4819,12 @@ async function preloadScalarTiles(
    PRELOAD VECTOR TILES
    ========================================================================================= */
 
-async function preloadVectorTiles(
-    field,
-    z,
-    run = currentRun
-) {
-
-    const range =
-        getVisibleTileRange(
-            z,
-            2
-        );
-
-
-    const promises = [];
-
-
-    for (
-        let x = range.x0;
-        x <= range.x1;
-        x++
-    ) {
-
-        for (
-            let y = range.y0;
-            y <= range.y1;
-            y++
-        ) {
-
-            promises.push(
-
-                loadVectorTile(
-
-                    field,
-
-                    z,
-
-                    x,
-
-                    y,
-
-                    run
-
-                )
-
-            );
-
-        }
-
-    }
-
-
-    await Promise.all(
-        promises
-    );
-
+async function preloadVectorTiles(field, z, run = currentRun) {
+    const range = getVisibleTileRange(z, 1);
+    const ordered = priorityOrderedTileCoordinates(z, range);
+    await Promise.all(ordered.map(tile =>
+        loadVectorTile(field, z, tile.x, tile.y, run,
+            run !== currentRun ? 7 : (tile.onScreen ? 0 : 3))));
 }
 
 
@@ -5216,61 +4832,12 @@ async function preloadVectorTiles(
    PRELOAD CONTOUR TILES
    ========================================================================================= */
 
-async function preloadContourTiles(
-    field,
-    z,
-    run = currentRun
-) {
-
-    const range =
-        getVisibleTileRange(
-            z,
-            2
-        );
-
-
-    const promises = [];
-
-
-    for (
-        let x = range.x0;
-        x <= range.x1;
-        x++
-    ) {
-
-        for (
-            let y = range.y0;
-            y <= range.y1;
-            y++
-        ) {
-
-            promises.push(
-
-                loadContourTile(
-
-                    field,
-
-                    z,
-
-                    x,
-
-                    y,
-
-                    run
-
-                )
-
-            );
-
-        }
-
-    }
-
-
-    await Promise.all(
-        promises
-    );
-
+async function preloadContourTiles(field, z, run = currentRun) {
+    const range = getVisibleTileRange(z, 1);
+    const ordered = priorityOrderedTileCoordinates(z, range);
+    await Promise.all(ordered.map(tile =>
+        loadContourTile(field, z, tile.x, tile.y, run,
+            run !== currentRun ? 7 : (tile.onScreen ? 0 : 3))));
 }
 
 
@@ -6823,10 +6390,90 @@ function getFieldColor(
 
 
 /* =========================================================================================
+   FAST FLAT-MAP NUMERICAL SAMPLING (DISPLAY ONLY)
+
+   The normal map is Web Mercator, bearing=0, pitch=0. MapLibre.unproject()
+   for every raster pixel is unnecessarily expensive. Convert screen pixels
+   directly to the existing binary-tile coordinate system instead. For any
+   rotated/pitched view, fall back to the original MapLibre-based sampler.
+
+   Encoding, nodata treatment, color decisions, data zooms and tiles are NOT
+   changed. The fast sampler handles wrapped tile-X and cross-tile edges.
+   ========================================================================================= */
+function getFlatMapTileCoordinates(width, height, dataZoom) {
+    if (Math.abs(map.getBearing()) > 0.000001 || Math.abs(map.getPitch()) > 0.000001) return null;
+    const mapCanvas = map.getCanvas();
+    if (Math.abs(mapCanvas.clientWidth - width) > 2 ||
+        Math.abs(mapCanvas.clientHeight - height) > 2) return null;
+    const center = map.getCenter();
+    const step = Math.pow(2, dataZoom - map.getZoom());
+    const startX = lonToTileX(center.lng, dataZoom) * TILE_SIZE - 0.5 * width * step;
+    const startY = latToTileY(center.lat, dataZoom) * TILE_SIZE - 0.5 * height * step;
+    // Confirm the fast camera mapping against MapLibre once per render.
+    // This also protects future site changes (nonstandard camera projections).
+    const checkX = width * 0.73;
+    const checkY = height * 0.37;
+    const checkLL = map.unproject([checkX, checkY]);
+    const referenceX = lonToTileX(checkLL.lng, dataZoom) * TILE_SIZE;
+    const referenceY = latToTileY(checkLL.lat, dataZoom) * TILE_SIZE;
+    const predictedX = startX + checkX * step;
+    const predictedY = startY + checkY * step;
+    const wrap = TILE_SIZE * (2 ** dataZoom);
+    const dx = Math.abs(((referenceX - predictedX + wrap / 2) % wrap + wrap) % wrap - wrap / 2);
+    if (dx > 0.05 || Math.abs(referenceY - predictedY) > 0.05) return null;
+    return { startX, startY, step };
+}
+
+function sampleScalarGlobalPixelsFast(field, z, gx, gy, encoding, contour = false) {
+    const worldPixels = TILE_SIZE * (2 ** z);
+    const iy = Math.floor(gy);
+    if (iy < 0 || iy + 1 >= worldPixels) return null;
+    const rawX = Math.floor(gx);
+    const ix = ((rawX % worldPixels) + worldPixels) % worldPixels;
+    const tx = Math.floor(ix / TILE_SIZE);
+    const ty = Math.floor(iy / TILE_SIZE);
+    const px = ix - tx * TILE_SIZE;
+    const py = iy - ty * TILE_SIZE;
+    const fx = gx - rawX;
+    const fy = gy - iy;
+    const tile = contour ? getCachedContourTile(field, z, tx, ty)
+                         : getCachedScalarTile(field, z, tx, ty);
+    if (!tile) return null;
+
+    let a, b, c, d;
+    if (px < TILE_SIZE - 1 && py < TILE_SIZE - 1) {
+        const i = py * TILE_SIZE + px;
+        a = tile[i]; b = tile[i + 1];
+        c = tile[i + TILE_SIZE]; d = tile[i + TILE_SIZE + 1];
+    } else {
+        // Crossing a tile boundary is rare; use the original correct sampler.
+        // It handles both x wrapping and missing neighbor tiles.
+        const a0 = getRawScalarPixel(field, z, rawX, iy, contour);
+        const b0 = getRawScalarPixel(field, z, rawX + 1, iy, contour);
+        const c0 = getRawScalarPixel(field, z, rawX, iy + 1, contour);
+        const d0 = getRawScalarPixel(field, z, rawX + 1, iy + 1, contour);
+        if (a0 === null || b0 === null || c0 === null || d0 === null) return null;
+        return ((a0 * (1 - fx) + b0 * fx) * (1 - fy)) +
+               ((c0 * (1 - fx) + d0 * fx) * fy);
+    }
+
+    if (a === encoding.nodata || b === encoding.nodata ||
+        c === encoding.nodata || d === encoding.nodata ||
+        a === SCALAR_NODATA || b === SCALAR_NODATA ||
+        c === SCALAR_NODATA || d === SCALAR_NODATA) return null;
+    // Interpolation and affine decoding commute; numerically equivalent to
+    // the original per-neighbor decode (within floating-point rounding).
+    const top = a * (1 - fx) + b * fx;
+    const bottom = c * (1 - fx) + d * fx;
+    return (top * (1 - fy) + bottom * fy) * encoding.scale + encoding.offset;
+}
+
+/* =========================================================================================
    WEATHER RENDERER
    ========================================================================================= */
 
 async function renderWeather() {
+    const perfStart = __MP_PARAMS.get("perf") === "1" ? performance.now() : 0;
 
     const generation =
         ++scalarRenderGeneration;
@@ -6883,6 +6530,8 @@ async function renderWeather() {
         z
 
     );
+
+    const tilesReadyAt = perfStart ? performance.now() : 0;
 
 
     if (
@@ -6994,6 +6643,9 @@ async function renderWeather() {
         image.data;
 
 
+    const fastMapping = getFlatMapTileCoordinates(width, height, z);
+    const fastEncoding = getEncoding(fieldMetadata[activeField]);
+
     let pixelIndex =
         0;
 
@@ -7024,30 +6676,16 @@ async function renderWeather() {
                 renderScale;
 
 
-            const lngLat =
-                map.unproject([
-
-                    screenX,
-
-                    screenY
-
-                ]);
-
-
-            const value =
-                sampleScalar(
-
-                    activeField,
-
-                    lngLat.lng,
-
-                    lngLat.lat,
-
-                    z,
-
-                    false
-
-                );
+            const value = fastMapping
+                ? sampleScalarGlobalPixelsFast(
+                    activeField, z,
+                    fastMapping.startX + screenX * fastMapping.step,
+                    fastMapping.startY + screenY * fastMapping.step,
+                    fastEncoding, false)
+                : (() => {
+                    const ll = map.unproject([screenX, screenY]);
+                    return sampleScalar(activeField, ll.lng, ll.lat, z, false);
+                })();
 
 
             const color =
@@ -7198,6 +6836,12 @@ async function renderWeather() {
         height
 
     );
+
+    if (perfStart) {
+        console.info(`[SPCOA performance] ${activeField}: tiles=${(tilesReadyAt - perfStart).toFixed(0)}ms, ` +
+            `fill=${(performance.now() - tilesReadyAt).toFixed(0)}ms, ` +
+            `fast=${Boolean(fastMapping)}, decodedCache=${(numericalCacheBytes / 1048576).toFixed(1)}MiB`);
+    }
 
 }
 /* =========================================================================================
@@ -11551,13 +11195,16 @@ async function preloadCursorNeighborhood(kind, field, z, tileX, tileY) {
     for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
             if (kind === "scalar") {
-                jobs.push(loadScalarTile(field, z, tileX + dx, tileY + dy));
+                jobs.push(loadScalarTile(field, z, tileX + dx, tileY + dy,
+                    currentRun, dx === 0 && dy === 0 ? -2 : 1));
             }
             else if (kind === "vector") {
-                jobs.push(loadVectorTile(field, z, tileX + dx, tileY + dy));
+                jobs.push(loadVectorTile(field, z, tileX + dx, tileY + dy,
+                    currentRun, dx === 0 && dy === 0 ? -2 : 1));
             }
             else if (kind === "contour") {
-                jobs.push(loadContourTile(field, z, tileX + dx, tileY + dy));
+                jobs.push(loadContourTile(field, z, tileX + dx, tileY + dy,
+                    currentRun, dx === 0 && dy === 0 ? -2 : 1));
             }
         }
     }
@@ -12609,11 +12256,7 @@ async function initialize() {
          * The latest run may have changed since the previous page load.
          * Start with clean numerical caches.
          */
-        scalarTileCache.clear();
-
-        vectorTileCache.clear();
-
-        contourTileCache.clear();
+        resetNumericalTileCaches();
 
 
         /*
@@ -12810,7 +12453,7 @@ async function initialize() {
         if (statusElement) {
 
             statusElement.textContent =
-                "Initialization failed";
+                `Initialization failed: ${error.message || "check network connection"}`;
 
         }
 
@@ -13743,6 +13386,9 @@ requestAnimationFrame(renderAnnotations);
 
 /* Timeline manifest refresh is intentionally lightweight; tiles remain demand-loaded. */
 setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && currentRun) refreshAvailableTimes();
+});
 
 /* =========================================================================================
    MULTI-PANEL CHILD BRIDGE
