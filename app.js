@@ -372,6 +372,14 @@ if (!__MP_CHILD) {
         function syncHostFromActiveChild() {
             const d = childDoc();
             if (!d) return;
+            // CWA options are fetched within each child panel. Mirror the populated
+            // office list into the visible host sidebar (otherwise only All CWAs exists).
+            const hostCwa = document.getElementById("cwa-selector");
+            const childCwa = d.getElementById("cwa-selector");
+            if (hostCwa && childCwa && childCwa.options.length) {
+                hostCwa.replaceChildren(...Array.from(childCwa.options, o => new Option(o.textContent, o.value)));
+                hostCwa.value = childCwa.value || "ALL";
+            }
             document.querySelectorAll("#sidebar input[id], #sidebar select[id], #drawing-toolbar input[id], #timeline-bar input[id], #timeline-bar select[id]").forEach(host => {
                 if (host.id === "layout-select" || host.id === "parameter-scope" || host.id === "drawing-scope") return;
                 const child = d.getElementById(host.id);
@@ -417,6 +425,13 @@ if (!__MP_CHILD) {
         layoutSelect.addEventListener("change", () => applyLayout(layoutSelect.value));
 
         sidebar.addEventListener("click", event => {
+            const clearButton = event.target.closest("button#clear-fill, button#clear-contours");
+            if (clearButton) {
+                event.preventDefault();
+                for (const i of parameterTargets()) clickChildById(clearButton.id, i);
+                setTimeout(syncHostFromActiveChild, 80);
+                return;
+            }
             const row = event.target.closest(".field-choice");
             if (row) {
                 for (const i of parameterTargets()) clickChildField(row.dataset.field, i);
@@ -1328,12 +1343,20 @@ const RELATIVE_VORTICITY_COLORS = [
     "#fd933f","#fd8239","#fc6c33","#fc572c","#f74327","#ed3022","#e51e1d","#d9131f","#cb0a22","#be0126","#aa0026","#950026","#800026"
 ];
 
-/* Discrete Unidata-inspired -2 div(Q) palette; transparent -5 to +5. */
-const QDIV_BOUNDS = [-30,-25,-20,-15,-10,-5,5,10,15,20,25,30];
+/* Q-vector forcing (-2 div Q, x10^-18): -50 to +50 in 5-unit bins.
+ * The -5 to +5 neutral interval is transparent; strongest colors begin at +/-50.
+ * This updates the color *display*, not the physically encoded tile values.
+ */
+const QDIV_BOUNDS = [
+    -50,-45,-40,-35,-30,-25,-20,-15,-10,-5,
+      5, 10, 15, 20, 25, 30, 35, 40, 45, 50
+];
 const QDIV_COLORS = [
-    "#1500ff", "#4034ff", "#7168ff", "#a39dff", "#d4d1ff",
+    "#1500ff", "#3020ff", "#4034ff", "#5a50ff", "#7168ff",
+    "#8981ff", "#a39dff", "#bdb8ff", "#d4d1ff",
     "rgba(255,255,255,0)",
-    "#ffd0d0", "#ffa2a2", "#ff7777", "#ff4444", "#ff1010"
+    "#ffd0d0", "#ffbaba", "#ffa2a2", "#ff8e8e", "#ff7777",
+    "#ff6060", "#ff4444", "#ff2929", "#ff1010"
 ];
 function getQDivColor(value) {
     // The scalar canvas renderer requires an {r, g, b} object, not a CSS string.
@@ -2076,7 +2099,7 @@ let citiesEnabled = false;
 // County outlines are visible by default and can be toggled under Map Layers.
 let countiesEnabled = true;
 
-let cwaBordersEnabled = false;
+let cwaBordersEnabled = true;
 
 let cwaBorderColor = "#6f42c1";
 
@@ -2486,7 +2509,7 @@ function ensureCwaBorderControls() {
     cwaBordersToggle = document.createElement("input");
     cwaBordersToggle.type = "checkbox";
     cwaBordersToggle.id = "cwa-borders-toggle";
-    cwaBordersToggle.checked = false;
+    cwaBordersToggle.checked = true;
 
     const text = document.createElement("span");
     text.textContent = "CWA Borders";
@@ -3631,6 +3654,11 @@ function transformCanvasToCurrentCamera(
 
 function transformNumericalCanvases() {
 
+    // The holdover canvases remain attached to the map if the user resumes panning.
+    for (const ghost of numericalHoldovers) {
+        transformCanvasToCurrentCamera(ghost);
+    }
+
     transformCanvasToCurrentCamera(
         weatherCanvas
     );
@@ -3690,6 +3718,52 @@ function resetNumericalCanvasTransforms() {
 
 }
 
+
+/* =========================================================================================
+   KEEP-PREVIOUS-FRAME REDRAW
+
+   Existing numerical renderers clear visible canvases before awaiting tiles.
+   During a camera redraw, put a frozen copy above each numerical canvas so
+   the previous image stays visible until ALL new canvases are ready.
+   These snapshots are display-only; the original binary tiles, resolution,
+   map geography, export behavior, and product sampling are unchanged.
+   ========================================================================================= */
+let numericalHoldovers = [];
+let numericalHoldoverId = 0;
+
+function beginNumericalHoldover() {
+    // An in-flight redraw might still be active; reuse its visible snapshots.
+    if (numericalHoldovers.length) return ++numericalHoldoverId;
+
+    const sources = [weatherCanvas, vectorCanvas, contourCanvas, contourLabelCanvas];
+    for (const source of sources) {
+        if (!source || !source.width || !source.height) continue;
+        const ghost = document.createElement("canvas");
+        ghost.width = source.width;
+        ghost.height = source.height;
+        ghost.className = "numerical-frame-holdover";
+        ghost.style.position = "absolute";
+        ghost.style.left = "0";
+        ghost.style.top = "0";
+        ghost.style.width = source.style.width || "100%";
+        ghost.style.height = source.style.height || "100%";
+        ghost.style.pointerEvents = "none";
+        ghost.style.zIndex = window.getComputedStyle(source).zIndex;
+        ghost.style.transformOrigin = source.style.transformOrigin || "0 0";
+        ghost.style.transform = source.style.transform || "none";
+        ghost.getContext("2d").drawImage(source, 0, 0);
+        // Same stacking layer, later DOM order: screenshot overlays the cleared canvas.
+        source.insertAdjacentElement("afterend", ghost);
+        numericalHoldovers.push(ghost);
+    }
+    return ++numericalHoldoverId;
+}
+
+function finishNumericalHoldover(token) {
+    if (token !== numericalHoldoverId) return;
+    for (const ghost of numericalHoldovers) ghost.remove();
+    numericalHoldovers = [];
+}
 
 /* =========================================================================================
    FETCH JSON
@@ -9968,7 +10042,7 @@ async function loadGeography() {
         else {
 
             console.warn(
-                "Unable to load data/cwa_boundaries.geojson"
+                "CWA Borders enabled but data/cwa_boundaries.geojson returned HTTP " + cwaResponse.status
             );
 
         }
@@ -10649,89 +10723,10 @@ function renderGeography() {
 
 
     /* -------------------------------------------------------------------------------------
-       CWA BORDERS
-
-       Draw order is intentional:
-       counties (when enabled) -> CWA borders -> states -> cities.
-       ------------------------------------------------------------------------------------- */
-
-    if (cwaBordersEnabled) {
-
-        geographyCtx.beginPath();
-
-        geographyCtx.strokeStyle =
-            cwaBorderColor;
-
-        geographyCtx.lineWidth =
-            cwaBorderWidth;
-
-        geographyCtx.lineJoin =
-            "round";
-
-        geographyCtx.lineCap =
-            "round";
-
-        for (
-            const feature
-            of
-            cwaFeatures
-        ) {
-
-            const properties =
-                feature.properties || {};
-
-            const featureCwa = String(
-                properties.CWA || properties.WFO || ""
-            ).trim().toUpperCase();
-
-            if (
-                selectedCwa !== "ALL" &&
-                featureCwa !== selectedCwa
-            ) {
-                continue;
-            }
-
-            drawGeoJSONLine(
-
-                feature.geometry,
-
-                geographyCtx
-
-            );
-
-        }
-
-        geographyCtx.stroke();
-
-    }
-
-
-    /* -------------------------------------------------------------------------------------
        STATES
 
-       State borders are the top boundary layer. When CWA borders are enabled, first
-       knock out the CWA stroke directly beneath state lines, then draw the normal
-       black state outline. This prevents a thick CWA line from showing around the
-       sides of a state border while keeping the normal 1.75 px state styling.
+       State borders are drawn above counties and BELOW CWA borders.
        ------------------------------------------------------------------------------------- */
-
-    if (cwaBordersEnabled && cwaFeatures.length) {
-
-        geographyCtx.save();
-        geographyCtx.globalCompositeOperation = "destination-out";
-        geographyCtx.beginPath();
-        geographyCtx.strokeStyle = "rgba(0,0,0,1)";
-        geographyCtx.lineWidth = Math.max(2.75, cwaBorderWidth + 1.5);
-        geographyCtx.lineJoin = "round";
-        geographyCtx.lineCap = "round";
-
-        for (const feature of stateFeatures) {
-            drawGeoJSONLine(feature.geometry, geographyCtx);
-        }
-
-        geographyCtx.stroke();
-        geographyCtx.restore();
-    }
 
     geographyCtx.beginPath();
 
@@ -10744,23 +10739,54 @@ function renderGeography() {
     geographyCtx.lineJoin = "round";
     geographyCtx.lineCap = "round";
 
-    for (
-        const feature
-        of
-        stateFeatures
-    ) {
-
-        drawGeoJSONLine(
-
-            feature.geometry,
-
-            geographyCtx
-
-        );
-
+    for (const feature of stateFeatures) {
+        drawGeoJSONLine(feature.geometry, geographyCtx);
     }
 
     geographyCtx.stroke();
+
+
+    /* -------------------------------------------------------------------------------------
+       CWA BORDERS — TOP GEOGRAPHIC BOUNDARY LAYER
+
+       Draw order: counties -> states -> CWA borders -> cities.
+       Selected office, custom color, line width, and toggle are unchanged.
+       Do not erase underlying state borders: CWA lines must remain visible
+       on top of both state and county boundaries.
+       ------------------------------------------------------------------------------------- */
+
+    if (cwaBordersEnabled) {
+
+        geographyCtx.beginPath();
+
+        geographyCtx.strokeStyle =
+            cwaBorderColor;
+
+        geographyCtx.lineWidth =
+            cwaBorderWidth;
+
+        geographyCtx.lineJoin = "round";
+        geographyCtx.lineCap = "round";
+
+        for (const feature of cwaFeatures) {
+
+            const properties = feature.properties || {};
+            const featureCwa = String(
+                properties.CWA || properties.WFO || ""
+            ).trim().toUpperCase();
+
+            if (
+                selectedCwa !== "ALL" &&
+                featureCwa !== selectedCwa
+            ) {
+                continue;
+            }
+
+            drawGeoJSONLine(feature.geometry, geographyCtx);
+        }
+
+        geographyCtx.stroke();
+    }
 
 
     geographyCtx.restore();
@@ -11133,7 +11159,7 @@ function updateLegend() {
 
     if (field.type === "q_vector_divergence") {
         drawColorLegend(QDIV_COLORS);
-        renderLegendLabels([-30,-20,-10,-5,5,10,20,30], QDIV_BOUNDS);
+        renderLegendLabels([-50,-40,-30,-20,-10,-5,5,10,20,30,40,50], QDIV_BOUNDS);
     }
 
     /* CIN: discrete bins matching the numerical tile values. */
@@ -11902,25 +11928,20 @@ map.on(
                      */
                     invalidateNumericalRenders();
 
-
+                    const holdover = beginNumericalHoldover();
                     resetNumericalCanvasTransforms();
 
-
-                    await Promise.all([
-
-                        renderWeather(),
-
-                        renderVectors(),
-
-                        renderContours()
-
-                    ]);
-
-
-                    renderGeography();
-
-
-                    captureCanvasCamera();
+                    try {
+                        await Promise.all([
+                            renderWeather(),
+                            renderVectors(),
+                            renderContours()
+                        ]);
+                        renderGeography();
+                        captureCanvasCamera();
+                    } finally {
+                        finishNumericalHoldover(holdover);
+                    }
 
                 },
 
@@ -11990,6 +12011,59 @@ map.on(
 
 );
 
+
+/* =========================================================================================
+   INDEPENDENT CLEAR BUTTONS: preserve unrelated layers.
+   ========================================================================================= */
+const clearFillButton = document.getElementById("clear-fill");
+const clearContoursButton = document.getElementById("clear-contours");
+
+if (clearFillButton) {
+    clearFillButton.addEventListener("click", async () => {
+        activeField = "none";
+        if (fieldSelect) fieldSelect.value = "none";
+        document.querySelectorAll("#sidebar .field-choice.active")
+            .forEach(button => button.classList.remove("active"));
+        scalarRenderGeneration++;
+        cursorGeneration++;
+        clearCursor();
+        updateLegend();
+        resetNumericalCanvasTransforms();
+        await renderWeather();
+        renderGeography();
+        captureCanvasCamera();
+        updateActiveLayersStrip();
+    });
+}
+
+if (clearContoursButton) {
+    clearContoursButton.addEventListener("click", async () => {
+        const contourKeys = new Set(["mslp", "dcape", "warmCloudDepth"]);
+        const configs = [
+            ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
+            ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
+            ...FRONTOGENESIS_CONTOUR_OVERLAYS,
+            ...THERMODYNAMIC_CONTOUR_OVERLAYS
+        ];
+        for (const config of configs) contourKeys.add(config.stateKey);
+        for (const key of contourKeys) activeOverlays[key] = false;
+
+        for (const id of ["mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle"]) {
+            const input = document.getElementById(id);
+            if (input) input.checked = false;
+        }
+        for (const config of configs) {
+            const input = document.getElementById(config.toggleId);
+            if (input) input.checked = false;
+        }
+        contourRenderGeneration++;
+        resetNumericalCanvasTransforms();
+        await renderContours();
+        renderGeography();
+        captureCanvasCamera();
+        updateActiveLayersStrip();
+    });
+}
 
 /* =========================================================================================
    FILLED FIELD CHANGE
@@ -13893,5 +13967,6 @@ setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
