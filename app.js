@@ -4,6 +4,25 @@
 const __MP_PARAMS = new URLSearchParams(window.location.search);
 const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 
+/* Personal map starting extent. Saved locally in each visitor's browser. */
+const SPCOA_START_VIEW_KEY = "spcoa_start_view_v1";
+function validateSpcoaStartView(value) {
+    if (!value || !Array.isArray(value.center) || value.center.length !== 2) return null;
+    const lng = Number(value.center[0]);
+    const lat = Number(value.center[1]);
+    const zoom = Number(value.zoom);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat) || !Number.isFinite(zoom) ||
+        Math.abs(lng) > 180 || Math.abs(lat) > 85 || zoom < 3 || zoom > 9) return null;
+    return {center: [lng, lat], zoom};
+}
+function readSpcoaStartView() {
+    try {
+        return validateSpcoaStartView(JSON.parse(localStorage.getItem(SPCOA_START_VIEW_KEY)));
+    } catch (_) {
+        return null; // Private browsing or unavailable localStorage: use normal sector.
+    }
+}
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -32,6 +51,67 @@ if (!__MP_CHILD) {
         let sharedDrawingTool = "pan";
         const parameterScope = document.getElementById("parameter-scope");
         const drawingScope = document.getElementById("drawing-scope");
+
+        /* User-specific map startup view, controlled from the visible host sidebar. */
+        (function installSavedStartViewButtons() {
+            const sectorSelect = document.getElementById("sector-select");
+            const sectorCard = sectorSelect && sectorSelect.closest(".sector");
+            if (!sectorCard || sectorCard.querySelector("#start-view-actions")) return;
+            const actions = document.createElement("div");
+            actions.id = "start-view-actions";
+            actions.style.cssText = "display:flex;gap:6px;margin-top:9px;";
+            const save = document.createElement("button");
+            save.type = "button";
+            save.id = "save-start-view";
+            save.textContent = "Save Start View";
+            const reset = document.createElement("button");
+            reset.type = "button";
+            reset.id = "reset-start-view";
+            reset.textContent = "Reset";
+            for (const button of [save, reset]) {
+                button.style.cssText = "flex:1;min-width:0;border:1px solid #52738b;border-radius:4px;" +
+                    "background:#203e53;color:#eef6fb;padding:7px 5px;font:600 11px Inter,Arial,sans-serif;cursor:pointer;";
+            }
+            reset.style.flex = "0 0 58px";
+            const note = document.createElement("div");
+            note.id = "saved-start-view-note";
+            note.style.cssText = "margin-top:6px;color:#9fb7c9;font-size:10.5px;line-height:1.3;";
+            function updateNote(message) {
+                note.textContent = message || (readSpcoaStartView()
+                    ? "Custom starting view saved on this browser."
+                    : "Default: selected sector (LBF CWA). ");
+            }
+            save.addEventListener("click", () => {
+                const childWindow = panels[activePanel]?.frame?.contentWindow;
+                let camera = null;
+                try {
+                    camera = childWindow && typeof childWindow.__mpGetCamera === "function"
+                        ? childWindow.__mpGetCamera() : null;
+                } catch (_) {}
+                const valid = validateSpcoaStartView(camera);
+                if (!valid) {
+                    updateNote("Map still loading. Try again once it appears.");
+                    return;
+                }
+                try {
+                    localStorage.setItem(SPCOA_START_VIEW_KEY, JSON.stringify(valid));
+                    updateNote("Saved! This will be your starting map view on this browser.");
+                } catch (_) {
+                    updateNote("Browser storage unavailable; cannot save this preference.");
+                }
+            });
+            reset.addEventListener("click", () => {
+                try {
+                    localStorage.removeItem(SPCOA_START_VIEW_KEY);
+                    updateNote("Starting view reset. The default sector loads next visit.");
+                } catch (_) {
+                    updateNote("Browser storage unavailable.");
+                }
+            });
+            actions.append(save, reset);
+            sectorCard.append(actions, note);
+            updateNote();
+        })();
         const sharedCanvas = document.createElement("canvas");
         sharedCanvas.id = "mp-shared-annotation-canvas";
         panelGrid.appendChild(sharedCanvas);
@@ -2284,6 +2364,7 @@ let cursorGeneration = 0;
 let capturedCamera = null;
 
 let moveEndTimer = null;
+let startViewReadyForMovement = false;
 
 
 /* =========================================================================================
@@ -3699,28 +3780,32 @@ function resizeAllCanvases() {
    CAMERA / CANVAS TRACKING
    ========================================================================================= */
 
-function captureCanvasCamera() {
-
-    const bounds =
-        map.getBounds();
-
-
-    capturedCamera = {
-
-        west:
-            bounds.getWest(),
-
-        east:
-            bounds.getEast(),
-
-        north:
-            bounds.getNorth(),
-
-        south:
-            bounds.getSouth()
-
+function getNumericalCameraSnapshot() {
+    const b = map.getBounds();
+    const c = map.getCenter();
+    return {
+        west: b.getWest(), east: b.getEast(),
+        north: b.getNorth(), south: b.getSouth(),
+        lng: c.lng, lat: c.lat, zoom: map.getZoom(),
+        width: map.getCanvas().clientWidth, height: map.getCanvas().clientHeight
     };
+}
 
+function matchesNumericalCamera(snapshot) {
+    if (!snapshot) return false;
+    const current = map.getCenter();
+    const longitudeDifference = ((current.lng - snapshot.lng + 540) % 360) - 180;
+    return Math.abs(longitudeDifference) < 0.000001 &&
+        Math.abs(current.lat - snapshot.lat) < 0.000001 &&
+        Math.abs(map.getZoom() - snapshot.zoom) < 0.000001 &&
+        Math.abs(map.getCanvas().clientWidth - snapshot.width) <= 1 &&
+        Math.abs(map.getCanvas().clientHeight - snapshot.height) <= 1;
+}
+
+function captureCanvasCamera(snapshot = getNumericalCameraSnapshot()) {
+    // The pixel image must be associated with the camera at which it was drawn,
+    // never the camera that happened to be active after an awaited tile download.
+    if (matchesNumericalCamera(snapshot)) capturedCamera = snapshot;
 }
 
 
@@ -11446,6 +11531,7 @@ function invalidateNumericalRenders() {
    ========================================================================================= */
 
 async function renderAll() {
+    const renderingCamera = getNumericalCameraSnapshot();
 
     /*
      * Any camera CSS transform from an active pan/zoom must be removed
@@ -11490,8 +11576,7 @@ async function renderAll() {
      */
     renderGeography();
 
-
-    captureCanvasCamera();
+    captureCanvasCamera(renderingCamera);
 
 }
 
@@ -11505,14 +11590,15 @@ map.on(
     "movestart",
 
     () => {
-
-        /*
-         * Capture the exact camera represented by the existing numerical
-         * canvases. During movement those canvases will be transformed to
-         * follow the live MapLibre camera.
-         */
-        captureCanvasCamera();
-
+        // Freeze the known-good numerical image before the camera changes.
+        // This prevents an older asynchronous render from replacing the image
+        // in the middle of an active drag/zoom (causing a short geographic jump).
+        if (startViewReadyForMovement && capturedCamera) {
+            beginNumericalHoldover();
+            invalidateNumericalRenders();
+        }
+        // NEVER overwrite capturedCamera here: the image still belongs to
+        // the view at which it was actually drawn.
     }
 
 );
@@ -11554,7 +11640,7 @@ map.on(
     "moveend",
 
     () => {
-
+        if (!startViewReadyForMovement) return;
         clearTimeout(
             moveEndTimer
         );
@@ -11574,6 +11660,7 @@ map.on(
                      * the previous camera.
                      */
                     invalidateNumericalRenders();
+                    const renderingCamera = getNumericalCameraSnapshot();
 
                     const holdover = beginNumericalHoldover();
                     resetNumericalCanvasTransforms();
@@ -11585,9 +11672,14 @@ map.on(
                             renderContours()
                         ]);
                         renderGeography();
-                        captureCanvasCamera();
+                        captureCanvasCamera(renderingCamera);
                     } finally {
-                        finishNumericalHoldover(holdover);
+                        // If the map moved again while tiles were downloading,
+                        // retain the correctly positioned previous frame until
+                        // the NEW camera redraw finishes.
+                        if (matchesNumericalCamera(renderingCamera)) {
+                            finishNumericalHoldover(holdover);
+                        }
                     }
 
                 },
@@ -11678,7 +11770,7 @@ if (clearFillButton) {
         resetNumericalCanvasTransforms();
         await renderWeather();
         renderGeography();
-        captureCanvasCamera();
+        /* Retain camera of the last completed full numerical render. */
         updateActiveLayersStrip();
     });
 }
@@ -11707,7 +11799,7 @@ if (clearContoursButton) {
         resetNumericalCanvasTransforms();
         await renderContours();
         renderGeography();
-        captureCanvasCamera();
+        /* Retain camera of the last completed full numerical render. */
         updateActiveLayersStrip();
     });
 }
@@ -11775,7 +11867,7 @@ if (fieldSelect) {
             renderGeography();
 
 
-            captureCanvasCamera();
+            /* Retain camera of the last completed full numerical render. */
 
         }
 
@@ -11928,7 +12020,7 @@ for (const config of VECTOR_OVERLAY_CONFIG) {
                 vectorRenderGeneration++;
                 resetNumericalCanvasTransforms();
                 await renderVectors();
-                captureCanvasCamera();
+                /* Retain camera of the last completed full numerical render. */
             }
         );
     }
@@ -11951,7 +12043,7 @@ for (const config of VECTOR_OVERLAY_CONFIG) {
                     vectorRenderGeneration++;
                     resetNumericalCanvasTransforms();
                     await renderVectors();
-                    captureCanvasCamera();
+                    /* Retain camera of the last completed full numerical render. */
                 }
             }
         );
@@ -11993,7 +12085,7 @@ if (mslpToggle) {
             renderGeography();
 
 
-            captureCanvasCamera();
+            /* Retain camera of the last completed full numerical render. */
 
         }
 
@@ -12025,7 +12117,7 @@ if (dcapeToggle) {
 
             renderGeography();
 
-            captureCanvasCamera();
+            /* Retain camera of the last completed full numerical render. */
 
         }
 
@@ -12057,7 +12149,7 @@ if (warmCloudDepthToggle) {
 
             renderGeography();
 
-            captureCanvasCamera();
+            /* Retain camera of the last completed full numerical render. */
 
         }
 
@@ -12094,7 +12186,7 @@ for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
 
             renderGeography();
 
-            captureCanvasCamera();
+            /* Retain camera of the last completed full numerical render. */
         }
     );
 }
@@ -12112,7 +12204,7 @@ for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
         resetNumericalCanvasTransforms();
         await renderContours();
         renderGeography();
-        captureCanvasCamera();
+        /* Retain camera of the last completed full numerical render. */
         updateActiveLayersStrip();
     });
 }
@@ -12130,7 +12222,7 @@ for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
         resetNumericalCanvasTransforms();
         await renderContours();
         renderGeography();
-        captureCanvasCamera();
+        /* Retain camera of the last completed full numerical render. */
         updateActiveLayersStrip();
     });
 }
@@ -12164,7 +12256,7 @@ for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
 
             renderGeography();
 
-            captureCanvasCamera();
+            /* Retain camera of the last completed full numerical render. */
         }
     );
 }
@@ -12403,17 +12495,12 @@ async function initialize() {
                 : "lbf";
 
 
-        fitSector(
-
-            initialSector,
-
-            {
-
-                duration: 0
-
-            }
-
-        );
+        const personalStartView = readSpcoaStartView();
+        if (personalStartView) {
+            map.jumpTo(personalStartView);
+        } else {
+            fitSector(initialSector, {duration: 0});
+        }
 
 
         /*
@@ -12425,7 +12512,7 @@ async function initialize() {
             async () => {
 
                 await renderAll();
-
+                startViewReadyForMovement = true;
 
                 if (statusElement) {
 
@@ -13466,6 +13553,11 @@ document.addEventListener("visibilitychange", () => {
         const r = mapWrapper.getBoundingClientRect();
         return { width: r.width, height: r.height };
     };
+    window.__mpGetCamera = function() {
+        if (!startViewReadyForMovement || map.isMoving()) return null;
+        const c = map.getCenter();
+        return {center: [c.lng, c.lat], zoom: map.getZoom()};
+    };
 
     function sendAnnotationState() {
         const data = cloneAnnotationState();
@@ -13613,4 +13705,3 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
