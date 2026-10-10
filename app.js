@@ -10,6 +10,101 @@ const SPCOA_START_VIEW_KEY = "spcoa_start_view_v1"; // Preserve existing visitor
 const SPCOA_CUSTOM_DOMAINS_KEY = "spcoa_custom_domains_v1";
 // CWA border color is a browser preference, just like saved custom domains.
 const SPCOA_CWA_COLOR_KEY = "spcoa_cwa_border_color_v1";
+/* City-label preferences are browser-local, independent of saved map domains. */
+const SPCOA_CITY_CWA_KEY = "spcoa_city_area_filter_v1";
+const SPCOA_CITY_DENSITY_KEY = "spcoa_city_density_v1";
+const SPCOA_CITY_FOLLOW_BORDER = "FOLLOW_CWA";
+function readSpcoaCityFilter() {
+    try {
+        const value = localStorage.getItem(SPCOA_CITY_CWA_KEY) || "ALL";
+        return value === "ALL" || value === SPCOA_CITY_FOLLOW_BORDER || /^[A-Z0-9]{3,4}$/.test(value)
+            ? value : "ALL";
+    } catch (_) { return "ALL"; }
+}
+function readSpcoaCityDensity() {
+    try {
+        const raw = localStorage.getItem(SPCOA_CITY_DENSITY_KEY);
+        if (raw === null) return 50;
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 50;
+    } catch (_) { return 50; }
+}
+function saveSpcoaCitySetting(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch (_) {}
+}
+function spcoaCityDensityDescription(value) {
+    const n = Math.max(0, Math.min(100, Number(value) || 0));
+    return n <= 15 ? "Sparse" : n < 40 ? "Low" : n < 65 ? "Balanced" : n < 90 ? "High" : "Maximum";
+}
+function updateSpcoaDensityUi(root = document) {
+    const slider = root.getElementById("city-density");
+    const label = root.getElementById("city-density-label");
+    if (slider && label) label.textContent = `${spcoaCityDensityDescription(slider.value)} (${slider.value}%)`;
+}
+/* Add controls to both host sidebar and child sidebar: index.html stays unchanged. */
+function installSpcoaCityControls() {
+    const toggle = document.getElementById("cities-toggle");
+    const row = toggle?.closest("label");
+    if (!row || document.getElementById("spcoa-city-options")) return;
+
+    const panel = document.createElement("div");
+    panel.id = "spcoa-city-options";
+    panel.style.cssText = "margin:4px 0 9px 22px;padding:8px 8px 9px;" +
+        "border:1px solid #31526a;border-radius:6px;background:#10283a;" +
+        "display:flex;flex-direction:column;gap:7px;";
+    const labelCss = "font:600 11px Inter,Arial,sans-serif;color:#c7d9e6;";
+    const areaLabel = document.createElement("label");
+    areaLabel.htmlFor = "city-cwa-filter";
+    areaLabel.textContent = "City Area";
+    areaLabel.style.cssText = labelCss;
+    const area = document.createElement("select");
+    area.id = "city-cwa-filter";
+    area.title = "Filter city names by an NWS County Warning Area";
+    area.setAttribute("aria-label", "City label geographic area");
+    area.style.cssText = "width:100%;min-width:0;padding:6px;font-size:11px;";
+    for (const [value, description] of [
+        ["ALL", "All cities"],
+        [SPCOA_CITY_FOLLOW_BORDER, "Follow CWA Borders selection"]
+    ]) {
+        const option = document.createElement("option");
+        option.value = value; option.textContent = description;
+        area.appendChild(option);
+    }
+    const savedArea = readSpcoaCityFilter();
+    if (savedArea !== "ALL" && savedArea !== SPCOA_CITY_FOLLOW_BORDER) {
+        const option = document.createElement("option");
+        option.value = savedArea; option.textContent = savedArea;
+        option.dataset.spcoaCityOffice = "1";
+        area.appendChild(option);
+    }
+    area.value = savedArea;
+
+    const densityRow = document.createElement("div");
+    densityRow.style.cssText = "display:flex;justify-content:space-between;gap:5px;align-items:center;";
+    const densityText = document.createElement("label");
+    densityText.htmlFor = "city-density";
+    densityText.textContent = "City Density";
+    densityText.style.cssText = labelCss;
+    const densityValue = document.createElement("span");
+    densityValue.id = "city-density-label";
+    densityValue.style.cssText = "font:10px Inter,Arial,sans-serif;color:#d4e4ee;white-space:nowrap;";
+    densityRow.append(densityText, densityValue);
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.id = "city-density";
+    slider.min = "0"; slider.max = "100"; slider.step = "5";
+    slider.value = String(readSpcoaCityDensity());
+    slider.title = "Fewer or more town names at the same zoom level";
+    slider.setAttribute("aria-label", "City label density");
+    slider.style.cssText = "width:100%;margin:1px 0 0;accent-color:#55baf3;";
+    const count = document.createElement("span");
+    count.id = "city-count-label";
+    count.textContent = "";
+    count.style.cssText = "font:10px Inter,Arial,sans-serif;color:#96b3c4;";
+    panel.append(areaLabel, area, densityRow, slider, count);
+    row.insertAdjacentElement("afterend", panel);
+    updateSpcoaDensityUi();
+}
+
 function readSpcoaCwaBorderColor() {
     try {
         const saved = localStorage.getItem(SPCOA_CWA_COLOR_KEY);
@@ -111,6 +206,7 @@ if (!__MP_CHILD) {
         const mapWrapper = document.getElementById("map-wrapper");
         const layoutSelect = document.getElementById("layout-select");
         const sidebar = document.getElementById("sidebar");
+        installSpcoaCityControls();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
 
@@ -640,6 +736,17 @@ if (!__MP_CHILD) {
                 hostCwa.replaceChildren(...Array.from(childCwa.options, o => new Option(o.textContent, o.value)));
                 hostCwa.value = childCwa.value || "ALL";
             }
+            const hostCityArea = document.getElementById("city-cwa-filter");
+            const childCityArea = d.getElementById("city-cwa-filter");
+            if (hostCityArea && childCityArea) {
+                const sig = Array.from(childCityArea.options, o => `${o.value}:${o.textContent}`).join("|");
+                if (hostCityArea.__spcoaCityOptionSig !== sig) {
+                    hostCityArea.replaceChildren(...Array.from(childCityArea.options,
+                        o => new Option(o.textContent, o.value)));
+                    hostCityArea.__spcoaCityOptionSig = sig;
+                }
+                hostCityArea.value = childCityArea.value;
+            }
             // Update both option lists before copying selection from the active panel.
             refreshSpcoaSectorOptions(document.getElementById("sector-select"));
             refreshSpcoaSectorOptions(d.getElementById("sector-select"));
@@ -647,7 +754,8 @@ if (!__MP_CHILD) {
                 if (host.id === "layout-select" || host.id === "parameter-scope" || host.id === "drawing-scope") return;
                 const child = d.getElementById(host.id);
                 if (!child) return;
-                if (host.id === "cwa-border-color" && document.activeElement === host) return;
+                if ((host.id === "cwa-border-color" || host.id === "city-density") &&
+                    document.activeElement === host) return;
                 if (host.type === "checkbox" || host.type === "radio") host.checked = child.checked;
                 else host.value = child.value;
             });
@@ -663,10 +771,11 @@ if (!__MP_CHILD) {
             // Mirror run information and loading status from the active map panel.
             // These labels live in the host sidebar and otherwise remain stuck
             // at the HTML defaults ("Loading..." / "Initializing...").
-            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint"].forEach(id => {
+            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child) host.textContent = child.textContent;
             });
+            updateSpcoaDensityUi();
             const hs = document.getElementById("timeline-slider"), cs = d.getElementById("timeline-slider");
             if (hs && cs) { hs.min = cs.min; hs.max = cs.max; hs.value = cs.value; }
         }
@@ -722,9 +831,15 @@ if (!__MP_CHILD) {
         // Forward it immediately rather than letting the 350-ms host sync restore purple.
         sidebar.addEventListener("input", event => {
             const el = event.target;
-            if (!el || el.id !== "cwa-border-color") return;
-            saveSpcoaCwaBorderColor(el.value);
-            for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
+            if (!el) return;
+            if (el.id === "cwa-border-color") {
+                saveSpcoaCwaBorderColor(el.value);
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
+            } else if (el.id === "city-density") {
+                updateSpcoaDensityUi();
+                saveSpcoaCitySetting(SPCOA_CITY_DENSITY_KEY, el.value);
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
+            }
         });
 
         sidebar.addEventListener("change", event => {
@@ -735,6 +850,13 @@ if (!__MP_CHILD) {
             } else if (el.id === "cwa-border-color") {
                 saveSpcoaCwaBorderColor(el.value);
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
+            } else if (el.id === "city-density") {
+                updateSpcoaDensityUi();
+                saveSpcoaCitySetting(SPCOA_CITY_DENSITY_KEY, el.value);
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "change");
+            } else if (el.id === "city-cwa-filter") {
+                saveSpcoaCitySetting(SPCOA_CITY_CWA_KEY, el.value);
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "change");
             } else if (el.tagName === "SELECT" || (el.tagName === "INPUT" && el.type !== "checkbox")) {
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "change");
             }
@@ -2862,6 +2984,11 @@ window.addEventListener("storage", event => {
 
 const citiesToggle =
     document.getElementById("cities-toggle");
+installSpcoaCityControls();
+const cityCwaFilter = document.getElementById("city-cwa-filter");
+const cityDensitySlider = document.getElementById("city-density");
+let selectedCityCwa = readSpcoaCityFilter();
+let cityDensity = readSpcoaCityDensity();
 
 /*
  * Counties are injected into the existing Map Layers card so index.html
@@ -3085,6 +3212,22 @@ function populateCwaSelector() {
 
     selectedCwa = hasPrevious ? previousValue : "ALL";
     cwaSelector.value = selectedCwa;
+    populateCityCwaFilter(uniqueOffices);
+}
+
+function populateCityCwaFilter(offices) {
+    if (!cityCwaFilter) return;
+    const prev = selectedCityCwa;
+    cityCwaFilter.querySelectorAll('option[data-spcoa-city-office="1"]').forEach(o => o.remove());
+    for (const office of offices) {
+        const opt = document.createElement("option");
+        opt.dataset.spcoaCityOffice = "1";
+        opt.value = office.code;
+        opt.textContent = office.cityState ? `${office.code} — ${office.cityState}` : office.code;
+        cityCwaFilter.appendChild(opt);
+    }
+    cityCwaFilter.value = Array.from(cityCwaFilter.options).some(o => o.value === prev) ? prev : "ALL";
+    selectedCityCwa = cityCwaFilter.value;
 }
 
 ensureCwaBorderControls();
@@ -3861,6 +4004,87 @@ let countyFeatures = [];
 let stateFeatures = [];
 
 let cwaFeatures = [];
+
+/* Prepared CWA polygons: accurate point-in-polygon city filtering, including
+ * multi-part CWAs and holes. Independent of whether border lines are shown. */
+let cityCwaGeometryIndex = new Map();
+let cityCwaPointCache = new Map();
+function spcoaRingBounds(ring) {
+    let west = Infinity, east = -Infinity, south = Infinity, north = -Infinity;
+    for (const p of ring) {
+        if (!Array.isArray(p) || p.length < 2) continue;
+        const lon = Number(p[0]), lat = Number(p[1]);
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        west = Math.min(west, lon); east = Math.max(east, lon);
+        south = Math.min(south, lat); north = Math.max(north, lat);
+    }
+    return {west, east, south, north};
+}
+function spcoaPointInRing(lon, lat, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i], b = ring[j];
+        if (!a || !b) continue;
+        const xi = a[0], yi = a[1], xj = b[0], yj = b[1];
+        // Treat points exactly on a CWA border as belonging to the region.
+        const cross = (lon - xi) * (yj - yi) - (lat - yi) * (xj - xi);
+        if (Math.abs(cross) < 1e-9 && lon >= Math.min(xi, xj) - 1e-9 &&
+            lon <= Math.max(xi, xj) + 1e-9 && lat >= Math.min(yi, yj) - 1e-9 &&
+            lat <= Math.max(yi, yj) + 1e-9) return true;
+        if ((yi > lat) !== (yj > lat) &&
+            lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+}
+function rebuildCityCwaGeometryIndex() {
+    const index = new Map();
+    for (const feature of cwaFeatures) {
+        const p = feature.properties || {};
+        const code = String(p.CWA || p.WFO || "").trim().toUpperCase();
+        if (!code) continue;
+        const g = feature.geometry;
+        if (!g || !Array.isArray(g.coordinates)) continue;
+        const polygons = g.type === "Polygon" ? [g.coordinates] :
+            g.type === "MultiPolygon" ? g.coordinates : [];
+        for (const rings of polygons) {
+            if (!Array.isArray(rings) || !rings.length || !rings[0]?.length) continue;
+            const item = { rings, bounds: spcoaRingBounds(rings[0]) };
+            if (!index.has(code)) index.set(code, []);
+            index.get(code).push(item);
+        }
+    }
+    cityCwaGeometryIndex = index;
+    cityCwaPointCache = new Map();
+}
+function spcoaPointInCwa(lon, lat, cwaCode) {
+    const regions = cityCwaGeometryIndex.get(cwaCode);
+    if (!regions) return false;
+    for (const region of regions) {
+        const b = region.bounds;
+        if (lon < b.west || lon > b.east || lat < b.south || lat > b.north) continue;
+        if (!spcoaPointInRing(lon, lat, region.rings[0])) continue;
+        // A hole excludes the city unless it lies on the exterior boundary.
+        if (region.rings.slice(1).some(hole => spcoaPointInRing(lon, lat, hole))) continue;
+        return true;
+    }
+    return false;
+}
+function spcoaCityInsideCwa(feature, lon, lat, code) {
+    // Cache one polygon test per city/office so panning does not repeat it.
+    let officeCache = cityCwaPointCache.get(code);
+    if (!officeCache) {
+        officeCache = new WeakMap();
+        cityCwaPointCache.set(code, officeCache);
+    }
+    const old = officeCache.get(feature);
+    if (old !== undefined) return old;
+    const result = spcoaPointInCwa(lon, lat, code);
+    officeCache.set(feature, result);
+    return result;
+}
+function effectiveCityCwaFilter() {
+    return selectedCityCwa === SPCOA_CITY_FOLLOW_BORDER ? selectedCwa : selectedCityCwa;
+}
 
 let cityFeatures = [];
 
@@ -10045,7 +10269,7 @@ async function loadGeography() {
 
             cwaFeatures =
                 cwas.features || [];
-
+            rebuildCityCwaGeometryIndex();
             populateCwaSelector();
 
         }
@@ -10465,16 +10689,17 @@ function cityVisibleAtZoom(feature, zoom) {
     const key = getCityKey(feature);
     if (HIDDEN_CITY_KEYS.has(key)) return false;
 
-    // Closer to the AguaceroWX reference: many more modest-sized towns are
-    // eligible at regional zoom. Collision detection still prevents clutter.
+    // Density adjusts the zoom threshold, not the underlying city data.
+    // At 50%, preserve the established AguaceroWX-inspired visibility.
     const cityClass = getEffectiveCityClass(feature);
-    if (cityClass <= 1) return zoom >= 3.0;
-    if (cityClass === 2) return zoom >= 3.45;
-    if (cityClass === 3) return zoom >= 4.2;
-    if (cityClass === 4) return zoom >= 4.8;
-    if (cityClass === 5) return zoom >= 5.1;
-    if (cityClass === 6) return zoom >= 5.55;
-    return zoom >= 6.3;
+    const thresholds = [3.0, 3.0, 3.45, 4.2, 4.8, 5.1, 5.55, 6.3];
+    const normal = thresholds[Math.max(0, Math.min(7, Math.round(cityClass)))];
+    // At Sparse, delay smaller towns by as much as 2 zoom levels;
+    // at Maximum, show smaller towns up to 1.35 levels earlier.
+    const delta = cityDensity <= 50
+        ? (50 - cityDensity) / 50 * 2.0
+        : -(cityDensity - 50) / 50 * 1.35;
+    return zoom >= Math.max(3, normal + delta * (cityClass <= 2 ? 0.2 : 1));
 }
 
 function getCityPriority(feature) {
@@ -10558,7 +10783,16 @@ function getCityLabelBox(ctx, name, point) {
 function renderCities() {
     // Clear the separate city layer even when labels are switched off.
     prepareContext(cityLabelCanvas, cityLabelCtx);
-    if (!citiesEnabled || !cityFeatures.length) return;
+    const cityCountLabel = document.getElementById("city-count-label");
+    if (!citiesEnabled || !cityFeatures.length) {
+        if (cityCountLabel) cityCountLabel.textContent = citiesEnabled ? "No cities loaded" : "Cities are hidden";
+        return;
+    }
+    const cityAreaCode = effectiveCityCwaFilter();
+    if (cityAreaCode !== "ALL" && !cityCwaGeometryIndex.has(cityAreaCode)) {
+        if (cityCountLabel) cityCountLabel.textContent = `CWA ${cityAreaCode} unavailable`;
+        return;
+    }
 
     const zoom = map.getZoom();
     const rect = mapWrapper.getBoundingClientRect();
@@ -10586,6 +10820,7 @@ function renderCities() {
         // Most locations lie outside the view. Test coordinates before
         // calling map.project and before checking priority/classification.
         if (lon < west || lon > east || lat < south || lat > north) continue;
+        if (cityAreaCode !== "ALL" && !spcoaCityInsideCwa(feature, lon, lat, cityAreaCode)) continue;
         if (!cityVisibleAtZoom(feature, zoom)) continue;
 
         const name = getCityName(feature);
@@ -10605,7 +10840,13 @@ function renderCities() {
     // A candidate checks only the nearby accepted labels, not every label.
     const occupiedGrid = new Map();
     const cellSize = 64;
-    const padding = 1.5;
+    // Sparse spreads names farther apart; Maximum packs them more tightly.
+    const padding = Math.max(0.5, 1.5 + (50 - cityDensity) * 0.075);
+    // Bounds CPU and labeling in dense urban areas; scaled by screen area.
+    const maxLabels = Math.max(35, Math.round(
+        (rect.width * rect.height / 1000000) * (85 + cityDensity * 7)
+    ));
+    let labelsDrawn = 0;
     function cellsForBox(box) {
         return {
             left: Math.floor((box.left - padding) / cellSize),
@@ -10616,6 +10857,7 @@ function renderCities() {
     }
 
     for (const { feature, name, point } of candidates) {
+        if (labelsDrawn >= maxLabels) break;
         ctx.font = getCityFont(feature, zoom);
         const box = getCityLabelBox(ctx, name, point);
         const cells = cellsForBox(box);
@@ -10649,9 +10891,12 @@ function renderCities() {
         ctx.strokeText(name, point.x, point.y);
         ctx.fillStyle = "#ffffff";
         ctx.fillText(name, point.x, point.y);
+        labelsDrawn++;
     }
 
     ctx.restore();
+    if (cityCountLabel) cityCountLabel.textContent = `${labelsDrawn} city labels shown`;
+
 }
 
 /* =========================================================================================
@@ -12203,6 +12448,27 @@ if (citiesToggle) {
 
 }
 
+
+/* =========================================================================================
+   CITY AREA / DENSITY CONTROLS (independent of visible CWA border lines)
+   ========================================================================================= */
+if (cityCwaFilter) {
+    cityCwaFilter.addEventListener("change", event => {
+        selectedCityCwa = event.target.value || "ALL";
+        saveSpcoaCitySetting(SPCOA_CITY_CWA_KEY, selectedCityCwa);
+        renderCities();
+    });
+}
+if (cityDensitySlider) {
+    const applyDensity = event => {
+        cityDensity = Math.max(0, Math.min(100, Number(event.target.value) || 0));
+        saveSpcoaCitySetting(SPCOA_CITY_DENSITY_KEY, cityDensity);
+        updateSpcoaDensityUi();
+        renderCities();
+    };
+    cityDensitySlider.addEventListener("input", applyDensity);
+    cityDensitySlider.addEventListener("change", applyDensity);
+}
 
 /* =========================================================================================
    CWA BORDER CONTROLS
@@ -13995,3 +14261,4 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
