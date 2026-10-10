@@ -2690,6 +2690,29 @@ if (!contourLabelCanvas) {
 
 
 /* =========================================================================================
+   CITY LABEL CANVAS — COMPACT WHITE/DARK-HALO CITY NAMES
+   ========================================================================================= */
+
+// Keep city names separate from boundaries so white city text can sit over
+// dark wind barbs while state/CWA boundaries retain their original ordering.
+// This canvas is created from app.js so index.html does not need modifying.
+let cityLabelCanvas = document.getElementById("city-label-canvas");
+if (!cityLabelCanvas) {
+    cityLabelCanvas = document.createElement("canvas");
+    cityLabelCanvas.id = "city-label-canvas";
+    cityLabelCanvas.setAttribute("aria-hidden", "true");
+    mapWrapper.appendChild(cityLabelCanvas);
+}
+Object.assign(cityLabelCanvas.style, {
+    position: "absolute",
+    inset: "0",
+    width: "100%",
+    height: "100%",
+    pointerEvents: "none"
+});
+
+
+/* =========================================================================================
    CANVAS STACK
    ========================================================================================= */
 
@@ -2719,6 +2742,10 @@ contourCanvas.style.zIndex =
 geographyCanvas.style.zIndex =
     "5";
 
+// Same numeric z-index as vectors but later in the DOM: city names are above
+// barbs while annotationCanvas (z=8) and contour labels (z=9) stay above cities.
+cityLabelCanvas.style.zIndex = "7";
+
 // Draw all contour numbers (including heights and MSLP) above barbs,
 // CWA/state/county boundaries, cities, and map annotations.
 // Keep the legend (z=10) and cursor (z=16) above these labels.
@@ -2741,6 +2768,8 @@ const contourCtx =
 
 const geographyCtx =
     geographyCanvas.getContext("2d");
+
+const cityLabelCtx = cityLabelCanvas.getContext("2d");
 
 const contourLabelCtx =
     contourLabelCanvas.getContext("2d");
@@ -3835,6 +3864,47 @@ let cwaFeatures = [];
 
 let cityFeatures = [];
 
+// Spatial buckets let the city renderer scale to 30,000+ place names
+// without iterating over the entire CONUS every time the map pans.
+const CITY_GRID_STEP_DEGREES = 1;
+let citySpatialGrid = new Map();
+
+function rebuildCitySpatialGrid() {
+    const grid = new Map();
+    for (const feature of cityFeatures) {
+        const p = feature?.geometry;
+        if (!p || p.type !== "Point" || !Array.isArray(p.coordinates)) continue;
+        const [lon, lat] = p.coordinates;
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        const cell = `${Math.floor(lon / CITY_GRID_STEP_DEGREES)}:${Math.floor(lat / CITY_GRID_STEP_DEGREES)}`;
+        let bucket = grid.get(cell);
+        if (!bucket) { bucket = []; grid.set(cell, bucket); }
+        bucket.push(feature);
+    }
+    citySpatialGrid = grid;
+}
+
+function cityFeaturesNearView(west, east, south, north) {
+    if (!citySpatialGrid.size) return cityFeatures;
+    // The western-hemisphere maps don't cross the antimeridian, but fall back
+    // for unusual camera extents instead of incorrectly dropping labels.
+    if (!(east >= west && north >= south)) return cityFeatures;
+    const x0 = Math.floor(west / CITY_GRID_STEP_DEGREES);
+    const x1 = Math.floor(east / CITY_GRID_STEP_DEGREES);
+    const y0 = Math.floor(south / CITY_GRID_STEP_DEGREES);
+    const y1 = Math.floor(north / CITY_GRID_STEP_DEGREES);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 2500) return cityFeatures;
+    const result = [];
+    for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+            const bucket = citySpatialGrid.get(`${x}:${y}`);
+            if (bucket) result.push(...bucket);
+        }
+    }
+    return result;
+}
+
+
 
 /* =========================================================================================
    CANVAS SIZE
@@ -3976,6 +4046,9 @@ function resizeAllCanvases() {
         geographyCanvas
     );
 
+    resizeCanvas(
+        cityLabelCanvas
+    );
 
     resizeCanvas(
         contourLabelCanvas
@@ -10020,6 +10093,9 @@ async function loadGeography() {
             cityFeatures =
                 cities.features || [];
 
+            rebuildCityClassificationCache();
+            rebuildCitySpatialGrid();
+
         }
         else {
 
@@ -10334,6 +10410,22 @@ const HIDDEN_CITY_KEYS = new Set([
 ]);
 
 
+// Build this index once after city data loads. A WeakMap memoizes resolved
+// classifications, reducing CPU usage while the map is dragged or zoomed.
+let cityClassCache = new WeakMap();
+const presentPrimaryCityNames = new Set();
+function rebuildCityClassificationCache() {
+    cityClassCache = new WeakMap();
+    presentPrimaryCityNames.clear();
+    for (const feature of cityFeatures) {
+        const name = getCityName(feature).trim().toLowerCase();
+        if (PRIMARY_SAME_NAME_CITY_KEYS.has(getCityKey(feature))) {
+            presentPrimaryCityNames.add(name);
+        }
+    }
+}
+
+
 function getCityKey(feature) {
     return (
         `${getCityName(feature).trim().toLowerCase()}|` +
@@ -10343,38 +10435,27 @@ function getCityKey(feature) {
 
 
 function getEffectiveCityClass(feature) {
+    const existing = cityClassCache.get(feature);
+    if (existing !== undefined) return existing;
+
     const key = getCityKey(feature);
-    const name = getCityName(feature).trim().toLowerCase();
     const sourceClass = getCityClass(feature);
+    const name = getCityName(feature).trim().toLowerCase();
+    let result = sourceClass;
 
     if (LBF_CITY_PRIORITY_OVERRIDES.has(key)) {
-        return LBF_CITY_PRIORITY_OVERRIDES.get(key);
-    }
-
-    /*
-     * If a name appears more than once in the dataset and one of those
-     * occurrences is a recognized primary city, demote the other same-name
-     * places.  This is what prevents Denver, Garden City, Minneapolis, etc.
-     * from being repeated everywhere at regional zoom.
-     */
-    const hasPrimaryVersion = cityFeatures.some(candidate => {
-        const candidateName = getCityName(candidate).trim().toLowerCase();
-        return (
-            candidateName === name &&
-            PRIMARY_SAME_NAME_CITY_KEYS.has(getCityKey(candidate))
-        );
-    });
-
-    if (
-        hasPrimaryVersion &&
+        result = LBF_CITY_PRIORITY_OVERRIDES.get(key);
+    } else if (
+        presentPrimaryCityNames.has(name) &&
         !PRIMARY_SAME_NAME_CITY_KEYS.has(key)
     ) {
-        return Math.max(sourceClass, 5);
+        // Don't promote obscure same-name places above the recognized city.
+        result = Math.max(sourceClass, 5);
     }
 
-    return sourceClass;
+    cityClassCache.set(feature, result);
+    return result;
 }
-
 
 /* =========================================================================================
    CITY VISIBILITY / PRIORITY
@@ -10382,25 +10463,19 @@ function getEffectiveCityClass(feature) {
 
 function cityVisibleAtZoom(feature, zoom) {
     const key = getCityKey(feature);
+    if (HIDDEN_CITY_KEYS.has(key)) return false;
 
-    if (HIDDEN_CITY_KEYS.has(key)) {
-        return false;
-    }
-
+    // Closer to the AguaceroWX reference: many more modest-sized towns are
+    // eligible at regional zoom. Collision detection still prevents clutter.
     const cityClass = getEffectiveCityClass(feature);
-
     if (cityClass <= 1) return zoom >= 3.0;
-    if (cityClass === 2) return zoom >= 3.7;
-    if (cityClass === 3) return zoom >= 4.6;
-    if (cityClass === 4) return zoom >= 5.4;
-
-    /*
-     * Truly small towns wait until the user is zoomed in.  This keeps the
-     * regional view clean while still allowing local detail.
-     */
-    return zoom >= 7.0;
+    if (cityClass === 2) return zoom >= 3.45;
+    if (cityClass === 3) return zoom >= 4.2;
+    if (cityClass === 4) return zoom >= 4.8;
+    if (cityClass === 5) return zoom >= 5.1;
+    if (cityClass === 6) return zoom >= 5.55;
+    return zoom >= 6.3;
 }
-
 
 function getCityPriority(feature) {
     const cityClass = getEffectiveCityClass(feature);
@@ -10424,28 +10499,14 @@ function getCityPriority(feature) {
    CITY LABEL SIZE
    ========================================================================================= */
 
-function getCityFont(feature) {
+function getCityFont(feature, zoom) {
     const cityClass = getEffectiveCityClass(feature);
-
-    if (cityClass <= 1) {
-        return "600 12px Arial, Helvetica, sans-serif";
-    }
-
-    if (cityClass === 2) {
-        return "600 11.5px Arial, Helvetica, sans-serif";
-    }
-
-    if (cityClass === 3) {
-        return "600 11px Arial, Helvetica, sans-serif";
-    }
-
-    if (cityClass === 4) {
-        return "600 10.5px Arial, Helvetica, sans-serif";
-    }
-
-    return "500 10px Arial, Helvetica, sans-serif";
+    const sizes = [12.1, 12.1, 11.8, 11.3, 10.9, 10.5, 10.1];
+    const baseSize = sizes[Math.max(0, Math.min(6, cityClass))];
+    const zoomBump = zoom >= 7.5 ? 0.45 : zoom < 4.5 ? -0.25 : 0;
+    const size = (baseSize + zoomBump).toFixed(2);
+    return `650 ${size}px "Segoe UI", Arial, Helvetica, sans-serif`;
 }
-
 
 /* =========================================================================================
    CITY COLLISION HELPERS
@@ -10475,11 +10536,11 @@ function getCityLabelBox(ctx, name, point) {
     );
 
     /*
-     * A little extra room accounts for the white halo and keeps neighboring
+     * Extra room accounts for the dark text outline and keeps neighboring
      * labels from visually touching.
      */
-    const xPad = 4;
-    const yPad = 3;
+    const xPad = 2.5;
+    const yPad = 1.5;
 
     return {
         left: point.x - width / 2 - xPad,
@@ -10495,116 +10556,103 @@ function getCityLabelBox(ctx, name, point) {
    ========================================================================================= */
 
 function renderCities() {
-    if (!citiesEnabled) {
-        return;
-    }
+    // Clear the separate city layer even when labels are switched off.
+    prepareContext(cityLabelCanvas, cityLabelCtx);
+    if (!citiesEnabled || !cityFeatures.length) return;
 
     const zoom = map.getZoom();
     const rect = mapWrapper.getBoundingClientRect();
+    const b = map.getBounds();
+    const lonMargin = (b.getEast() - b.getWest()) * 0.09;
+    const latMargin = (b.getNorth() - b.getSouth()) * 0.09;
+    const west = b.getWest() - lonMargin;
+    const east = b.getEast() + lonMargin;
+    const south = b.getSouth() - latMargin;
+    const north = b.getNorth() + latMargin;
+    const ctx = cityLabelCtx;
 
-    geographyCtx.save();
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
 
-    geographyCtx.textAlign = "center";
-    geographyCtx.textBaseline = "middle";
-    geographyCtx.lineJoin = "round";
-
-    /*
-     * Build the eligible list first, then render highest-priority cities
-     * first.  Lower-priority labels are skipped whenever they collide with a
-     * label that has already been accepted.
-     */
     const candidates = [];
-
-    for (const feature of cityFeatures) {
-        if (
-            !feature.geometry ||
-            feature.geometry.type !== "Point" ||
-            !cityVisibleAtZoom(feature, zoom)
-        ) {
-            continue;
-        }
+    for (const feature of cityFeaturesNearView(west, east, south, north)) {
+        if (!feature.geometry || feature.geometry.type !== "Point") continue;
+        const coordinates = feature.geometry.coordinates;
+        if (!Array.isArray(coordinates) || coordinates.length < 2) continue;
+        const [lon, lat] = coordinates;
+        // Most locations lie outside the view. Test coordinates before
+        // calling map.project and before checking priority/classification.
+        if (lon < west || lon > east || lat < south || lat > north) continue;
+        if (!cityVisibleAtZoom(feature, zoom)) continue;
 
         const name = getCityName(feature);
-        const coordinates = feature.geometry.coordinates;
-
-        if (
-            !name ||
-            !Array.isArray(coordinates) ||
-            coordinates.length < 2
-        ) {
-            continue;
-        }
-
+        if (!name) continue;
         const point = map.project(coordinates);
-
-        if (
-            point.x < -100 ||
-            point.x > rect.width + 100 ||
-            point.y < -50 ||
-            point.y > rect.height + 50
-        ) {
-            continue;
-        }
-
-        candidates.push({
-            feature,
-            name,
-            point,
-            priority: getCityPriority(feature)
-        });
+        if (point.x < -100 || point.x > rect.width + 100 ||
+            point.y < -40 || point.y > rect.height + 40) continue;
+        candidates.push({ feature, name, point, priority: getCityPriority(feature) });
     }
 
-    candidates.sort((a, b) => {
-        if (b.priority !== a.priority) {
-            return b.priority - a.priority;
-        }
+    candidates.sort((a, b) =>
+        b.priority - a.priority ||
+        getCityKey(a.feature).localeCompare(getCityKey(b.feature))
+    );
 
-        /*
-         * Stable geographic tie-breaker so labels do not flicker while
-         * panning or zooming.
-         */
-        const aKey = getCityKey(a.feature);
-        const bKey = getCityKey(b.feature);
-        return aKey.localeCompare(bKey);
-    });
-
-    const occupiedBoxes = [];
-
-    for (const candidate of candidates) {
-        const { feature, name, point } = candidate;
-
-        geographyCtx.font = getCityFont(feature);
-
-        const box = getCityLabelBox(
-            geographyCtx,
-            name,
-            point
-        );
-
-        const collides = occupiedBoxes.some(existing =>
-            cityBoxesOverlap(box, existing, 3)
-        );
-
-        if (collides) {
-            continue;
-        }
-
-        occupiedBoxes.push(box);
-
-        /*
-         * No city dots: only clean labels with a small white halo.
-         */
-        geographyCtx.strokeStyle = "rgba(255,255,255,0.96)";
-        geographyCtx.lineWidth = 3;
-        geographyCtx.strokeText(name, point.x, point.y);
-
-        geographyCtx.fillStyle = "#333333";
-        geographyCtx.fillText(name, point.x, point.y);
+    // Spatial hashing keeps overlap checks quick even with denser towns.
+    // A candidate checks only the nearby accepted labels, not every label.
+    const occupiedGrid = new Map();
+    const cellSize = 64;
+    const padding = 1.5;
+    function cellsForBox(box) {
+        return {
+            left: Math.floor((box.left - padding) / cellSize),
+            right: Math.floor((box.right + padding) / cellSize),
+            top: Math.floor((box.top - padding) / cellSize),
+            bottom: Math.floor((box.bottom + padding) / cellSize)
+        };
     }
 
-    geographyCtx.restore();
+    for (const { feature, name, point } of candidates) {
+        ctx.font = getCityFont(feature, zoom);
+        const box = getCityLabelBox(ctx, name, point);
+        const cells = cellsForBox(box);
+        let collides = false;
+
+        for (let cy = cells.top; cy <= cells.bottom && !collides; cy++) {
+            for (let cx = cells.left; cx <= cells.right; cx++) {
+                const list = occupiedGrid.get(`${cx}:${cy}`);
+                if (list && list.some(other => cityBoxesOverlap(box, other, padding))) {
+                    collides = true;
+                    break;
+                }
+            }
+        }
+        if (collides) continue;
+
+        for (let cy = cells.top; cy <= cells.bottom; cy++) {
+            for (let cx = cells.left; cx <= cells.right; cx++) {
+                const key = `${cx}:${cy}`;
+                const list = occupiedGrid.get(key);
+                if (list) list.push(box);
+                else occupiedGrid.set(key, [box]);
+            }
+        }
+
+        // AguaceroWX-inspired look: compact BRIGHT WHITE city names with a
+        // dark charcoal outline (rather than dark text with a white halo).
+        // No city dot markers; the screenshot uses just place names.
+        ctx.strokeStyle = "rgba(9, 17, 25, 0.96)";
+        ctx.lineWidth = 2.8;
+        ctx.strokeText(name, point.x, point.y);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(name, point.x, point.y);
+    }
+
+    ctx.restore();
 }
-
 
 /* =========================================================================================
    RENDER GEOGRAPHY
@@ -10730,11 +10778,9 @@ function renderGeography() {
 
 
     /*
-     * Cities are drawn last on geographyCanvas so they appear above
-     * county and state boundaries.
-     *
-     * MSLP pressure labels remain above cities because those labels use
-     * contourLabelCanvas at z-index 9.
+     * Draw cities on their own canvas above vector barbs. This leaves
+     * county/state/CWA lines in their original geographic layer while
+     * numerical contour labels remain above everything at z-index 9.
      */
     renderCities();
 
@@ -13146,6 +13192,7 @@ async function saveCurrentMapPng4k() {
             contourCanvas,
             geographyCanvas,
             vectorCanvas,
+            cityLabelCanvas,
             annotationCanvas,
             contourLabelCanvas
         ].filter(Boolean);
@@ -13366,6 +13413,7 @@ async function buildGifFrameCanvas(outW = 1920) {
         contourCanvas,
         geographyCanvas,
         vectorCanvas,
+        cityLabelCanvas,
         annotationCanvas,
         contourLabelCanvas
     ].filter(Boolean);
@@ -13841,7 +13889,7 @@ document.addEventListener("visibilitychange", () => {
         const ctx = out.getContext("2d", { alpha: false });
         ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, outW, outH);
         const mapH = outH - footerH;
-        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
+        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, cityLabelCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
         for (const layer of layers) ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, outW, mapH);
 
         if (legend && legend.style.display !== "none") {
@@ -13947,4 +13995,3 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
