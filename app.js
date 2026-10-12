@@ -16,7 +16,7 @@ const SPCOA_ROADS_KEY = "spcoa_road_prefs_v1";
 /* One-time migration for viewers who saved the previous on-by-default roads. */
 const SPCOA_ROADS_DEFAULT_OFF_MIGRATION = "spcoa_roads_start_hidden_v2";
 const SPCOA_ROADS_DEFAULTS = Object.freeze({
-    interstate: false, us: false, state: false, labels: true,
+    interstate: false, us: false, state: false, labels: false,
     labelStyle: "shields", width: 1,
     interstateColor: "#3d83d5", usColor: "#a79e90", stateColor: "#96948e"
 });
@@ -45,7 +45,9 @@ function readSpcoaRoadPrefs() {
         : (oldColor || SPCOA_ROADS_DEFAULTS[key]);
     return {
         interstate: bool("interstate"), us: bool("us"), state: bool("state"),
-        labels: bool("labels"),
+        // Road labels and shields are intentionally disabled in this build,
+        // even if an older browser preference enabled them.
+        labels: false,
         labelStyle: ["shields", "numbers"].includes(v.labelStyle) ? v.labelStyle : "shields",
         interstateColor: color("interstateColor"),
         usColor: color("usColor"),
@@ -72,8 +74,7 @@ function installSpcoaRoadControls() {
     for (const [name, caption, checked] of [
         ["interstate", "Interstates (I-80, I-76…)", prefs.interstate],
         ["us", "U.S. Highways (US-83…)", prefs.us],
-        ["state", "State Highways (NE-61…)", prefs.state],
-        ["labels", "Show Route Labels (close zoom only)", prefs.labels]
+        ["state", "State Highways (NE-61…)", prefs.state]
     ]) {
         const row = document.createElement("label");
         row.style.cssText = "display:flex;gap:6px;align-items:center;font:11px Inter,Arial,sans-serif;" +
@@ -115,21 +116,6 @@ function installSpcoaRoadControls() {
     widthLabel.append(width);
     styleRow.append(widthLabel);
     panel.appendChild(styleRow);
-    const labelRow = document.createElement("label");
-    labelRow.textContent = "Label Style";
-    labelRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;" +
-        "font:11px Inter,Arial,sans-serif;color:#c9deea;";
-    const styleSelect = document.createElement("select");
-    styleSelect.id = "roads-label-style";
-    styleSelect.title = "Road shields only appear at close map zooms";
-    styleSelect.style.cssText = "max-width:150px;padding:4px;font-size:11px;";
-    for (const [value, text] of [["shields","Highway Shields"], ["numbers","Plain Numbers"]]) {
-        const o = document.createElement("option"); o.value = value; o.textContent = text;
-        styleSelect.append(o);
-    }
-    styleSelect.value = prefs.labelStyle;
-    labelRow.append(styleSelect);
-    panel.appendChild(labelRow);
     const status = document.createElement("span");
     status.id = "roads-data-status";
     status.style.cssText = "font:10px Inter,Arial,sans-serif;color:#9eb4c2;";
@@ -11585,10 +11571,9 @@ function renderGeography() {
 
     geographyCtx.restore();
 
-    /* City labels render onto a separate higher layer; calculating their
-     * boxes first lets geographic road shields avoid obscuring town names. */
+    // City labels remain on their dedicated canvas; highway route
+    // numbers and shields are intentionally not rendered.
     renderCities();
-    spcoaDrawRoadShields(geographyCtx);
 }
 
 
@@ -13014,7 +12999,7 @@ if (citiesToggle) {
    ========================================================================================= */
 for (const [type, key] of [
     ["roads-interstate-toggle", "interstate"], ["roads-us-toggle", "us"],
-    ["roads-state-toggle", "state"], ["roads-labels-toggle", "labels"]
+    ["roads-state-toggle", "state"]
 ]) {
     const control = document.getElementById(type);
     if (control) control.addEventListener("change", () => {
@@ -13037,12 +13022,6 @@ for (const klass of ["interstate", "us", "state"]) {
     picker.addEventListener("input", apply);
     picker.addEventListener("change", apply);
 }
-const spcoaRoadStyleSelect = document.getElementById("roads-label-style");
-if (spcoaRoadStyleSelect) spcoaRoadStyleSelect.addEventListener("change", () => {
-    spcoaRoadPrefs.labelStyle = spcoaRoadStyleSelect.value === "numbers" ? "numbers" : "shields";
-    saveSpcoaRoadPrefs(spcoaRoadPrefs);
-    renderGeography();
-});
 const spcoaRoadWidthSelect = document.getElementById("roads-width");
 if (spcoaRoadWidthSelect) spcoaRoadWidthSelect.addEventListener("change", () => {
     spcoaRoadPrefs.width = Math.max(.75, Math.min(2, Number(spcoaRoadWidthSelect.value) || 1));
@@ -14862,3 +14841,4 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
