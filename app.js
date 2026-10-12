@@ -344,6 +344,8 @@ if (!__MP_CHILD) {
         let sharedPointerId = null;
         let sharedSourcePanel = -1;
         let sharedDrawingTool = "pan";
+        // Named per-browser forecaster panel configurations (never run-specific).
+        let savedLayoutApplying = false;
         const parameterScope = document.getElementById("parameter-scope");
         const drawingScope = document.getElementById("drawing-scope");
 
@@ -773,7 +775,7 @@ if (!__MP_CHILD) {
             if (i === 0) frame.src = childUrl(i);
             holder.append(badge, frame);
             panelGrid.appendChild(holder);
-            panels.push({ holder, frame, badge, ready: false });
+            panels.push({ holder, frame, badge, ready: false, configured: false, configWaiters: [] });
         }
 
         function visiblePanelCount() { return layoutCount; }
@@ -896,6 +898,7 @@ if (!__MP_CHILD) {
         }
 
         function syncTimeFromActiveChild() {
+            if (savedLayoutApplying) return;
             const d = childDoc();
             if (!d) return;
             const slider = d.getElementById("timeline-slider");
@@ -1071,7 +1074,15 @@ if (!__MP_CHILD) {
                 if (i === activePanel) syncHostFromActiveChild();
             } else if (msg.type === "mp-activate") {
                 setActivePanel(Number(msg.panel) - 1);
-            } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting) {
+            } else if (msg.type === "mp-config-ready") {
+                const i = Number(msg.panel) - 1;
+                const p = panels[i];
+                if (p && event.source === p.frame.contentWindow) {
+                    p.configured = true;
+                    const waiters = p.configWaiters.splice(0);
+                    waiters.forEach(resolve => resolve());
+                }
+            } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting && !savedLayoutApplying) {
                 const source = Number(msg.panel) - 1;
                 cameraBroadcasting = true;
                 for (let i = 0; i < layoutCount; i++) {
@@ -1146,6 +1157,241 @@ if (!__MP_CHILD) {
                 savePng.disabled = false; savePng.textContent = old || "Save PNG";
             }
         }
+
+        /* =====================================================================================
+           SAVED FORECASTER PANEL LAYOUTS — browser-local, no import/export, latest run
+           ===================================================================================== */
+        const SPCOA_LAYOUTS_KEY = "spcoa_forecaster_layouts_v1";
+        const SPCOA_LAYOUT_DEFAULT_KEY = "spcoa_default_forecaster_layout_v1";
+        const MAX_SAVED_LAYOUTS = 30;
+
+        function readSavedLayouts() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(SPCOA_LAYOUTS_KEY) || "[]");
+                return Array.isArray(saved) ? saved.filter(x =>
+                    x && typeof x.id === "string" && typeof x.name === "string" &&
+                    [1,2,4].includes(x.count) && Array.isArray(x.panels) &&
+                    x.panels.length >= x.count).slice(0, MAX_SAVED_LAYOUTS) : [];
+            } catch (_) { return []; }
+        }
+        function writeSavedLayouts(layouts) {
+            localStorage.setItem(SPCOA_LAYOUTS_KEY, JSON.stringify(layouts));
+        }
+        function readDefaultLayoutId() {
+            try { return localStorage.getItem(SPCOA_LAYOUT_DEFAULT_KEY) || ""; }
+            catch (_) { return ""; }
+        }
+        function setDefaultLayoutId(id) {
+            if (id) localStorage.setItem(SPCOA_LAYOUT_DEFAULT_KEY, id);
+            else localStorage.removeItem(SPCOA_LAYOUT_DEFAULT_KEY);
+        }
+        function configuredPanel(index, timeoutMs = 25000) {
+            const panel = panels[index];
+            if (!panel) return Promise.reject(new Error(`Missing panel ${index + 1}.`));
+            if (panel.configured && typeof panel.frame.contentWindow?.__mpGetSavedPanelLayout === "function") {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                const waiter = () => { clearTimeout(timer); resolve(); };
+                const timer = setTimeout(() => {
+                    const at = panel.configWaiters.indexOf(waiter);
+                    if (at >= 0) panel.configWaiters.splice(at, 1);
+                    reject(new Error(`Panel ${index + 1} did not finish initializing. Check the analysis connection.`));
+                }, timeoutMs);
+                panel.configWaiters.push(waiter);
+                // In case we attached between the configuration event and its handler.
+                if (panel.configured && typeof panel.frame.contentWindow?.__mpGetSavedPanelLayout === "function") {
+                    panel.configWaiters.splice(panel.configWaiters.indexOf(waiter), 1);
+                    waiter();
+                }
+            });
+        }
+        function installSavedPanelLayouts() {
+            const card = layoutSelect?.closest(".layout-card") || layoutSelect?.parentElement;
+            if (!card || document.getElementById("spcoa-saved-layout-manager")) return;
+            const wrap = document.createElement("div");
+            wrap.id = "spcoa-saved-layout-manager";
+            wrap.style.cssText = "display:flex;flex-direction:column;gap:6px;margin-top:12px;" +
+                "border-top:1px solid #45657b;padding-top:10px;min-width:0;";
+            const heading = document.createElement("label");
+            heading.textContent = "My Saved Panel Layouts";
+            heading.setAttribute("for", "spcoa-saved-layout-select");
+            heading.style.cssText = "font:700 11px Inter,Arial,sans-serif;color:#eaf2f8;";
+            const picker = document.createElement("select");
+            picker.id = "spcoa-saved-layout-select";
+            picker.style.cssText = "width:100%;min-width:0;background:#102433;color:#eef6fb;" +
+                "border:1px solid #45657b;border-radius:4px;padding:7px;font-size:11px;";
+            const name = document.createElement("input");
+            name.type = "text";
+            name.id = "spcoa-saved-layout-name";
+            name.maxLength = 60;
+            name.placeholder = "Name this 1-, 2-, or 4-panel layout";
+            name.setAttribute("aria-label", "Saved layout name");
+            name.style.cssText = "width:100%;box-sizing:border-box;border:1px solid #45657b;" +
+                "border-radius:4px;background:#102433;color:#eef6fb;padding:7px;font-size:11px;";
+            const actions = document.createElement("div");
+            actions.style.cssText = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;";
+            const makeButton = (id, caption) => {
+                const btn = document.createElement("button");
+                btn.id = id; btn.type = "button"; btn.textContent = caption;
+                btn.style.cssText = "min-width:0;border:1px solid #52738b;background:#234c67;color:#f4fbff;" +
+                    "border-radius:4px;padding:7px 3px;font:650 10px Inter,Arial,sans-serif;cursor:pointer;";
+                return btn;
+            };
+            const load = makeButton("spcoa-load-layout", "Load Layout");
+            const save = makeButton("spcoa-save-layout", "Save New");
+            const overwrite = makeButton("spcoa-overwrite-layout", "Overwrite");
+            const rename = makeButton("spcoa-rename-layout", "Rename");
+            const setDefault = makeButton("spcoa-default-layout", "Set As Default");
+            const unsetDefault = makeButton("spcoa-clear-default-layout", "Clear Default");
+            const remove = makeButton("spcoa-delete-layout", "Delete Layout");
+            remove.style.background = "#622e35";
+            const status = document.createElement("div");
+            status.id = "spcoa-saved-layout-status";
+            status.setAttribute("role", "status");
+            status.style.cssText = "color:#a9c3d2;font:10px/1.45 Inter,Arial,sans-serif;" +
+                "white-space:normal;overflow-wrap:anywhere;";
+            [load, save, overwrite, rename, setDefault, unsetDefault, remove].forEach(b => actions.appendChild(b));
+            wrap.append(heading, picker, name, actions, status);
+            card.appendChild(wrap);
+
+            function say(message) { status.textContent = message; }
+            function refresh(preferred) {
+                const layouts = readSavedLayouts();
+                const previous = preferred || picker.value;
+                const chosenDefault = readDefaultLayoutId();
+                picker.replaceChildren(new Option("Choose a saved layout…", ""));
+                for (const entry of layouts) {
+                    const option = new Option(`${entry.name} (${entry.count} panel${entry.count === 1 ? "" : "s"})` +
+                        (entry.id === chosenDefault ? " ★ Default" : ""), entry.id);
+                    picker.add(option);
+                }
+                picker.value = layouts.some(x => x.id === previous) ? previous : "";
+                if (picker.value) name.value = layouts.find(x => x.id === picker.value).name;
+                return layouts;
+            }
+            const selected = () => readSavedLayouts().find(x => x.id === picker.value);
+            picker.addEventListener("change", () => {
+                const entry = selected();
+                name.value = entry?.name || "";
+                if (entry) say(`${entry.count}-panel configuration; use Load Layout to restore it.`);
+            });
+            async function captureCurrent() {
+                const count = layoutCount;
+                await Promise.all(Array.from({length: count}, (_, i) => configuredPanel(i)));
+                const snapshots = Array.from({length: count}, (_, i) =>
+                    panels[i].frame.contentWindow.__mpGetSavedPanelLayout());
+                if (snapshots.some(x => !x || !x.camera || typeof x.field !== "string")) {
+                    throw new Error("A panel is still moving or loading. Wait a moment and retry.");
+                }
+                return {count, panels: snapshots};
+            }
+            async function loadEntry(entry) {
+                if (!entry || savedLayoutApplying) return;
+                savedLayoutApplying = true;
+                [load, save, overwrite, rename, setDefault, unsetDefault, remove].forEach(b => b.disabled = true);
+                say(`Restoring ${entry.count} panel${entry.count === 1 ? "" : "s"} from the latest analysis…`);
+                try {
+                    layoutSelect.value = String(entry.count);
+                    applyLayout(entry.count);
+                    await Promise.all(Array.from({length: entry.count}, (_, i) => configuredPanel(i)));
+                    await Promise.all(entry.panels.slice(0, entry.count).map((config, i) =>
+                        panels[i].frame.contentWindow.__mpApplySavedPanelLayout(config)));
+                    setActivePanel(0);
+                    lastTimelineValue = null;
+                    syncHostFromActiveChild();
+                    renderSharedOverlay();
+                    say(`Loaded “${entry.name}” (${entry.count} panels). Using the newest SPCOA analysis.`);
+                } catch (error) {
+                    console.error("Saved panel layout restore failed:", error);
+                    say(`Could not load layout: ${error.message || error}`);
+                } finally {
+                    // Let pending MapLibre moveend events settle before turning camera linking back on.
+                    setTimeout(() => { savedLayoutApplying = false; }, 500);
+                    [load, save, overwrite, rename, setDefault, unsetDefault, remove].forEach(b => b.disabled = false);
+                }
+            }
+            load.addEventListener("click", () => {
+                const entry = selected();
+                if (!entry) { say("Select a saved layout first."); return; }
+                void loadEntry(entry);
+            });
+            save.addEventListener("click", async () => {
+                if (savedLayoutApplying) return;
+                const label = name.value.trim();
+                if (!label) { say("Enter a layout name first."); name.focus(); return; }
+                if (readSavedLayouts().length >= MAX_SAVED_LAYOUTS) {
+                    say("30-layout limit reached. Delete an older one first."); return;
+                }
+                save.disabled = true;
+                try {
+                    const snapshot = await captureCurrent();
+                    const newEntry = {id: "layout:" + Date.now().toString(36) + "_" +
+                        Math.random().toString(36).slice(2, 9), name: label, ...snapshot};
+                    writeSavedLayouts([...readSavedLayouts(), newEntry]);
+                    refresh(newEntry.id);
+                    say(`Saved “${label}” with ${snapshot.count} panels, their parameters and map views.`);
+                } catch (error) { say(`Could not save: ${error.message || error}`); }
+                finally { save.disabled = false; }
+            });
+            overwrite.addEventListener("click", async () => {
+                if (savedLayoutApplying) return;
+                const entry = selected();
+                if (!entry) { say("Choose the saved layout to overwrite."); return; }
+                if (!window.confirm(`Replace “${entry.name}” with the current panel configuration?`)) return;
+                overwrite.disabled = true;
+                try {
+                    const snapshot = await captureCurrent();
+                    writeSavedLayouts(readSavedLayouts().map(x => x.id === entry.id
+                        ? {...x, ...snapshot} : x));
+                    refresh(entry.id);
+                    say(`Updated “${entry.name}” with the current ${snapshot.count}-panel configuration.`);
+                } catch (error) { say(`Could not overwrite: ${error.message || error}`); }
+                finally { overwrite.disabled = false; }
+            });
+            rename.addEventListener("click", () => {
+                const entry = selected();
+                const label = name.value.trim();
+                if (!entry || !label) { say("Select a layout and enter its new name."); return; }
+                try {
+                    writeSavedLayouts(readSavedLayouts().map(x => x.id === entry.id ? {...x, name: label} : x));
+                    refresh(entry.id);
+                    say(`Renamed layout to “${label}”.`);
+                } catch (_) { say("Browser storage is unavailable or full."); }
+            });
+            remove.addEventListener("click", () => {
+                const entry = selected();
+                if (!entry) { say("Choose a layout to delete."); return; }
+                if (!window.confirm(`Delete saved layout “${entry.name}”?`)) return;
+                try {
+                    writeSavedLayouts(readSavedLayouts().filter(x => x.id !== entry.id));
+                    if (readDefaultLayoutId() === entry.id) setDefaultLayoutId("");
+                    refresh(""); name.value = "";
+                    say(`Deleted “${entry.name}”. Your current maps were not changed.`);
+                } catch (_) { say("Browser storage is unavailable or full."); }
+            });
+            setDefault.addEventListener("click", () => {
+                const entry = selected();
+                if (!entry) { say("Select a saved layout to make the default."); return; }
+                try { setDefaultLayoutId(entry.id); refresh(entry.id); }
+                catch (_) { say("Browser storage is unavailable."); return; }
+                say(`“${entry.name}” will open automatically in this browser.`);
+            });
+            unsetDefault.addEventListener("click", () => {
+                try { setDefaultLayoutId(""); refresh(picker.value); }
+                catch (_) { say("Browser storage is unavailable."); return; }
+                say("Automatic layout loading disabled. Your saved layouts remain available.");
+            });
+            const all = refresh();
+            const defaultEntry = all.find(x => x.id === readDefaultLayoutId());
+            if (defaultEntry) {
+                refresh(defaultEntry.id);
+                void loadEntry(defaultEntry);
+            } else {
+                say("Each forecaster's layouts are stored privately in this browser. Latest analysis is used when loaded.");
+            }
+        }
+        installSavedPanelLayouts();
 
         setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); if (drawingScope.value === "all") renderSharedOverlay(); }, 350);
         applyLayout(layoutSelect ? layoutSelect.value : 1);
@@ -12690,7 +12936,7 @@ map.on(
     "moveend",
 
     () => {
-        if (!startViewReadyForMovement) return;
+        if (!startViewReadyForMovement || window.__spcoaApplyingSavedPanelState) return;
         clearTimeout(
             moveEndTimer
         );
@@ -13635,6 +13881,12 @@ async function initialize() {
 
                 updateTimelineUi();
                 scheduleAdjacentPreload();
+                // Host can safely snapshot or restore this panel only after
+                // its latest run and initial canvas rendering are initialized.
+                if (__MP_CHILD && window.parent && window.parent !== window) {
+                    window.parent.postMessage({type: "mp-config-ready",
+                        panel: Number(__MP_PARAMS.get("panel") || 1)}, window.location.origin);
+                }
 
             }
 
@@ -14724,6 +14976,117 @@ document.addEventListener("visibilitychange", () => {
     if (drawUndoButton) drawUndoButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
     if (drawClearButton) drawClearButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
 
+    /* Single-pass snapshot/restore. These are UI preferences only, never run IDs or GIF state. */
+    window.__mpGetSavedPanelLayout = function() {
+        if (!startViewReadyForMovement || map.isMoving() || !currentRun) return null;
+        const c = map.getCenter();
+        const controls = {};
+        document.querySelectorAll("#sidebar input[id], #sidebar select[id]").forEach(el => {
+            if (["sector-select", "field-select", "custom-domain-name"].includes(el.id)) return;
+            if (!["INPUT", "SELECT"].includes(el.tagName)) return;
+            if (el.tagName === "INPUT" && !["checkbox", "color", "range", "number"].includes(el.type)) return;
+            controls[el.id] = el.type === "checkbox" ? el.checked : el.value;
+        });
+        return {
+            field: activeField,
+            overlays: Object.fromEntries(Object.entries(activeOverlays).map(([k, v]) => [k, !!v])),
+            vectorColors: {...vectorColors},
+            controls,
+            sector: sectorSelect?.value || "",
+            camera: {center: [c.lng, c.lat], zoom: map.getZoom(),
+                     bearing: map.getBearing(), pitch: map.getPitch()}
+        };
+    };
+    window.__mpApplySavedPanelLayout = async function(saved) {
+        if (!saved || !saved.camera || !Array.isArray(saved.camera.center)) {
+            throw new Error("Invalid saved panel camera.");
+        }
+        // Do not restore saved run IDs: always select the newest published analysis.
+        if (timelineState.latestRun && currentRun !== timelineState.latestRun) {
+            const newest = timelineState.availableRuns.find(x => x.run === timelineState.latestRun);
+            if (newest) {
+                const loaded = await applyRun(newest, {render: false, preload: false});
+                if (!loaded) throw new Error("Unable to load the latest analysis.");
+            }
+        }
+        const [lng, lat] = saved.camera.center.map(Number);
+        const zoom = Number(saved.camera.zoom);
+        if (!Number.isFinite(lng) || !Number.isFinite(lat) || !Number.isFinite(zoom) ||
+            Math.abs(lng) > 180 || Math.abs(lat) > 85 || zoom < 2 || zoom > 16) {
+            throw new Error("Invalid saved map coordinates.");
+        }
+        applyingRemoteCamera = true;
+        window.__spcoaApplyingSavedPanelState = true;
+        try {
+            // Apply the entire selection in memory, without dispatching dozens of
+            // individual checkbox/change events and redundant expensive redraws.
+            const ctrl = saved.controls && typeof saved.controls === "object" ? saved.controls : {};
+            for (const [id, value] of Object.entries(ctrl).slice(0, 350)) {
+                const el = document.getElementById(id);
+                if (!el || !el.closest("#sidebar")) continue;
+                if (el.type === "checkbox") el.checked = (value === true);
+                else if (el.type === "color") {
+                    if (typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value)) el.value = value;
+                } else if (el.tagName === "SELECT") {
+                    if (Array.from(el.options).some(o => o.value === String(value))) el.value = String(value);
+                } else if (el.type === "range" || el.type === "number") {
+                    if (Number.isFinite(Number(value))) el.value = String(value);
+                }
+            }
+            if (typeof saved.field === "string") {
+                const possible = Array.from(document.querySelectorAll(".field-choice"))
+                    .find(row => row.dataset.field === saved.field);
+                if (saved.field === "none" || possible ||
+                    Array.from(fieldSelect?.options || []).some(o => o.value === saved.field)) {
+                    activeField = saved.field;
+                    if (fieldSelect) fieldSelect.value = saved.field;
+                }
+            }
+            document.querySelectorAll("#sidebar .field-choice").forEach(row =>
+                row.classList.toggle("active", row.dataset.field === activeField));
+            for (const key of Object.keys(activeOverlays)) {
+                activeOverlays[key] = saved.overlays?.[key] === true;
+            }
+            for (const [field, color] of Object.entries(saved.vectorColors || {})) {
+                if (Object.prototype.hasOwnProperty.call(vectorColors, field) &&
+                    typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color)) {
+                    vectorColors[field] = color;
+                }
+            }
+            citiesEnabled = !!citiesToggle?.checked;
+            countiesEnabled = !!countiesToggle?.checked;
+            cwaBordersEnabled = !!cwaBordersToggle?.checked;
+            selectedCwa = cwaSelector?.value || "ALL";
+            if (cwaBorderColorInput && /^#[0-9a-fA-F]{6}$/.test(cwaBorderColorInput.value))
+                cwaBorderColor = cwaBorderColorInput.value;
+            cwaBorderWidth = Number(cwaBorderWidthSelect?.value) || 2;
+            selectedCityCwa = cityCwaFilter?.value || "ALL";
+            cityDensity = Math.max(0, Math.min(100, Number(cityDensitySlider?.value) || 0));
+            updateSpcoaDensityUi();
+            for (const klass of ["interstate", "us", "state"]) {
+                spcoaRoadPrefs[klass] = !!document.getElementById(`roads-${klass}-toggle`)?.checked;
+                const input = document.getElementById(`roads-color-${klass}`);
+                if (input && /^#[0-9a-fA-F]{6}$/.test(input.value))
+                    spcoaRoadPrefs[klass + "Color"] = input.value;
+            }
+            spcoaRoadPrefs.width = Number(document.getElementById("roads-width")?.value) || 1;
+            void spcoaEnsureRoads();
+            if (sectorSelect && saved.sector && Array.from(sectorSelect.options).some(o => o.value === saved.sector))
+                sectorSelect.value = saved.sector;
+            invalidateNumericalRenders();
+            map.jumpTo({center: [lng, lat], zoom,
+                bearing: Number.isFinite(Number(saved.camera.bearing)) ? Number(saved.camera.bearing) : 0,
+                pitch: Number.isFinite(Number(saved.camera.pitch)) ? Number(saved.camera.pitch) : 0});
+            updateLegend();
+            await renderAll();
+            updateActiveLayersStrip();
+            return true;
+        } finally {
+            window.__spcoaApplyingSavedPanelState = false;
+            setTimeout(() => { applyingRemoteCamera = false; }, 400);
+        }
+    };
+
     window.__mpCapturePanel = async function(outW = 1800) {
         renderAnnotations();
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -14841,4 +15204,3 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
