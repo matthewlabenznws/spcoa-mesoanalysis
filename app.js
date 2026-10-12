@@ -392,6 +392,7 @@ function spcoaGifSharedPalette(canvases) {
    matching control IDs for the multi-panel event relay to work.
    ========================================================================================= */
 const SPC_EXTRA_COMPOSITE_TOGGLES = [
+    {field: "stp_eff_contours", stateKey: "stpEff", toggleId: "stp-eff-toggle", label: "Effective-Layer STP"},
     {field: "stp_fix_contours", stateKey: "stpFixContours", toggleId: "stp-fix-contours-toggle", label: "Fixed-Layer STP"},
     {field: "stp_500m_contours", stateKey: "stp500Contours", toggleId: "stp-500m-contours-toggle", label: "STP (0–500 m SRH)"},
     {field: "vtp_contours", stateKey: "vtpContours", toggleId: "vtp-contours-toggle", label: "Violent Tornado Parameter"},
@@ -426,6 +427,73 @@ function installSpcoaCompositeContourToggles() {
         insertionPoint = row;
     }
 }
+
+/* =========================================================================================
+   STP DISPLAY OPTIONS: FILL BUTTON + INDEPENDENT CONTOUR CHECKBOX
+   Match the existing CIN/theta display pattern. Each checkbox is part of
+   THERMODYNAMIC_CONTOUR_OVERLAYS, so all panel, clear, cache, GIF and layout
+   controls continue using the existing render/event architecture.
+   This runs before index.html binds its .field-choice click handlers.
+   ========================================================================================= */
+function installSpcoaStpDisplayControls() {
+    const section = document.getElementById("composites-category");
+    if (!section) return;
+    const entries = [
+        {field: "stp_eff", id: "stp-eff-toggle", title: "Effective-Layer STP"},
+        {field: "stp_fix", id: "stp-fix-contours-toggle", title: "Fixed-Layer STP"},
+        {field: "stp_500m", id: "stp-500m-contours-toggle", title: "STP (0–500 m SRH)"}
+    ];
+    for (const item of entries) {
+        let button = section.querySelector(`.field-choice[data-field="${item.field}"]`);
+        if (!button && item.field === "stp_500m") {
+            const fixed = section.querySelector('.field-choice[data-field="stp_fix"]');
+            if (!fixed) continue;
+            button = document.createElement("button");
+            button.type = "button";
+            button.className = "field-row field-choice";
+            button.dataset.field = item.field;
+            const dot = document.createElement("span");
+            dot.className = "field-dot";
+            button.append(dot, document.createTextNode(item.title));
+            (fixed.closest(".level-row") || fixed).insertAdjacentElement("afterend", button);
+        }
+        if (!button) continue;
+        let wrapper = button.closest(".level-row");
+        if (!wrapper) {
+            wrapper = document.createElement("div");
+            wrapper.className = "level-row";
+            button.insertAdjacentElement("beforebegin", wrapper);
+            wrapper.appendChild(button);
+        }
+        // The old Effective STP checkbox lives in a hidden .compat div.
+        // Reuse that exact input ID so listeners and saved layout keys work.
+        let input = document.getElementById(item.id);
+        if (!input) {
+            input = document.createElement("input");
+            input.type = "checkbox";
+            input.id = item.id;
+            input.checked = false;
+        }
+        let label = input.closest("label.toggle-row");
+        if (!label || !section.contains(label)) {
+            label = document.createElement("label");
+            label.className = "toggle-row";
+        }
+        if (input.parentElement !== label) label.appendChild(input);
+        let caption = label.querySelector("span");
+        if (!caption) {
+            caption = document.createElement("span");
+            caption.className = "barb-text";
+            label.appendChild(caption);
+        }
+        caption.textContent = "Contours";
+        if (label.parentElement !== wrapper) wrapper.appendChild(label);
+        label.title = `Toggle ${item.title} contour lines`;
+        button.title = `Display ${item.title} as filled shading`;
+    }
+}
+installSpcoaCompositeContourToggles();
+installSpcoaStpDisplayControls();
 
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
@@ -2535,6 +2603,13 @@ const WEATHER_FIELDS = {
         type: "stp"
     },
 
+    stp_500m: {
+        name: "Significant Tornado Parameter (0–500 m SRH)",
+        shortName: "STP 0–500 m SRH",
+        units: "",
+        type: "stp"
+    },
+
     scp_right: {
         name: "Right-Moving Supercell Composite Parameter",
         shortName: "Right-Moving SCP",
@@ -3610,6 +3685,7 @@ function ensureFilledWindFieldOptions() {
         "pwat",
         "stp_eff",
         "stp_fix",
+        "stp_500m",
         "sfc_temperature",
         "theta_2m",
         "wetbulb_2m",
@@ -4238,12 +4314,6 @@ const THERMODYNAMIC_CONTOUR_OVERLAYS = [
         stateKey: "lclHeight",
         toggleId: "lcl-height-toggle",
         label: "LCL Height"
-    },
-    {
-        field: "stp_eff_contours",
-        stateKey: "stpEff",
-        toggleId: "stp-eff-toggle",
-        label: "Effective-Layer STP"
     },
     {
         field: "dcp_contours",
@@ -12784,7 +12854,6 @@ function getActiveContourSamples() {
     add(activeOverlays.dcape, "dcape");
     add(activeOverlays.warmCloudDepth, "warm_cloud_depth");
     add(activeOverlays.lclHeight, "lcl_height");
-    add(activeOverlays.stpEff, "stp_eff_contours");
     for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
         add(activeOverlays[config.stateKey], config.field);
     }
