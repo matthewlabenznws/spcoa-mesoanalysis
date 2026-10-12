@@ -13,14 +13,28 @@ const SPCOA_CWA_COLOR_KEY = "spcoa_cwa_border_color_v1";
 /* City-label preferences are browser-local, independent of saved map domains. */
 /* Road-overlay preferences: browser-local, independent of CWA/city controls. */
 const SPCOA_ROADS_KEY = "spcoa_road_prefs_v1";
+/* One-time migration for viewers who saved the previous on-by-default roads. */
+const SPCOA_ROADS_DEFAULT_OFF_MIGRATION = "spcoa_roads_start_hidden_v2";
 const SPCOA_ROADS_DEFAULTS = Object.freeze({
-    interstate: true, us: true, state: false, labels: true,
+    interstate: false, us: false, state: false, labels: true,
     labelStyle: "shields", width: 1,
     interstateColor: "#3d83d5", usColor: "#a79e90", stateColor: "#96948e"
 });
 function readSpcoaRoadPrefs() {
     let v = {};
-    try { v = JSON.parse(localStorage.getItem(SPCOA_ROADS_KEY)) || {}; } catch (_) {}
+    try {
+        v = JSON.parse(localStorage.getItem(SPCOA_ROADS_KEY)) || {};
+        if (!localStorage.getItem(SPCOA_ROADS_DEFAULT_OFF_MIGRATION)) {
+            // Old versions initially turned Interstate and US roads on.
+            // Apply the user's new default exactly once, not after every reload.
+            v = {...v, interstate:false, us:false, state:false};
+            localStorage.setItem(SPCOA_ROADS_KEY, JSON.stringify(v));
+            localStorage.setItem(SPCOA_ROADS_DEFAULT_OFF_MIGRATION, "1");
+        }
+    } catch (_) {
+        // Storage may be blocked; keep the roads off by default in memory.
+        v = {interstate:false, us:false, state:false};
+    }
     const bool = k => typeof v[k] === "boolean" ? v[k] : SPCOA_ROADS_DEFAULTS[k];
     const validColor = color => /^#[0-9a-fA-F]{6}$/.test(color || "");
     // Preserve a previously customized single road color when upgrading.
@@ -11168,7 +11182,8 @@ const SPCOA_STATE_ABBREVIATIONS = Object.freeze({
     Utah:"UT", Vermont:"VT", Virginia:"VA", Washington:"WA", "West Virginia":"WV",
     Wisconsin:"WI", Wyoming:"WY", "District of Columbia":"DC"
 });
-const SPCOA_ROAD_LABEL_MIN_ZOOM = Object.freeze({interstate:6.85,us:7.45,state:8.1});
+// Keep roads visible at broad scales (when enabled), but shields only nearby.
+const SPCOA_ROAD_LABEL_MIN_ZOOM = Object.freeze({interstate:7.4,us:8.05,state:8.85});
 const SPCOA_ROAD_LINE_MIN_ZOOM = Object.freeze({interstate:3,us:4.25,state:5.25});
 let spcoaVisibleCityLabelBoxes = [];
 
@@ -11178,9 +11193,9 @@ function spcoaDrawRoads(ctx) {
     const zoom = map.getZoom();
     const roads = spcoaVisibleRoads();
     const layers = [
-        ["state", 0.76, spcoaRoadPrefs.stateColor],
-        ["us", 1.02, spcoaRoadPrefs.usColor],
-        ["interstate", 1.65, spcoaRoadPrefs.interstateColor]
+        ["state", 0.69, spcoaRoadPrefs.stateColor],
+        ["us", 0.88, spcoaRoadPrefs.usColor],
+        ["interstate", 1.36, spcoaRoadPrefs.interstateColor]
     ];
     ctx.save();
     ctx.lineJoin = "round"; ctx.lineCap = "round";
@@ -11246,7 +11261,9 @@ function spcoaRoadLabelLocations(feature, width, height, spacing) {
         }
     }
     if (total < 38) return [];
-    const n = Math.min(2,Math.max(1,Math.floor(total/spacing)));
+    // At most one candidate per road geometry. Long routes are already
+    // split across source features and later deduplicated on screen.
+    const n = 1;
     const wanted = Array.from({length:n}, (_,i)=>total*(i+.5)/n);
     const out = [];
     let passed = 0, j = 0;
@@ -11287,44 +11304,63 @@ function spcoaShieldPath(ctx, x, y, w, h, kind) {
     ctx.closePath();
 }
 
+/* Small, deliberately understated symbols modeled after the reference map.
+ * Keep the real route number but never render full-size road-sign graphics.
+ */
+function spcoaRoadShieldDimensions(klass, number, scale=1) {
+    const digits = String(number || "").length;
+    if (klass === "interstate") return {w:(digits >= 4 ? 27 : digits >= 3 ? 25 : 22)*scale,
+                                      h:24*scale};
+    if (klass === "us") return {w:(digits >= 4 ? 26 : digits >= 3 ? 24 : 21)*scale,
+                               h:23*scale};
+    return {w:Math.max(25, 9+(digits+2)*5.0)*scale, h:13.5*scale};
+}
+function spcoaStateShieldText(state, number) {
+    const abbr = SPCOA_STATE_ABBREVIATIONS[String(state || "")] ||
+        String(state || "").slice(0,2).toUpperCase();
+    // The Nebraska route signs in the user's reference use e.g. "N-97".
+    return (abbr === "NE" ? "N" : abbr || "ST") + "-" + number;
+}
 function spcoaDrawHighwayShield(ctx, klass, number, state, x, y, scale=1) {
-    const chars = number.length;
-    const w = (chars>=4?46:chars===3?41:35)*scale;
-    const h = (klass==="state" ? 31 : 37)*scale;
+    const {w,h} = spcoaRoadShieldDimensions(klass,number,scale);
+    const chars = String(number).length;
     ctx.save();
-    ctx.lineJoin="round";ctx.textAlign="center";ctx.textBaseline="middle";
-    // Small shadow ensures shields remain recognizable over colorful weather fill.
-    ctx.shadowColor="rgba(0,0,0,.40)";ctx.shadowBlur=2.5*scale;
-    ctx.shadowOffsetY=.7*scale;
+    ctx.lineJoin = "round";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0,0,0,.28)";
+    ctx.shadowBlur = 1.25*scale;
+    ctx.shadowOffsetY = 0.4*scale;
     spcoaShieldPath(ctx,x,y,w,h,klass);
-    ctx.fillStyle="#ffffff";ctx.fill();ctx.shadowColor="transparent";
-    ctx.lineWidth=1.6*scale;ctx.strokeStyle="#18222d";ctx.stroke();
-    if(klass==="interstate") {
-        ctx.save();spcoaShieldPath(ctx,x,y,w-3*scale,h-3*scale,klass);ctx.clip();
-        ctx.fillStyle="#2453a2";
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.strokeStyle = "#1b252d";
+    ctx.lineWidth = 1.15*scale;
+    ctx.stroke();
+    if (klass === "interstate") {
+        ctx.save();
+        spcoaShieldPath(ctx,x,y,w-2.1*scale,h-2.1*scale,"interstate");
+        ctx.clip();
+        ctx.fillStyle = "#2252a4";
         ctx.fillRect(x-w/2,y-h/2,w,h);
-        ctx.fillStyle="#c62836";
+        ctx.fillStyle = "#cc2836";
         ctx.fillRect(x-w/2,y-h/2,w,h*.43);
         ctx.restore();
-        spcoaShieldPath(ctx,x,y,w-3*scale,h-3*scale,klass);
-        ctx.strokeStyle="#ffffff";ctx.lineWidth=1.15*scale;ctx.stroke();
-        ctx.fillStyle="#ffffff";
-        ctx.font=`700 ${6.1*scale}px Arial,sans-serif`;
-        ctx.fillText("INTERSTATE",x,y-h*.25);
-        ctx.font=`800 ${(chars>=4?15.0:chars>=3?18.5:21.0)*scale}px Arial,sans-serif`;
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `700 ${4.4*scale}px Arial,sans-serif`;
+        ctx.fillText("INTERSTATE",x,y-h*.23);
+        ctx.font = `800 ${(chars >= 4 ? 9.1 : chars >= 3 ? 10.1 : 12.0)*scale}px Arial,sans-serif`;
         ctx.fillText(number,x,y+h*.12);
-    } else if (klass==="us") {
-        ctx.fillStyle="#1c2126";
-        ctx.font=`800 ${(chars>=4?14.5:chars>=3?17:20)*scale}px Arial,sans-serif`;
-        ctx.fillText(number,x,y+1.1*scale);
+    } else if (klass === "us") {
+        ctx.fillStyle = "#18202a";
+        ctx.font = `800 ${(chars >= 4 ? 9.5 : chars >= 3 ? 11.0 : 12.6)*scale}px Arial,sans-serif`;
+        ctx.fillText(number,x,y+1.0*scale);
     } else {
-        const abbr=SPCOA_STATE_ABBREVIATIONS[String(state||"")] ||
-            String(state||"").slice(0,2).toUpperCase();
-        ctx.fillStyle="#20262d";
-        ctx.font=`700 ${8*scale}px Arial,sans-serif`;
-        ctx.fillText(abbr,x,y-8*scale);
-        ctx.font=`800 ${(chars>=4?11.3:chars>=3?13.4:16.2)*scale}px Arial,sans-serif`;
-        ctx.fillText(number,x,y+5.7*scale);
+        // Small horizontal marker, not an oversized two-line state badge.
+        ctx.fillStyle = "#18202a";
+        ctx.font = `700 ${8.8*scale}px Arial,sans-serif`;
+        ctx.fillText(spcoaStateShieldText(state,number),x,y+.5*scale);
     }
     ctx.restore();
     return {left:x-w/2-2,top:y-h/2-2,right:x+w/2+2,bottom:y+h/2+2};
@@ -11336,16 +11372,23 @@ function spcoaDrawRoadShields(ctx) {
     if (zoom < SPCOA_ROAD_LABEL_MIN_ZOOM.interstate) return;
     const roads=spcoaVisibleRoads();
     const width=geographyCanvas.clientWidth, height=geographyCanvas.clientHeight;
-    const scale=Math.min(.90,Math.max(.73,.74+(zoom-7)*.045));
-    const cells=new Map(), cellSize=86;
-    const spacing=zoom < 7.7 ? 400 : zoom < 8.5 ? 330 : 280;
-    const limit=Math.max(4,Math.round((width*height/1e6)*
-        (zoom < 7.7 ? 8 : zoom < 8.5 ? 14 : 20)));
+    const scale=Math.min(1.0,Math.max(.88,.9+(zoom-8)*.02));
+    const cells=new Map(), cellSize=110;
+    // Sparse WeatherFront-style route markers: small and geographically accurate,
+    // but substantially fewer than a full road-navigation map. At a typical
+    // 1500 x 800 panel there are at most FIVE shields across ALL road classes,
+    // with no more than two Interstates, two US routes and two state routes.
+    // Smaller panels get fewer labels, not proportionally denser labels.
+    const areaScale=Math.min(1.4,Math.max(.85,Math.sqrt(width*height/(1500*800))));
+    const limit=Math.max(2,Math.min(6,Math.round(width*height/(1500*800)*5)));
     const classLimit={
-        interstate:Math.max(1,Math.round(limit*.24)),
-        us:Math.max(2,Math.round(limit*.48)),
-        state:Math.max(2,Math.round(limit*.28))
+        interstate:width>=900 ? 2 : 1,
+        us:width>=900 ? 2 : 1,
+        state:width>=900 ? 2 : 1
     };
+    // A longer segment can have a second marker if it fits comfortably, but
+    // do not allow multiple nearby segments of I-80 to spam the same shield.
+    const repeatGap={interstate:740*areaScale,us:830*areaScale,state:940*areaScale};
     const shownByType={interstate:0,us:0,state:0};
     const routePositions=new Map();
     let count=0;
@@ -11358,15 +11401,15 @@ function spcoaDrawRoadShields(ctx) {
         const y0=Math.floor(box.top/cellSize),y1=Math.floor(box.bottom/cellSize);
         for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
             for(const prev of (cells.get(x+":"+y)||[])) {
-                if(!(prev.right+30<box.left||prev.left-30>box.right||
-                     prev.bottom+24<box.top||prev.top-24>box.bottom)) return true;
+                if(!(prev.right+65<box.left||prev.left-65>box.right||
+                     prev.bottom+42<box.top||prev.top-42>box.bottom)) return true;
             }
         }
         return false;
     }
     function register(box) {
-        const x0=Math.floor((box.left-30)/cellSize),x1=Math.floor((box.right+30)/cellSize);
-        const y0=Math.floor((box.top-24)/cellSize),y1=Math.floor((box.bottom+24)/cellSize);
+        const x0=Math.floor((box.left-65)/cellSize),x1=Math.floor((box.right+65)/cellSize);
+        const y0=Math.floor((box.top-42)/cellSize),y1=Math.floor((box.bottom+42)/cellSize);
         for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
             const key=x+":"+y,list=cells.get(key);
             if(list)list.push(box);else cells.set(key,[box]);
@@ -11382,7 +11425,7 @@ function spcoaDrawRoadShields(ctx) {
             if(spcoaRoadCategory(props.road_class||props.CLASS||props.class)!==klass) continue;
             const number=spcoaRoadRouteDigits(feature);
             if(!number)continue;
-            const locations=spcoaRoadLabelLocations(feature,width,height,spacing);
+            const locations=spcoaRoadLabelLocations(feature,width,height,repeatGap[klass]);
             for(const xy of locations) candidates.push({feature,props,number,xy,
                 distance:Math.hypot(xy.x-width*.5,xy.y-height*.5)});
         }
@@ -11393,9 +11436,9 @@ function spcoaDrawRoadShields(ctx) {
             if(count>=limit || shownByType[klass]>=classLimit[klass]) break;
             const routeKey=klass+":"+String(props.state||"")+":"+number;
             const seen=routePositions.get(routeKey)||[];
-            if(seen.some(p=>Math.hypot(p.x-xy.x,p.y-xy.y)<300))continue;
-            const w=(number.length>=4?46:number.length===3?41:35)*scale;
-            const h=(klass==="state"?31:37)*scale;
+            // Per-route distance is independent of source segment boundaries.
+            if(seen.some(p=>Math.hypot(p.x-xy.x,p.y-xy.y)<repeatGap[klass]))continue;
+            const {w,h}=spcoaRoadShieldDimensions(klass,number,scale);
             const box={left:xy.x-w/2-3,right:xy.x+w/2+3,
                        top:xy.y-h/2-3,bottom:xy.y+h/2+3};
             if(collides(box))continue;
