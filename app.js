@@ -11,6 +11,120 @@ const SPCOA_CUSTOM_DOMAINS_KEY = "spcoa_custom_domains_v1";
 // CWA border color is a browser preference, just like saved custom domains.
 const SPCOA_CWA_COLOR_KEY = "spcoa_cwa_border_color_v1";
 /* City-label preferences are browser-local, independent of saved map domains. */
+/* Road-overlay preferences: browser-local, independent of CWA/city controls. */
+const SPCOA_ROADS_KEY = "spcoa_road_prefs_v1";
+const SPCOA_ROADS_DEFAULTS = Object.freeze({
+    interstate: true, us: true, state: false, labels: true,
+    labelStyle: "shields", width: 1,
+    interstateColor: "#3d83d5", usColor: "#a79e90", stateColor: "#96948e"
+});
+function readSpcoaRoadPrefs() {
+    let v = {};
+    try { v = JSON.parse(localStorage.getItem(SPCOA_ROADS_KEY)) || {}; } catch (_) {}
+    const bool = k => typeof v[k] === "boolean" ? v[k] : SPCOA_ROADS_DEFAULTS[k];
+    const validColor = color => /^#[0-9a-fA-F]{6}$/.test(color || "");
+    // Preserve a previously customized single road color when upgrading.
+    // The old default (#eef4f7) is replaced by WeatherFront-inspired colors.
+    const oldColor = validColor(v.color) && v.color.toLowerCase() !== "#eef4f7"
+        ? v.color : null;
+    const color = (key) => validColor(v[key]) ? v[key]
+        : (oldColor || SPCOA_ROADS_DEFAULTS[key]);
+    return {
+        interstate: bool("interstate"), us: bool("us"), state: bool("state"),
+        labels: bool("labels"),
+        labelStyle: ["shields", "numbers"].includes(v.labelStyle) ? v.labelStyle : "shields",
+        interstateColor: color("interstateColor"),
+        usColor: color("usColor"),
+        stateColor: color("stateColor"),
+        width: [0.75, 1, 1.5, 2].includes(Number(v.width)) ? Number(v.width) : 1
+    };
+}
+function saveSpcoaRoadPrefs(value) {
+    try { localStorage.setItem(SPCOA_ROADS_KEY, JSON.stringify(value)); } catch (_) {}
+}
+function installSpcoaRoadControls() {
+    const cityToggle = document.getElementById("cities-toggle");
+    const cityRow = cityToggle?.closest("label");
+    if (!cityRow || document.getElementById("spcoa-roads-panel")) return;
+    const prefs = readSpcoaRoadPrefs();
+    const panel = document.createElement("div");
+    panel.id = "spcoa-roads-panel";
+    panel.style.cssText = "margin:7px 0;padding:9px 8px;border:1px solid #31526a;" +
+        "border-radius:6px;background:#10283a;display:flex;flex-direction:column;gap:6px;";
+    const heading = document.createElement("div");
+    heading.textContent = "Interstates & Highways";
+    heading.style.cssText = "font:700 12px Inter,Arial,sans-serif;color:#d9edf6;";
+    panel.appendChild(heading);
+    for (const [name, caption, checked] of [
+        ["interstate", "Interstates (I-80, I-76…)", prefs.interstate],
+        ["us", "U.S. Highways (US-83…)", prefs.us],
+        ["state", "State Highways (NE-61…)", prefs.state],
+        ["labels", "Show Route Labels (close zoom only)", prefs.labels]
+    ]) {
+        const row = document.createElement("label");
+        row.style.cssText = "display:flex;gap:6px;align-items:center;font:11px Inter,Arial,sans-serif;" +
+            "color:#c9deea;cursor:pointer;";
+        const check = document.createElement("input");
+        check.type = "checkbox"; check.id = "roads-" + name + "-toggle";
+        check.checked = checked;
+        row.append(check, document.createTextNode(caption));
+        panel.appendChild(row);
+    }
+    const styleRow = document.createElement("div");
+    styleRow.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap;";
+    for (const [klass, text] of [
+        ["interstate", "I"], ["us", "US"], ["state", "State"]
+    ]) {
+        const field = document.createElement("label");
+        field.textContent = text;
+        field.style.cssText = "display:flex;align-items:center;gap:4px;font:11px Inter,Arial,sans-serif;color:#c9deea;";
+        const picker = document.createElement("input");
+        picker.type = "color";
+        picker.id = "roads-color-" + klass;
+        picker.value = prefs[klass + "Color"];
+        picker.title = text + " highway line color";
+        picker.style.cssText = "width:27px;height:24px;border:0;background:transparent;";
+        field.append(picker);
+        styleRow.append(field);
+    }
+    const widthLabel = document.createElement("label");
+    widthLabel.textContent = "Width";
+    widthLabel.style.cssText = "display:flex;align-items:center;gap:5px;font:11px Inter,Arial,sans-serif;color:#c9deea;";
+    const width = document.createElement("select");
+    width.id = "roads-width";
+    width.style.cssText = "max-width:72px;padding:3px;font-size:11px;";
+    for (const n of [0.75, 1, 1.5, 2]) {
+        const o = document.createElement("option"); o.value = String(n); o.textContent = n + "×";
+        width.append(o);
+    }
+    width.value = String(prefs.width);
+    widthLabel.append(width);
+    styleRow.append(widthLabel);
+    panel.appendChild(styleRow);
+    const labelRow = document.createElement("label");
+    labelRow.textContent = "Label Style";
+    labelRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;" +
+        "font:11px Inter,Arial,sans-serif;color:#c9deea;";
+    const styleSelect = document.createElement("select");
+    styleSelect.id = "roads-label-style";
+    styleSelect.title = "Road shields only appear at close map zooms";
+    styleSelect.style.cssText = "max-width:150px;padding:4px;font-size:11px;";
+    for (const [value, text] of [["shields","Highway Shields"], ["numbers","Plain Numbers"]]) {
+        const o = document.createElement("option"); o.value = value; o.textContent = text;
+        styleSelect.append(o);
+    }
+    styleSelect.value = prefs.labelStyle;
+    labelRow.append(styleSelect);
+    panel.appendChild(labelRow);
+    const status = document.createElement("span");
+    status.id = "roads-data-status";
+    status.style.cssText = "font:10px Inter,Arial,sans-serif;color:#9eb4c2;";
+    status.textContent = "Roads: waiting for map";
+    panel.appendChild(status);
+    // Place the roads section above Cities (but not inside the Cities controls).
+    cityRow.insertAdjacentElement("beforebegin", panel);
+}
+
 const SPCOA_CITY_CWA_KEY = "spcoa_city_area_filter_v1";
 const SPCOA_CITY_DENSITY_KEY = "spcoa_city_density_v1";
 const SPCOA_CITY_FOLLOW_BORDER = "FOLLOW_CWA";
@@ -206,6 +320,7 @@ if (!__MP_CHILD) {
         const mapWrapper = document.getElementById("map-wrapper");
         const layoutSelect = document.getElementById("layout-select");
         const sidebar = document.getElementById("sidebar");
+        installSpcoaRoadControls();
         installSpcoaCityControls();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
@@ -754,7 +869,7 @@ if (!__MP_CHILD) {
                 if (host.id === "layout-select" || host.id === "parameter-scope" || host.id === "drawing-scope") return;
                 const child = d.getElementById(host.id);
                 if (!child) return;
-                if ((host.id === "cwa-border-color" || host.id === "city-density") &&
+                if ((host.id === "cwa-border-color" || host.id === "city-density" || host.id.startsWith("roads-color-")) &&
                     document.activeElement === host) return;
                 if (host.type === "checkbox" || host.type === "radio") host.checked = child.checked;
                 else host.value = child.value;
@@ -771,7 +886,7 @@ if (!__MP_CHILD) {
             // Mirror run information and loading status from the active map panel.
             // These labels live in the host sidebar and otherwise remain stuck
             // at the HTML defaults ("Loading..." / "Initializing...").
-            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label"].forEach(id => {
+            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child) host.textContent = child.textContent;
             });
@@ -832,6 +947,10 @@ if (!__MP_CHILD) {
         sidebar.addEventListener("input", event => {
             const el = event.target;
             if (!el) return;
+            if (el.id.startsWith("roads-color-")) {
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
+                return;
+            }
             if (el.id === "cwa-border-color") {
                 saveSpcoaCwaBorderColor(el.value);
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
@@ -2984,6 +3103,7 @@ window.addEventListener("storage", event => {
 
 const citiesToggle =
     document.getElementById("cities-toggle");
+installSpcoaRoadControls();
 installSpcoaCityControls();
 const cityCwaFilter = document.getElementById("city-cwa-filter");
 const cityDensitySlider = document.getElementById("city-density");
@@ -4002,6 +4122,113 @@ map.addControl(
 let countyFeatures = [];
 
 let stateFeatures = [];
+
+/* Static roads from data/roads_{interstate,us,state}.geojson, produced by the builder.
+ * No road coordinates are fabricated by the frontend. */
+let spcoaRoads = [];
+let spcoaRoadGrid = new Map();
+let spcoaRoadGlobal = [];
+let spcoaRoadStatus = "Roads: loading…";
+const spcoaRoadPrefs = readSpcoaRoadPrefs();
+const SPCOA_ROAD_CELL = 2.5;
+function spcoaRoadCategory(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (["interstate", "motorway", "i", "i-highway", "s1100"].includes(value)) return "interstate";
+    if (["us", "federal", "us highway", "us-highway", "trunk"].includes(value)) return "us";
+    if (["state", "state highway", "state-highway", "primary", "s1200"].includes(value)) return "state";
+    return null;
+}
+function spcoaRoadBBox(geometry) {
+    let xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
+    const lines = geometry?.type === "LineString" ? [geometry.coordinates] :
+        geometry?.type === "MultiLineString" ? geometry.coordinates : [];
+    for (const line of lines) for (const xy of line) {
+        if (!xy || !Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) continue;
+        xmin = Math.min(xmin, xy[0]); xmax = Math.max(xmax, xy[0]);
+        ymin = Math.min(ymin, xy[1]); ymax = Math.max(ymax, xy[1]);
+    }
+    return Number.isFinite(xmin) ? [xmin, ymin, xmax, ymax] : null;
+}
+function spcoaRoadMakeIndex() {
+    spcoaRoadGrid = new Map(); spcoaRoadGlobal = [];
+    spcoaRoads.forEach((feature, index) => {
+        const box = spcoaRoadBBox(feature.geometry);
+        if (!box) return;
+        feature.__roadbbox = box;
+        const x0 = Math.floor(box[0] / SPCOA_ROAD_CELL), x1 = Math.floor(box[2] / SPCOA_ROAD_CELL);
+        const y0 = Math.floor(box[1] / SPCOA_ROAD_CELL), y1 = Math.floor(box[3] / SPCOA_ROAD_CELL);
+        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 120) {
+            spcoaRoadGlobal.push(index); return;
+        }
+        for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+            const key = x + ":" + y;
+            if (!spcoaRoadGrid.has(key)) spcoaRoadGrid.set(key, []);
+            spcoaRoadGrid.get(key).push(index);
+        }
+    });
+}
+function spcoaVisibleRoads() {
+    if (!spcoaRoads.length) return [];
+    const bounds = map.getBounds(), pad = 0.65;
+    const left = Math.max(-180, bounds.getWest() - pad), right = Math.min(180, bounds.getEast() + pad);
+    const bottom = Math.max(-85, bounds.getSouth() - pad), top = Math.min(85, bounds.getNorth() + pad);
+    const ids = new Set(spcoaRoadGlobal);
+    for (let x = Math.floor(left / SPCOA_ROAD_CELL); x <= Math.floor(right / SPCOA_ROAD_CELL); x++) {
+        for (let y = Math.floor(bottom / SPCOA_ROAD_CELL); y <= Math.floor(top / SPCOA_ROAD_CELL); y++) {
+            const arr = spcoaRoadGrid.get(x + ":" + y);
+            if (arr) for (const index of arr) ids.add(index);
+        }
+    }
+    return [...ids].map(i => spcoaRoads[i]).filter(f => {
+        const b = f.__roadbbox;
+        return b && b[0] <= right && b[2] >= left && b[1] <= top && b[3] >= bottom;
+    });
+}
+const spcoaRoadFiles = Object.freeze({
+    interstate: "data/roads_interstate.geojson",
+    us: "data/roads_us.geojson",
+    state: "data/roads_state.geojson"
+});
+const spcoaRoadFetchState = {interstate: "idle", us: "idle", state: "idle"};
+function spcoaUpdateRoadStatus() {
+    const status = document.getElementById("roads-data-status");
+    if (!status) return;
+    const loaded = Object.values(spcoaRoadFetchState).filter(v => v === "loaded").length;
+    const loading = Object.values(spcoaRoadFetchState).filter(v => v === "loading").length;
+    const failed = Object.values(spcoaRoadFetchState).filter(v => v === "missing").length;
+    status.textContent = failed ? "Missing road files — see console" :
+        loading ? `Road layers: ${loaded} ready, ${loading} loading…` :
+        `${spcoaRoads.length.toLocaleString()} road segments loaded`;
+}
+async function spcoaLoadRoadClass(klass) {
+    if (spcoaRoadFetchState[klass] !== "idle") return;
+    spcoaRoadFetchState[klass] = "loading";
+    spcoaUpdateRoadStatus();
+    try {
+        const response = await fetch(spcoaRoadFiles[klass], {cache:"default"});
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        const geojson = await response.json();
+        if (geojson.type !== "FeatureCollection" || !Array.isArray(geojson.features))
+            throw new Error("Invalid road GeoJSON");
+        const next = geojson.features.filter(f =>
+            spcoaRoadCategory(f?.properties?.road_class || f?.properties?.CLASS || f?.properties?.class) === klass &&
+            (f?.geometry?.type === "LineString" || f?.geometry?.type === "MultiLineString"));
+        for (const road of next) spcoaRoads.push(road);
+        spcoaRoadMakeIndex();
+        spcoaRoadFetchState[klass] = "loaded";
+        spcoaUpdateRoadStatus();
+        renderGeography();
+    } catch (error) {
+        spcoaRoadFetchState[klass] = "missing";
+        spcoaUpdateRoadStatus();
+        console.warn(`[SPCOA] ${klass} overlay unavailable; upload ${spcoaRoadFiles[klass]}:`, error);
+    }
+}
+function spcoaEnsureRoads() {
+    for (const klass of ["interstate", "us", "state"])
+        if (spcoaRoadPrefs[klass]) void spcoaLoadRoadClass(klass);
+    spcoaUpdateRoadStatus();
+}
 
 let cwaFeatures = [];
 
@@ -10339,6 +10566,9 @@ async function loadGeography() {
 
     }
 
+    // Road data loads asynchronously; it must never delay the weather analysis.
+    spcoaEnsureRoads();
+
 }
 
 
@@ -10781,6 +11011,7 @@ function getCityLabelBox(ctx, name, point) {
    ========================================================================================= */
 
 function renderCities() {
+    spcoaVisibleCityLabelBoxes = [];
     // Clear the separate city layer even when labels are switched off.
     prepareContext(cityLabelCanvas, cityLabelCtx);
     const cityCountLabel = document.getElementById("city-count-label");
@@ -10883,6 +11114,8 @@ function renderCities() {
             }
         }
 
+        // Keep positions for road shield collision avoidance (city text wins).
+        spcoaVisibleCityLabelBoxes.push(box);
         // AguaceroWX-inspired look: compact BRIGHT WHITE city names with a
         // dark charcoal outline (rather than dark text with a white halo).
         // No city dot markers; the screenshot uses just place names.
@@ -10897,6 +11130,291 @@ function renderCities() {
     ctx.restore();
     if (cityCountLabel) cityCountLabel.textContent = `${labelsDrawn} city labels shown`;
 
+}
+
+/* =========================================================================================
+   ROAD LINES AND ROUTE NUMBERS (below CWA borders and city text)
+   ========================================================================================= */
+function spcoaRoadNumber(feature) {
+    const p = feature.properties || {};
+    let raw = String(p.number || p.NUMBER || p.ref || "").trim();
+    if (!raw || raw === "0" || raw.toLowerCase() === "null") return "";
+    raw = raw.split(/[;,]/)[0].trim();
+    if (raw.length > 24) return "";
+    const klass = spcoaRoadCategory(p.road_class || p.CLASS || p.class);
+    if (klass === "interstate") {
+        if (/^I[- ]?\d/i.test(raw)) return raw.replace(/^I[- ]?/i, "I-");
+        if (/^\d+[A-Z]?$/i.test(raw)) return "I-" + raw;
+    } else if (klass === "us") {
+        if (/^US[- ]?\d/i.test(raw)) return raw.replace(/^US[- ]?/i, "US ");
+        if (/^\d+[A-Z]?$/i.test(raw)) return "US " + raw;
+    }
+    return raw;
+}
+/* Route text comes from the uploaded Natural Earth GeoJSON. State highway
+ * designs are readable generic markers (NE uses a Nebraska-style rectangle).
+ * Interstate and US route graphics approximate their standard shield shapes.
+ */
+const SPCOA_STATE_ABBREVIATIONS = Object.freeze({
+    Alabama:"AL", Arizona:"AZ", Arkansas:"AR", California:"CA", Colorado:"CO",
+    Connecticut:"CT", Delaware:"DE", Florida:"FL", Georgia:"GA", Idaho:"ID",
+    Illinois:"IL", Indiana:"IN", Iowa:"IA", Kansas:"KS", Kentucky:"KY",
+    Louisiana:"LA", Maine:"ME", Maryland:"MD", Massachusetts:"MA", Michigan:"MI",
+    Minnesota:"MN", Mississippi:"MS", Missouri:"MO", Montana:"MT", Nebraska:"NE",
+    Nevada:"NV", "New Hampshire":"NH", "New Jersey":"NJ", "New Mexico":"NM",
+    "New York":"NY", "North Carolina":"NC", "North Dakota":"ND", Ohio:"OH",
+    Oklahoma:"OK", Oregon:"OR", Pennsylvania:"PA", "Rhode Island":"RI",
+    "South Carolina":"SC", "South Dakota":"SD", Tennessee:"TN", Texas:"TX",
+    Utah:"UT", Vermont:"VT", Virginia:"VA", Washington:"WA", "West Virginia":"WV",
+    Wisconsin:"WI", Wyoming:"WY", "District of Columbia":"DC"
+});
+const SPCOA_ROAD_LABEL_MIN_ZOOM = Object.freeze({interstate:6.85,us:7.45,state:8.1});
+const SPCOA_ROAD_LINE_MIN_ZOOM = Object.freeze({interstate:3,us:4.25,state:5.25});
+let spcoaVisibleCityLabelBoxes = [];
+
+function spcoaDrawRoads(ctx) {
+    if (!spcoaRoads.length || ![spcoaRoadPrefs.interstate,spcoaRoadPrefs.us,
+        spcoaRoadPrefs.state].some(Boolean)) return;
+    const zoom = map.getZoom();
+    const roads = spcoaVisibleRoads();
+    const layers = [
+        ["state", 0.76, spcoaRoadPrefs.stateColor],
+        ["us", 1.02, spcoaRoadPrefs.usColor],
+        ["interstate", 1.65, spcoaRoadPrefs.interstateColor]
+    ];
+    ctx.save();
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    for (const [klass, width, color] of layers) {
+        if (!spcoaRoadPrefs[klass] || zoom < SPCOA_ROAD_LINE_MIN_ZOOM[klass]) continue;
+        const subset = roads.filter(f => spcoaRoadCategory(f.properties?.road_class ||
+            f.properties?.CLASS || f.properties?.class) === klass);
+        if (!subset.length) continue;
+        ctx.beginPath();
+        for (const feature of subset) drawGeoJSONLine(feature.geometry, ctx);
+        ctx.lineWidth = width * spcoaRoadPrefs.width + (klass === "interstate" ? 1.0 : .8);
+        ctx.strokeStyle = "rgba(12,21,30,.74)";
+        ctx.stroke();
+        ctx.beginPath();
+        for (const feature of subset) drawGeoJSONLine(feature.geometry, ctx);
+        ctx.lineWidth = width * spcoaRoadPrefs.width;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function spcoaRoadRouteDigits(feature) {
+    const full = spcoaRoadNumber(feature);
+    const match = /^(?:I-?|US\s*)?([0-9]{1,4}[A-Za-z]?)$/i.exec(full);
+    return match ? match[1].toUpperCase() : "";
+}
+
+// Liang-Barsky clipping in SCREEN coordinates avoids off-map shield placement.
+function spcoaClipRoadSegment(a, b, margin, width, height) {
+    const xmin = margin, ymin = margin, xmax = width-margin, ymax = height-margin;
+    const dx = b.x-a.x, dy = b.y-a.y;
+    let start = 0, end = 1;
+    for (const [p,q] of [[-dx,a.x-xmin],[dx,xmax-a.x],[-dy,a.y-ymin],[dy,ymax-a.y]]) {
+        if (Math.abs(p) < 1e-9) { if (q < 0) return null; }
+        else {
+            const t = q / p;
+            if (p < 0) start = Math.max(start,t);
+            else end = Math.min(end,t);
+            if (start > end) return null;
+        }
+    }
+    return [{x:a.x+start*dx,y:a.y+start*dy},{x:a.x+end*dx,y:a.y+end*dy}];
+}
+
+function spcoaRoadLabelLocations(feature, width, height, spacing) {
+    const geometry = feature.geometry;
+    const lines = geometry?.type === "LineString" ? [geometry.coordinates] :
+        geometry?.type === "MultiLineString" ? geometry.coordinates : [];
+    const segments = []; let total = 0;
+    const margin = 29;
+    for (const line of lines) {
+        if (!line || line.length < 2) continue;
+        let prev = map.project(line[0]);
+        for (let i=1; i<line.length; i++) {
+            const next = map.project(line[i]);
+            const clipped = spcoaClipRoadSegment(prev,next,margin,width,height);
+            if (clipped) {
+                const [a,b] = clipped, length = Math.hypot(b.x-a.x,b.y-a.y);
+                if (length > 0.05) { segments.push({a,b,length}); total += length; }
+            }
+            prev = next;
+        }
+    }
+    if (total < 38) return [];
+    const n = Math.min(2,Math.max(1,Math.floor(total/spacing)));
+    const wanted = Array.from({length:n}, (_,i)=>total*(i+.5)/n);
+    const out = [];
+    let passed = 0, j = 0;
+    for (const seg of segments) {
+        while (j < wanted.length && wanted[j] <= passed + seg.length) {
+            const f = Math.max(0,Math.min(1,(wanted[j]-passed)/seg.length));
+            out.push({x:seg.a.x+(seg.b.x-seg.a.x)*f,y:seg.a.y+(seg.b.y-seg.a.y)*f});
+            j++;
+        }
+        if (j >= wanted.length) break;
+        passed += seg.length;
+    }
+    return out;
+}
+
+function spcoaShieldPath(ctx, x, y, w, h, kind) {
+    ctx.beginPath();
+    if (kind === "interstate") {
+        ctx.moveTo(x-w*.48,y-h*.47);
+        ctx.quadraticCurveTo(x,y-h*.57,x+w*.48,y-h*.47);
+        ctx.lineTo(x+w*.46,y+h*.10);
+        ctx.quadraticCurveTo(x+w*.43,y+h*.42,x,y+h*.50);
+        ctx.quadraticCurveTo(x-w*.43,y+h*.42,x-w*.46,y+h*.10);
+    } else if (kind === "us") {
+        ctx.moveTo(x-w*.47,y-h*.40);
+        ctx.quadraticCurveTo(x,y-h*.49,x+w*.47,y-h*.40);
+        ctx.lineTo(x+w*.42,y+h*.10);
+        ctx.quadraticCurveTo(x+w*.36,y+h*.36,x,y+h*.49);
+        ctx.quadraticCurveTo(x-w*.36,y+h*.36,x-w*.42,y+h*.10);
+    } else {
+        const r = 3;
+        ctx.moveTo(x-w/2+r,y-h/2); ctx.lineTo(x+w/2-r,y-h/2);
+        ctx.quadraticCurveTo(x+w/2,y-h/2,x+w/2,y-h/2+r);
+        ctx.lineTo(x+w/2,y+h/2-r);ctx.quadraticCurveTo(x+w/2,y+h/2,x+w/2-r,y+h/2);
+        ctx.lineTo(x-w/2+r,y+h/2);ctx.quadraticCurveTo(x-w/2,y+h/2,x-w/2,y+h/2-r);
+        ctx.lineTo(x-w/2,y-h/2+r);ctx.quadraticCurveTo(x-w/2,y-h/2,x-w/2+r,y-h/2);
+    }
+    ctx.closePath();
+}
+
+function spcoaDrawHighwayShield(ctx, klass, number, state, x, y, scale=1) {
+    const chars = number.length;
+    const w = (chars>=4?46:chars===3?41:35)*scale;
+    const h = (klass==="state" ? 31 : 37)*scale;
+    ctx.save();
+    ctx.lineJoin="round";ctx.textAlign="center";ctx.textBaseline="middle";
+    // Small shadow ensures shields remain recognizable over colorful weather fill.
+    ctx.shadowColor="rgba(0,0,0,.40)";ctx.shadowBlur=2.5*scale;
+    ctx.shadowOffsetY=.7*scale;
+    spcoaShieldPath(ctx,x,y,w,h,klass);
+    ctx.fillStyle="#ffffff";ctx.fill();ctx.shadowColor="transparent";
+    ctx.lineWidth=1.6*scale;ctx.strokeStyle="#18222d";ctx.stroke();
+    if(klass==="interstate") {
+        ctx.save();spcoaShieldPath(ctx,x,y,w-3*scale,h-3*scale,klass);ctx.clip();
+        ctx.fillStyle="#2453a2";
+        ctx.fillRect(x-w/2,y-h/2,w,h);
+        ctx.fillStyle="#c62836";
+        ctx.fillRect(x-w/2,y-h/2,w,h*.43);
+        ctx.restore();
+        spcoaShieldPath(ctx,x,y,w-3*scale,h-3*scale,klass);
+        ctx.strokeStyle="#ffffff";ctx.lineWidth=1.15*scale;ctx.stroke();
+        ctx.fillStyle="#ffffff";
+        ctx.font=`700 ${6.1*scale}px Arial,sans-serif`;
+        ctx.fillText("INTERSTATE",x,y-h*.25);
+        ctx.font=`800 ${(chars>=4?15.0:chars>=3?18.5:21.0)*scale}px Arial,sans-serif`;
+        ctx.fillText(number,x,y+h*.12);
+    } else if (klass==="us") {
+        ctx.fillStyle="#1c2126";
+        ctx.font=`800 ${(chars>=4?14.5:chars>=3?17:20)*scale}px Arial,sans-serif`;
+        ctx.fillText(number,x,y+1.1*scale);
+    } else {
+        const abbr=SPCOA_STATE_ABBREVIATIONS[String(state||"")] ||
+            String(state||"").slice(0,2).toUpperCase();
+        ctx.fillStyle="#20262d";
+        ctx.font=`700 ${8*scale}px Arial,sans-serif`;
+        ctx.fillText(abbr,x,y-8*scale);
+        ctx.font=`800 ${(chars>=4?11.3:chars>=3?13.4:16.2)*scale}px Arial,sans-serif`;
+        ctx.fillText(number,x,y+5.7*scale);
+    }
+    ctx.restore();
+    return {left:x-w/2-2,top:y-h/2-2,right:x+w/2+2,bottom:y+h/2+2};
+}
+
+function spcoaDrawRoadShields(ctx) {
+    if (!spcoaRoadPrefs.labels || !spcoaRoads.length) return;
+    const zoom=map.getZoom();
+    if (zoom < SPCOA_ROAD_LABEL_MIN_ZOOM.interstate) return;
+    const roads=spcoaVisibleRoads();
+    const width=geographyCanvas.clientWidth, height=geographyCanvas.clientHeight;
+    const scale=Math.min(.90,Math.max(.73,.74+(zoom-7)*.045));
+    const cells=new Map(), cellSize=86;
+    const spacing=zoom < 7.7 ? 400 : zoom < 8.5 ? 330 : 280;
+    const limit=Math.max(4,Math.round((width*height/1e6)*
+        (zoom < 7.7 ? 8 : zoom < 8.5 ? 14 : 20)));
+    const classLimit={
+        interstate:Math.max(1,Math.round(limit*.24)),
+        us:Math.max(2,Math.round(limit*.48)),
+        state:Math.max(2,Math.round(limit*.28))
+    };
+    const shownByType={interstate:0,us:0,state:0};
+    const routePositions=new Map();
+    let count=0;
+    // City names take precedence over shields, but we do not hide the roads.
+    function collides(box) {
+        if(spcoaVisibleCityLabelBoxes.some(city =>
+            !(city.right+5<box.left || city.left-5>box.right ||
+              city.bottom+5<box.top || city.top-5>box.bottom))) return true;
+        const x0=Math.floor(box.left/cellSize),x1=Math.floor(box.right/cellSize);
+        const y0=Math.floor(box.top/cellSize),y1=Math.floor(box.bottom/cellSize);
+        for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+            for(const prev of (cells.get(x+":"+y)||[])) {
+                if(!(prev.right+30<box.left||prev.left-30>box.right||
+                     prev.bottom+24<box.top||prev.top-24>box.bottom)) return true;
+            }
+        }
+        return false;
+    }
+    function register(box) {
+        const x0=Math.floor((box.left-30)/cellSize),x1=Math.floor((box.right+30)/cellSize);
+        const y0=Math.floor((box.top-24)/cellSize),y1=Math.floor((box.bottom+24)/cellSize);
+        for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+            const key=x+":"+y,list=cells.get(key);
+            if(list)list.push(box);else cells.set(key,[box]);
+        }
+    }
+    ctx.save();
+    ctx.textBaseline="middle";ctx.textAlign="center";
+    for(const klass of ["interstate","us","state"]) {
+        if (!spcoaRoadPrefs[klass] || zoom < SPCOA_ROAD_LABEL_MIN_ZOOM[klass]) continue;
+        const candidates=[];
+        for(const feature of roads) {
+            const props=feature.properties||{};
+            if(spcoaRoadCategory(props.road_class||props.CLASS||props.class)!==klass) continue;
+            const number=spcoaRoadRouteDigits(feature);
+            if(!number)continue;
+            const locations=spcoaRoadLabelLocations(feature,width,height,spacing);
+            for(const xy of locations) candidates.push({feature,props,number,xy,
+                distance:Math.hypot(xy.x-width*.5,xy.y-height*.5)});
+        }
+        // Prioritize routes nearest the map center, NOT source file order.
+        // This helps useful highways such as NE-25 appear on close-up views.
+        candidates.sort((a,b)=>a.distance-b.distance);
+        for(const {feature,props,number,xy} of candidates) {
+            if(count>=limit || shownByType[klass]>=classLimit[klass]) break;
+            const routeKey=klass+":"+String(props.state||"")+":"+number;
+            const seen=routePositions.get(routeKey)||[];
+            if(seen.some(p=>Math.hypot(p.x-xy.x,p.y-xy.y)<300))continue;
+            const w=(number.length>=4?46:number.length===3?41:35)*scale;
+            const h=(klass==="state"?31:37)*scale;
+            const box={left:xy.x-w/2-3,right:xy.x+w/2+3,
+                       top:xy.y-h/2-3,bottom:xy.y+h/2+3};
+            if(collides(box))continue;
+            if(spcoaRoadPrefs.labelStyle==="numbers") {
+                ctx.lineJoin="round";ctx.lineWidth=3;
+                ctx.strokeStyle="rgba(8,14,20,.95)";
+                ctx.fillStyle="#ffffff";
+                ctx.font='700 11px "Segoe UI",Arial,sans-serif';
+                const text=spcoaRoadNumber(feature);
+                ctx.strokeText(text,xy.x,xy.y);ctx.fillText(text,xy.x,xy.y);
+            } else {
+                spcoaDrawHighwayShield(ctx,klass,number,props.state,xy.x,xy.y,scale);
+            }
+            register(box);count++;shownByType[klass]++;
+            const positions=routePositions.get(routeKey)||[];
+            positions.push(xy);routePositions.set(routeKey,positions);
+        }
+    }
+    ctx.restore();
 }
 
 /* =========================================================================================
@@ -10976,10 +11494,13 @@ function renderGeography() {
     geographyCtx.stroke();
 
 
+    // Draw thin roadway lines above state/county lines but below CWA borders.
+    spcoaDrawRoads(geographyCtx);
+
     /* -------------------------------------------------------------------------------------
        CWA BORDERS — TOP GEOGRAPHIC BOUNDARY LAYER
 
-       Draw order: counties -> states -> CWA borders -> cities.
+       Draw order: counties -> states -> roads -> CWA borders -> cities.
        Selected office, custom color, line width, and toggle are unchanged.
        Do not erase underlying state borders: CWA lines must remain visible
        on top of both state and county boundaries.
@@ -11021,14 +11542,10 @@ function renderGeography() {
 
     geographyCtx.restore();
 
-
-    /*
-     * Draw cities on their own canvas above vector barbs. This leaves
-     * county/state/CWA lines in their original geographic layer while
-     * numerical contour labels remain above everything at z-index 9.
-     */
+    /* City labels render onto a separate higher layer; calculating their
+     * boxes first lets geographic road shields avoid obscuring town names. */
     renderCities();
-
+    spcoaDrawRoadShields(geographyCtx);
 }
 
 
@@ -12448,6 +12965,47 @@ if (citiesToggle) {
 
 }
 
+
+/* =========================================================================================
+   ROAD CONTROLS
+   ========================================================================================= */
+for (const [type, key] of [
+    ["roads-interstate-toggle", "interstate"], ["roads-us-toggle", "us"],
+    ["roads-state-toggle", "state"], ["roads-labels-toggle", "labels"]
+]) {
+    const control = document.getElementById(type);
+    if (control) control.addEventListener("change", () => {
+        spcoaRoadPrefs[key] = control.checked;
+        saveSpcoaRoadPrefs(spcoaRoadPrefs);
+        spcoaEnsureRoads();
+        renderGeography();
+    });
+}
+for (const klass of ["interstate", "us", "state"]) {
+    const picker = document.getElementById("roads-color-" + klass);
+    if (!picker) continue;
+    const apply = () => {
+        const value = picker.value;
+        if (!/^#[0-9a-fA-F]{6}$/.test(value)) return;
+        spcoaRoadPrefs[klass + "Color"] = value;
+        saveSpcoaRoadPrefs(spcoaRoadPrefs);
+        renderGeography();
+    };
+    picker.addEventListener("input", apply);
+    picker.addEventListener("change", apply);
+}
+const spcoaRoadStyleSelect = document.getElementById("roads-label-style");
+if (spcoaRoadStyleSelect) spcoaRoadStyleSelect.addEventListener("change", () => {
+    spcoaRoadPrefs.labelStyle = spcoaRoadStyleSelect.value === "numbers" ? "numbers" : "shields";
+    saveSpcoaRoadPrefs(spcoaRoadPrefs);
+    renderGeography();
+});
+const spcoaRoadWidthSelect = document.getElementById("roads-width");
+if (spcoaRoadWidthSelect) spcoaRoadWidthSelect.addEventListener("change", () => {
+    spcoaRoadPrefs.width = Math.max(.75, Math.min(2, Number(spcoaRoadWidthSelect.value) || 1));
+    saveSpcoaRoadPrefs(spcoaRoadPrefs);
+    renderGeography();
+});
 
 /* =========================================================================================
    CITY AREA / DENSITY CONTROLS (independent of visible CWA border lines)
@@ -14261,4 +14819,3 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
