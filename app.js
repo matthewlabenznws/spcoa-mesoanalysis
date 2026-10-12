@@ -385,6 +385,48 @@ function spcoaGifSharedPalette(canvases) {
     return palette;
 }
 
+/* =========================================================================================
+   SPC COMPOSITE CONTOUR SELECTORS (HOST AND PANEL IFRAME)
+   These are independent overlays and are all initially unchecked.
+   Keep existing static HTML untouched; both host and iframe must have
+   matching control IDs for the multi-panel event relay to work.
+   ========================================================================================= */
+const SPC_EXTRA_COMPOSITE_TOGGLES = [
+    {field: "stp_fix_contours", stateKey: "stpFixContours", toggleId: "stp-fix-contours-toggle", label: "Fixed-Layer STP"},
+    {field: "stp_500m_contours", stateKey: "stp500Contours", toggleId: "stp-500m-contours-toggle", label: "STP (0–500 m SRH)"},
+    {field: "vtp_contours", stateKey: "vtpContours", toggleId: "vtp-contours-toggle", label: "Violent Tornado Parameter"},
+    {field: "microburst_composite", stateKey: "microburstContours", toggleId: "microburst-contours-toggle", label: "Microburst Composite"},
+    {field: "esp_contours", stateKey: "espContours", toggleId: "esp-contours-toggle", label: "Enhanced Stretching Potential"},
+    {field: "tehi_contours", stateKey: "tehiContours", toggleId: "tehi-contours-toggle", label: "Tornadic 0–1 km EHI"},
+    {field: "tts_contours", stateKey: "ttsContours", toggleId: "tts-contours-toggle", label: "Tornadic Tilting and Stretching"}
+];
+function installSpcoaCompositeContourToggles() {
+    const original = document.getElementById("shp-contours-toggle") ||
+                     document.getElementById("dcp-contours-toggle");
+    const anchor = original && original.closest("label");
+    if (!anchor || !anchor.parentElement) {
+        console.warn("Could not locate SPC composite toggle location");
+        return;
+    }
+    let insertionPoint = anchor;
+    for (const item of SPC_EXTRA_COMPOSITE_TOGGLES) {
+        const existing = document.getElementById(item.toggleId);
+        if (existing) { insertionPoint = existing.closest("label") || insertionPoint; continue; }
+        const row = document.createElement("label");
+        row.className = anchor.className || "toggle-row";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.id = item.toggleId;
+        input.checked = false;
+        const span = document.createElement("span");
+        span.className = "barb-text";
+        span.textContent = item.label;
+        row.append(input,span);
+        insertionPoint.insertAdjacentElement("afterend",row);
+        insertionPoint = row;
+    }
+}
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -394,6 +436,7 @@ if (!__MP_CHILD) {
         const sidebar = document.getElementById("sidebar");
         installSpcoaRoadControls();
         installSpcoaCityControls();
+        installSpcoaCompositeContourToggles();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
 
@@ -2797,15 +2840,26 @@ const CONTOUR_FIELDS = {
     mucin_contours: { name: "Most-Unstable CIN Contours", shortName: "MUCIN Contours", units: "J/kg", interval: 25, minimum: -1000, maximum: -25, anchor: -1000, colorScheme: "blues", smoothGeometry: false, smoothIterations: 4 },
 
 
+    stp_eff_contours: {name: "Effective-Layer STP", shortName: "Effective-Layer STP", units: "", interval: 0.5, minimum: 0.5, maximum: 10.5, colorScheme: "stp", compositeContour: true},
+    stp_fix_contours: {name: "Fixed-Layer STP", shortName: "Fixed-Layer STP", units: "", interval: 0.5, minimum: 0.5, maximum: 10.5, colorScheme: "stp", compositeContour: true},
+    stp_500m_contours: {name: "STP (0–500 m SRH)", shortName: "STP 0–500 m", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "stp", compositeContour: true},
+    vtp_contours: {name: "Violent Tornado Parameter", shortName: "VTP", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
+    microburst_composite: {name: "Microburst Composite", shortName: "Microburst", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
+    esp_contours: {name: "Enhanced Stretching Potential", shortName: "ESP", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
+    tehi_contours: {name: "Tornadic 0–1 km EHI", shortName: "Tornadic EHI", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
+    tts_contours: {name: "Tornadic Tilting and Stretching", shortName: "TTS", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
     dcp_contours: {
+        compositeContour: true,
         name: "Derecho Composite Parameter", shortName: "DCP", units: "",
         levels: [1, 2, 4, 6, 8, 10, 12], colorScheme: "dcp_spc"
     },
     lhp_contours: {
+        compositeContour: true,
         name: "Large Hail Parameter", shortName: "LHP", units: "",
         levels: [4, 6, 8, 12, 16, 20], colorScheme: "lhp_spc"
     },
     shp_contours: {
+        compositeContour: true,
         name: "Significant Hail Parameter", shortName: "SHIP", units: "",
         levels: [0.5, 1, 1.5, 2, 3, 5], colorScheme: "shp_spc"
     },
@@ -3101,6 +3155,13 @@ const activeOverlays = {
     frontogenesis700: false,
     lclHeight: false,
     stpEff: false,
+    stpFixContours: false,
+    stp500Contours: false,
+    vtpContours: false,
+    microburstContours: false,
+    espContours: false,
+    tehiContours: false,
+    ttsContours: false,
     dcpContours: false,
     lhpContours: false,
     shpContours: false,
@@ -4164,7 +4225,10 @@ for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
    LCL HEIGHT CONTOUR TOGGLE
    ========================================================================================= */
 
+installSpcoaCompositeContourToggles();
+
 const THERMODYNAMIC_CONTOUR_OVERLAYS = [
+    ...SPC_EXTRA_COMPOSITE_TOGGLES,
     { field: "sbcin_contours", stateKey: "sbcinContours", toggleId: "sbcin-contours-toggle", label: "SBCIN Contours" },
     { field: "mlcin_contours", stateKey: "mlcinContours", toggleId: "mlcin-contours-toggle", label: "MLCIN Contours" },
     { field: "mucin_contours", stateKey: "mucinContours", toggleId: "mucin-contours-toggle", label: "MUCIN Contours" },
@@ -9727,11 +9791,7 @@ function drawMslpLabel(
 
     ctx.strokeText(
 
-        String(
-            Math.round(
-                level
-            )
-        ),
+        Number.isInteger(level) ? String(level) : String(Number(level.toFixed(2))),
 
         0,
 
@@ -9746,11 +9806,7 @@ function drawMslpLabel(
 
     ctx.fillText(
 
-        String(
-            Math.round(
-                level
-            )
-        ),
+        Number.isInteger(level) ? String(level) : String(Number(level.toFixed(2))),
 
         0,
 
@@ -9901,6 +9957,14 @@ function getWcdColor(value) {
     return WCD_COLORS[index];
 }
 
+
+const SPC_NEW_COMPOSITE_COLORS = ["#f78e3c", "#eb661c", "#f34714", "#e72e17", "#d9201d", "#c9151c", "#ad0d1c", "#870a13", "#bf00e2", "#e100dc", "#d000c4", "#a13ce1", "#9460db", "#8d59d6", "#834bc6", "#743aa9", "#662b96", "#5b208a", "#51187e", "#461473", "#3f106a", "#3a0f61", "#351056", "#300d4f", "#290945"];
+
+function getSpcCompositeContourColor(level) {
+    const idx = Math.max(0, Math.min(SPC_NEW_COMPOSITE_COLORS.length - 1,
+        Math.floor((level - 1) / 2)));
+    return SPC_NEW_COMPOSITE_COLORS[idx];
+}
 
 function getDiscreteContourColor(
     value,
@@ -10096,7 +10160,7 @@ async function renderContourField(
     const step =
         useHighResolutionContourGrid
             ? 1
-            : 4;
+            : (CONTOUR_FIELDS[field]?.compositeContour ? 3 : 4);
 
     const columns =
         Math.ceil(width / step) + 1;
@@ -10193,7 +10257,7 @@ async function renderContourField(
      * is the initial test value. Existing DCAPE/WCD light smoothing remains.
      */
     const useGaussianContourSmoothing =
-        definition.smoothGeometry === true;
+        definition.smoothGeometry === true && definition.compositeContour !== true;
 
     const contourValues =
         useGaussianContourSmoothing
@@ -10228,10 +10292,12 @@ async function renderContourField(
                     )
             );
 
-    const contourAnchor =
-        metadata.display && Number.isFinite(Number(metadata.display.anchor))
-            ? Number(metadata.display.anchor)
-            : (Number.isFinite(Number(definition.anchor)) ? Number(definition.anchor) : 0);
+    const metadataAnchor = metadata.display?.anchor;
+    const contourAnchor = metadataAnchor !== undefined && metadataAnchor !== null &&
+                          Number.isFinite(Number(metadataAnchor))
+        ? Number(metadataAnchor)
+        : (definition.anchor !== undefined && definition.anchor !== null &&
+           Number.isFinite(Number(definition.anchor)) ? Number(definition.anchor) : 0);
 
     const explicitLevelsRaw =
         (metadata.display && Array.isArray(metadata.display.levels) && metadata.display.levels.length)
@@ -10274,8 +10340,8 @@ async function renderContourField(
             );
 
     let lastLevel =
-        Math.floor(
-            maximumValue / interval
+        contourAnchor + Math.floor(
+            (maximumValue - contourAnchor) / interval
         ) * interval;
 
     if (Number.isFinite(configuredMaximum)) {
@@ -10378,6 +10444,7 @@ async function renderContourField(
     for (const level of levelsToRender) {
 
         const contourColor =
+            colorScheme === "spc_composite" ? getSpcCompositeContourColor(level) :
             colorScheme === "blues" ? getCinBluesColor(level) :
             colorScheme === "pressure_temperature_isotherms"
                 ? (level > 0 ? "#d7191c" : "#0066ff")
@@ -10449,7 +10516,7 @@ async function renderContourField(
         let segmentCounter = 0;
 
         const smoothGeometry =
-            definition.smoothGeometry === true;
+            definition.smoothGeometry === true || definition.compositeContour === true;
 
         const smoothIterations =
             Number.isFinite(
@@ -10642,9 +10709,20 @@ async function renderContourField(
                         rawLine.length - 1
                     );
 
+                // Composite: leave short contours unlabelled to avoid repeated
+                // numbers squeezed into tiny loops. The line remains drawn.
+                const compositeLabelLength = definition.compositeContour
+                    ? rawLine.reduce((distance, point, index) => {
+                          if (!index) return distance;
+                          const previous = rawLine[index - 1];
+                          return distance + Math.hypot(point.x - previous.x,
+                                                       point.y - previous.y);
+                      }, 0)
+                    : Infinity;
                 if (
                     labelsEnabled &&
-                    rawLine.length >= 8
+                    rawLine.length >= 8 &&
+                    compositeLabelLength >= 145
                 ) {
 
                     const middleIndex =
@@ -10714,13 +10792,9 @@ async function renderContourField(
     contourLabelCtx.save();
 
     const minimumLabelDistance =
-        (
-            field === "dcape" ||
-            field === "warm_cloud_depth" ||
-            field === "lcl_height"
-        )
-            ? 80
-            : 95;
+        definition.compositeContour ? 195 :
+        (field === "dcape" || field === "warm_cloud_depth" || field === "lcl_height")
+            ? 80 : 95;
 
     for (
         const candidate
@@ -10774,11 +10848,9 @@ async function renderContourField(
                 "bold 11px Arial, Helvetica, sans-serif";
 
             const labelText =
-                String(
-                    Math.round(
-                        candidate.level
-                    )
-                );
+                Number.isInteger(candidate.level)
+                    ? String(candidate.level)
+                    : String(Number(candidate.level.toFixed(2)));
 
             const labelWidth =
                 contourCtx.measureText(
