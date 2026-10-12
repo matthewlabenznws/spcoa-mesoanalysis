@@ -313,6 +313,78 @@ function spcoaCameraMatches(a, b) {
         Math.abs(a.center[1] - b.center[1]) < 0.001 && Math.abs(a.zoom - b.zoom) < 0.025;
 }
 
+/* =========================================================================================
+   GIF FRAME PLAN — preserve the selected timeline range while bounding browser RAM.
+   ========================================================================================= */
+const SPCOA_GIF_MAX_FRAMES = 24;
+function spcoaGifFramePlan(runs, maxFrames = SPCOA_GIF_MAX_FRAMES) {
+    if (!Array.isArray(runs) || !runs.length) return [];
+    if (runs.length <= maxFrames) return runs.slice();
+    // Uniform chronological subsampling keeps the first AND latest valid times.
+    const out = [];
+    for (let i = 0; i < maxFrames; i++) {
+        out.push(runs[Math.round(i * (runs.length - 1) / (maxFrames - 1))]);
+    }
+    return out;
+}
+
+/* =========================================================================================
+   GIF COLOR CONSISTENCY
+
+   gif.js defaults to generating a new 256-color table for each frame. With
+   meteorological palettes this makes identical colors change between runs.
+   Build ONE fixed color table from samples of ALL frames before encoding,
+   including late-forming colors that weren't visible in the first analysis.
+
+   Frequently occurring exact RGBs are favored. In practice those are the
+   discrete shaded meteorological colors, not anti-aliased map label fringes.
+   This cannot avoid GIF's 256-color limit, but avoids temporal palette drift.
+   ========================================================================================= */
+function spcoaGifSharedPalette(canvases) {
+    const hist = new Map();
+    for (const canvas of canvases) {
+        if (!canvas || !canvas.width || !canvas.height) continue;
+        const ctx = canvas.getContext('2d', {willReadFrequently: true});
+        if (!ctx) throw new Error('GIF canvas cannot be read for palette generation.');
+        let pixels;
+        try { pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data; }
+        catch (err) { throw new Error('GIF canvas contains non-exportable map imagery (CORS): ' + (err.message || err)); }
+        // ~50,000 to 100,000 samples per frame, including the legend and labels.
+        const step = Math.max(2, Math.ceil(Math.sqrt(canvas.width * canvas.height / 75000)));
+        for (let y = 0; y < canvas.height; y += step) {
+            for (let x = 0; x < canvas.width; x += step) {
+                const i = (y * canvas.width + x) * 4;
+                if (pixels[i+3] < 128) continue;
+                const rgb = (pixels[i] << 16) | (pixels[i+1] << 8) | pixels[i+2];
+                hist.set(rgb, (hist.get(rgb) || 0) + 1);
+            }
+        }
+    }
+    // Stable colors for background, geographic lines, branding, text and labels.
+    const fixed = [
+        0xffffff, 0x000000, 0x102433, 0xd7e7f2, 0xc7d6e1, 0xf7f8fa,
+        0x17232d, 0x425766, 0xaeb7bf, 0x66727c, 0x41647d, 0xf4f8fb,
+        0x8b969f, 0x202020, 0x333333, 0xe6e6e6
+    ];
+    const chosen = new Set(fixed);
+    const entries = Array.from(hist, ([rgb, count]) => ({rgb, count}));
+    entries.sort((a,b) => b.count-a.count || a.rgb-b.rgb);
+    for (const item of entries) {
+        if (chosen.size >= 256) break;
+        chosen.add(item.rgb);
+    }
+    // Fill remaining entries with neutral levels so the encoder always gets
+    // exactly the standard 256-entry palette (768 RGB bytes).
+    for (let v = 0; chosen.size < 256 && v <= 255; v++) chosen.add((v<<16)|(v<<8)|v);
+    const palette = [];
+    for (const rgb of chosen) {
+        palette.push((rgb>>16)&255, (rgb>>8)&255, rgb&255);
+        if (palette.length === 768) break;
+    }
+    if (palette.length !== 768) throw new Error('Could not construct a 256-color GIF palette.');
+    return palette;
+}
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -344,6 +416,7 @@ if (!__MP_CHILD) {
         let sharedPointerId = null;
         let sharedSourcePanel = -1;
         let sharedDrawingTool = "pan";
+        let hostGifExporting = false;
         // Named per-browser forecaster panel configurations (never run-specific).
         let savedLayoutApplying = false;
         const parameterScope = document.getElementById("parameter-scope");
@@ -890,7 +963,7 @@ if (!__MP_CHILD) {
             // at the HTML defaults ("Loading..." / "Initializing...").
             ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
-                if (host && child) host.textContent = child.textContent;
+                if (host && child && !(hostGifExporting && id === "status")) host.textContent = child.textContent;
             });
             updateSpcoaDensityUi();
             const hs = document.getElementById("timeline-slider"), cs = d.getElementById("timeline-slider");
@@ -898,7 +971,7 @@ if (!__MP_CHILD) {
         }
 
         function syncTimeFromActiveChild() {
-            if (savedLayoutApplying) return;
+            if (savedLayoutApplying || hostGifExporting) return;
             const d = childDoc();
             if (!d) return;
             const slider = d.getElementById("timeline-slider");
@@ -988,7 +1061,7 @@ if (!__MP_CHILD) {
             const button = event.target.closest("button");
             if (!button) return;
             if (button.id === "save-png") { event.preventDefault(); event.stopImmediatePropagation(); saveCombinedPng(); return; }
-            if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); clickChildById("save-gif"); return; }
+            if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); void saveCombinedGif(); return; }
             if (drawingScope.value === "all") {
                 if (button.dataset.tool) {
                     setSharedDrawingTool(button.dataset.tool);
@@ -1082,7 +1155,7 @@ if (!__MP_CHILD) {
                     const waiters = p.configWaiters.splice(0);
                     waiters.forEach(resolve => resolve());
                 }
-            } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting && !savedLayoutApplying) {
+            } else if (msg.type === "mp-camera" && msg.camera && !cameraBroadcasting && !savedLayoutApplying && !hostGifExporting) {
                 const source = Number(msg.panel) - 1;
                 cameraBroadcasting = true;
                 for (let i = 0; i < layoutCount; i++) {
@@ -1092,6 +1165,187 @@ if (!__MP_CHILD) {
                 setTimeout(() => { cameraBroadcasting = false; renderSharedOverlay(); }, 100);
             }
         });
+
+        /* =====================================================================================
+           GIF EXPORT — synchronize every VISIBLE panel and capture each completed analysis.
+           The children render their own numerical fields; the host performs encoding once.
+           ===================================================================================== */
+        function makeCombinedGifFrame(captures, panelCount, utcLabel) {
+            if (panelCount === 1) return captures[0];
+            const cols = 2, rows = panelCount === 4 ? 2 : 1;
+            const panelW = captures[0].width;
+            const childHeaderH = Math.max(1, Math.round(92 * panelW / 3840));
+            const cellH = Math.max(...captures.map(c => c.height - childHeaderH));
+            const gap = 5, headerH = 50;
+            const out = document.createElement("canvas");
+            out.width = cols * panelW + (cols - 1) * gap;
+            out.height = headerH + rows * cellH + (rows - 1) * gap;
+            const ctx = out.getContext("2d", { alpha: false });
+            ctx.fillStyle = "#102433";
+            ctx.fillRect(0, 0, out.width, out.height);
+            ctx.fillStyle = "#d7e7f2";
+            ctx.font = '600 14px Inter, "Segoe UI", Arial, sans-serif';
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 15, 19);
+            ctx.fillStyle = "#ffffff";
+            ctx.font = '700 17px Inter, "Segoe UI", Arial, sans-serif';
+            ctx.textAlign = "right";
+            ctx.fillText(`${panelCount}-Panel · 3-km Mesoscale Analysis`, out.width - 15, 19);
+            ctx.font = '500 11px Inter, Arial, sans-serif';
+            ctx.fillStyle = "#c7d6e1";
+            ctx.fillText(utcLabel, out.width - 15, 37);
+            for (let i = 0; i < panelCount; i++) {
+                const col = i % 2, row = panelCount === 4 ? Math.floor(i / 2) : 0;
+                const x = col * (panelW + gap), y = headerH + row * (cellH + gap);
+                const c = captures[i];
+                ctx.fillStyle = "#ffffff";
+                ctx.fillRect(x, y, panelW, cellH);
+                // GIF child exports include the same header as PNG. Remove duplicate headers
+                // here, retaining each panel's geography, legend, and valid-time footer.
+                ctx.drawImage(c, 0, childHeaderH, c.width, c.height - childHeaderH,
+                    x, y, panelW, c.height - childHeaderH);
+                ctx.strokeStyle = "#425766";
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x + 1, y + 1, panelW - 2, cellH - 2);
+                ctx.fillStyle = "rgba(13,27,39,.9)";
+                ctx.fillRect(x + 8, y + 8, 72, 25);
+                ctx.fillStyle = "#fff";
+                ctx.textAlign = "center";
+                ctx.font = '700 13px Inter, Arial, sans-serif';
+                ctx.fillText(`Panel ${i + 1}`, x + 44, y + 20);
+            }
+            return out;
+        }
+
+        async function saveCombinedGif() {
+            if (hostGifExporting || savedLayoutApplying) return;
+            if (typeof GIF === "undefined") {
+                alert("GIF encoder unavailable. Check that gif.js loaded successfully in your browser.");
+                return;
+            }
+            const count = visiblePanelCount();
+            const oldLabel = saveGif?.textContent || "Save GIF";
+            const status = document.getElementById("status");
+            const snapshots = [];
+            const priorAnnotations = [];
+            let workerUrl = null;
+            hostGifExporting = true;
+            if (saveGif) { saveGif.disabled = true; saveGif.textContent = "Preparing…"; }
+            if (savePng) savePng.disabled = true;
+            const report = msg => {
+                if (status) status.textContent = msg;
+                if (saveGif) saveGif.title = msg;
+            };
+            try {
+                await Promise.all(Array.from({length: count}, (_, i) => configuredPanel(i)));
+                const childWindows = Array.from({length: count}, (_, i) => panels[i].frame.contentWindow);
+                if (childWindows.some(w => !w || typeof w.__mpGifState !== "function" ||
+                    typeof w.__mpGifBegin !== "function" || typeof w.__mpGifSetRun !== "function" ||
+                    typeof w.__mpGifFrame !== "function" || typeof w.__mpGifFinish !== "function")) {
+                    throw new Error("A map panel is still initializing. Please retry when all panels have loaded.");
+                }
+                const available = childWindows[0].__mpGifState().runs;
+                if (!available.length) throw new Error("No SPCOA analysis is available to export.");
+                // We choose the active panel's timeline range, then use the same run IDs
+                // for every visible panel. All panels normally have the same manifest.
+                const activeRuns = childWindows[Math.min(activePanel, count - 1)].__mpGifState().runs;
+                const sharedRuns = activeRuns.filter(item => childWindows.every(w =>
+                    w.__mpGifState().runs.some(candidate => candidate.run === item.run)));
+                if (!sharedRuns.length) throw new Error("Visible panels do not share an available SPCOA analysis.");
+                const runs = spcoaGifFramePlan(sharedRuns);
+                if (runs.length < sharedRuns.length)
+                    report(`Using ${runs.length} evenly spaced frames from ${sharedRuns.length} analyses to limit memory.`);
+                if (runs.length === 1)
+                    report("Only one analysis is available; creating a one-frame test GIF. Animation needs 2+ analyses.");
+
+                // Freeze timeline playback before changing ANY panel's run. The previous
+                // run/playing state is restored even if rendering or encoding fails.
+                for (let i = 0; i < count; i++) {
+                    snapshots.push({window: childWindows[i], state: childWindows[i].__mpGifBegin()});
+                    if (drawingScope?.value === "all" && childWindows[i].__mpGetAnnotations && childWindows[i].__mpSetAnnotations) {
+                        priorAnnotations[i] = childWindows[i].__mpGetAnnotations();
+                        childWindows[i].__mpSetAnnotations(sharedAnnotations);
+                    }
+                }
+                // The encoder worker is loaded separately from gif.js, already included
+                // by index.html. Blob worker URL avoids cross-origin Worker restrictions.
+                const response = await fetch("https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js", {mode: "cors"});
+                if (!response.ok) throw new Error(`GIF encoder worker download failed (HTTP ${response.status}).`);
+                workerUrl = URL.createObjectURL(new Blob([await response.text()], {type: "text/javascript"}));
+                const frames = [];
+                const speed = Math.max(0.25, Number(childWindows[0].__mpGifState().speed) || 1);
+                const delay = Math.max(160, Math.round(700 / speed));
+                for (let i = 0; i < runs.length; i++) {
+                    const item = runs[i];
+                    report(`Preparing GIF frame ${i + 1}/${runs.length} — ${item.run}`);
+                    if (saveGif) saveGif.textContent = `${i + 1}/${runs.length}`;
+                    // Await actual redraw completion rather than adding a delay and hoping
+                    // that the numerical layers have finished loading.
+                    await Promise.all(childWindows.map(w => w.__mpGifSetRun(item)));
+                    const panelW = count === 1 ? 1280 : 640;
+                    const captures = await Promise.all(childWindows.map(w => w.__mpGifFrame(panelW)));
+                    const time = item.analysis_time || childWindows[0].__mpGifState().currentAnalysisTime || item.run;
+                    const frame = makeCombinedGifFrame(captures, count, String(time));
+                    frames.push({canvas: frame,
+                        delay: i === runs.length - 1 ? Math.round(delay * 1.4) : delay});
+                }
+                report(`Building a consistent 256-color palette for ${frames.length} frames…`);
+                const palette = spcoaGifSharedPalette(frames.map(f => f.canvas));
+                const gif = new GIF({workers: 2, quality: 8, repeat: 0,
+                    // One fixed palette ensures the same meteorological RGB uses
+                    // the same indexed color throughout every analysis frame.
+                    globalPalette: palette, dither: false,
+                    width: frames[0].canvas.width, height: frames[0].canvas.height,
+                    workerScript: workerUrl});
+                for (const frame of frames) {
+                    gif.addFrame(frame.canvas, {copy: true, delay: frame.delay});
+                }
+                frames.length = 0;
+                report(`Encoding ${runs.length}-frame GIF…`);
+                if (saveGif) saveGif.textContent = "Encoding…";
+                const blob = await new Promise((resolve, reject) => {
+                    gif.on("finished", resolve);
+                    gif.on("abort", () => reject(new Error("GIF encoding was aborted.")));
+                    gif.render();
+                });
+                if (!blob || !blob.size) throw new Error("GIF encoder produced an empty file.");
+                const toStamp = value => {
+                    const d = new Date(value);
+                    if (Number.isNaN(d.getTime())) return String(value).replace(/[^0-9A-Za-z]+/g, "_");
+                    const p = n => String(n).padStart(2, "0");
+                    return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}_${p(d.getUTCHours())}Z`;
+                };
+                const start = runs[0].analysis_time || runs[0].run;
+                const end = runs[runs.length - 1].analysis_time || runs[runs.length - 1].run;
+                const fileName = `3km_Mesoscale_${count}Panel_${toStamp(start)}_to_${toStamp(end)}.gif`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url; a.download = fileName;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 15000);
+                report(runs.length === 1 ? "One-frame GIF test saved. Future analyses will animate." :
+                    `Saved ${runs.length}-frame ${count}-panel GIF.`);
+            } catch (error) {
+                console.error("SPCOA GIF export failed:", error);
+                report(`GIF export failed: ${error.message || error}`);
+            } finally {
+                // Restore all panels before re-enabling the controls; perform each
+                // restore independently so one failed panel cannot block the others.
+                await Promise.allSettled(snapshots.map(async ({window: w, state}, i) => {
+                    try { await w.__mpGifFinish(state); }
+                    finally {
+                        if (priorAnnotations[i] && w.__mpSetAnnotations) w.__mpSetAnnotations(priorAnnotations[i]);
+                    }
+                }));
+                if (workerUrl) URL.revokeObjectURL(workerUrl);
+                if (saveGif) { saveGif.disabled = false; saveGif.textContent = oldLabel; }
+                if (savePng) savePng.disabled = false;
+                hostGifExporting = false;
+                lastTimelineValue = null;
+                syncHostFromActiveChild();
+            }
+        }
 
         async function saveCombinedPng() {
             const old = savePng.textContent;
@@ -1395,7 +1649,10 @@ if (!__MP_CHILD) {
 
         setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); if (drawingScope.value === "all") renderSharedOverlay(); }, 350);
         applyLayout(layoutSelect ? layoutSelect.value : 1);
-        if (saveGif) saveGif.title = "GIF export uses the active panel. PNG export combines all visible panels.";
+        if (saveGif) {
+            saveGif.title = "Export the selected timeline as a synchronized 1-, 2-, or 4-panel GIF (one-frame test works before historical runs exist).";
+            saveGif.style.opacity = "1";
+        }
     })();
 } else {
     document.body.classList.add("mp-child");
@@ -5083,6 +5340,18 @@ async function loadRunMetadata(runId) {
     }
 }
 
+function ensureGifProductsAvailable() {
+    const selected = selectedProductKeys();
+    const missing = [
+        ...selected.scalar.filter(key => !fieldMetadata?.[key]).map(key => `fill:${key}`),
+        ...selected.vectors.filter(key => !vectorMetadata?.[key]).map(key => `vector:${key}`),
+        ...selected.contours.filter(key => !contourMetadata?.[key]).map(key => `contour:${key}`)
+    ];
+    if (missing.length) {
+        throw new Error(`Analysis ${currentRun} is missing selected products: ${missing.slice(0, 6).join(", ")}`);
+    }
+}
+
 async function applyRun(runItem, { render = true, preload = true } = {}) {
     if (!runItem || !runItem.run || timelineState.switching) return false;
     if (runItem.run === currentRun && runMetadata) {
@@ -5251,7 +5520,7 @@ function scheduleAdjacentPreload() {
 
 async function refreshAvailableTimes() {
     try {
-        if (document.hidden || timelineState.switching) return;
+        if (document.hidden || timelineState.switching || window.__spcoaGifExporting) return;
         const wasLive = timelineState.isLive;
         const oldLatest = timelineState.latestRun;
         await loadAvailableTimesManifest();
@@ -14669,83 +14938,119 @@ async function getGifWorkerUrl() {
     return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 }
 
+/* The host uses these interfaces to synchronize 1/2/4 panel GIF captures.
+ * The same functions are used by the child-only fallback export. */
+window.__spcoaGifExporting = false;
+window.__mpGifState = function() {
+    return {runs: filteredTimelineRuns().map(item => ({...item})),
+        currentRun, currentAnalysisTime, speed: timelineState.playbackSpeed,
+        playing: timelineState.playing};
+};
+window.__mpGifBegin = function() {
+    if (window.__spcoaGifExporting || timelineState.switching)
+        throw new Error("The analysis is still switching. Try the GIF export again in a moment.");
+    const state = {currentRun, playing: timelineState.playing,
+        pendingLiveSwitch: timelineState.pendingLiveSwitch};
+    window.__spcoaGifExporting = true;
+    setPlaying(false);
+    timelineState.pendingLiveSwitch = false;
+    return state;
+};
+window.__mpGifSetRun = async function(item) {
+    if (!window.__spcoaGifExporting) throw new Error("GIF export was not started.");
+    if (!item?.run) throw new Error("GIF frame has no analysis identifier.");
+    const matched = timelineState.availableRuns.find(r => r.run === item.run);
+    if (!matched) throw new Error(`Run ${item.run} is unavailable in this panel.`);
+    if (currentRun !== item.run) {
+        const loaded = await applyRun(matched, {render: true, preload: false});
+        if (!loaded) throw new Error(`Could not load SPCOA analysis ${item.run}.`);
+    } else {
+        // applyRun short-circuits same-run requests. Force a completed initial
+        // render here so a one-frame GIF test cannot capture a stale canvas.
+        await renderAll();
+    }
+    ensureGifProductsAvailable();
+    // Let the browser submit canvas/map rendering before compositing a frame.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return true;
+};
+window.__mpGifFrame = async function(width = 1280) {
+    if (!window.__spcoaGifExporting) throw new Error("GIF export is not running.");
+    return buildGifFrameCanvas(width);
+};
+window.__mpGifFinish = async function(originalState) {
+    try {
+        const previousRun = originalState?.currentRun;
+        if (previousRun && currentRun !== previousRun) {
+            const item = timelineState.availableRuns.find(r => r.run === previousRun);
+            if (item) await applyRun(item, {render: true, preload: false});
+        }
+        timelineState.pendingLiveSwitch = !!originalState?.pendingLiveSwitch;
+        if (originalState?.playing) setPlaying(true);
+    } finally {
+        window.__spcoaGifExporting = false;
+    }
+};
+
 async function saveTimelineGif() {
     if (!map || !mapWrapper || typeof GIF === "undefined") {
-        if (statusElement) statusElement.textContent = "GIF encoder unavailable";
+        if (statusElement) statusElement.textContent = "GIF encoder unavailable; check gif.js script.";
         return;
     }
-
-    const oldText = saveGifButton ? saveGifButton.textContent : "";
-    const originalRun = currentRun;
-    const originalPlaying = timelineState.playing;
-    const runs = filteredTimelineRuns();
-    if (!runs.length) return;
-
-    let workerUrl = null;
-    setPlaying(false);
-    if (saveGifButton) {
-        saveGifButton.disabled = true;
-        saveGifButton.textContent = "Preparing…";
+    const oldText = saveGifButton?.textContent || "Save GIF";
+    const selected = filteredTimelineRuns();
+    const runs = spcoaGifFramePlan(selected);
+    if (!runs.length) {
+        if (statusElement) statusElement.textContent = "No SPCOA analysis is available to export.";
+        return;
     }
+    let originalState = null, workerUrl = null;
+    if (saveGifButton) {saveGifButton.disabled = true; saveGifButton.textContent = "Preparing…";}
     if (savePngButton) savePngButton.disabled = true;
-
     try {
+        originalState = window.__mpGifBegin();
         workerUrl = await getGifWorkerUrl();
-        const gif = new GIF({
-            workers: 2,
-            quality: 1,
-            dither: "FloydSteinberg-serpentine",
-            repeat: 0,
-            workerScript: workerUrl
-        });
-
-        const normalDelay = Math.max(120, Math.round(PLAYBACK_BASE_MS / timelineState.playbackSpeed));
-        const newestDelay = Math.round(normalDelay * 1.45);
-
+        const frames = [];
+        const frameDelay = Math.max(160, Math.round(PLAYBACK_BASE_MS / timelineState.playbackSpeed));
         for (let i = 0; i < runs.length; i++) {
             const item = runs[i];
-            if (statusElement) statusElement.textContent = `GIF frame ${i + 1} of ${runs.length}: ${formatTimelineUtc(item.analysis_time || runIdToIso(item.run))}`;
+            if (statusElement) statusElement.textContent = `GIF ${i + 1}/${runs.length}: ${formatTimelineUtc(item.analysis_time || runIdToIso(item.run))}`;
             if (saveGifButton) saveGifButton.textContent = `${i + 1}/${runs.length}`;
-
-            const ok = await applyRun(item, { render: true, preload: false });
-            if (!ok) throw new Error(`Could not render ${item.run}.`);
-            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-
-            const frameCanvas = await buildGifFrameCanvas(1920);
-            gif.addFrame(frameCanvas, {
-                copy: true,
-                delay: item.run === timelineState.latestRun ? newestDelay : normalDelay
-            });
+            await window.__mpGifSetRun(item);
+            const frame = await window.__mpGifFrame(1280);
+            frames.push({canvas: frame, delay: i === runs.length - 1 ? Math.round(frameDelay * 1.4) : frameDelay});
         }
-
-        if (statusElement) statusElement.textContent = "Encoding GIF...";
+        if (statusElement) statusElement.textContent = "Building consistent GIF color palette…";
+        const palette = spcoaGifSharedPalette(frames.map(f => f.canvas));
+        const gif = new GIF({workers: 2, quality: 8, repeat: 0,
+            globalPalette: palette, dither: false,
+            width: frames[0].canvas.width, height: frames[0].canvas.height,
+            workerScript: workerUrl});
+        for (const frame of frames) gif.addFrame(frame.canvas, {copy: true, delay: frame.delay});
+        frames.length = 0;
+        if (statusElement) statusElement.textContent = "Encoding GIF…";
         if (saveGifButton) saveGifButton.textContent = "Encoding…";
-
-        const gifBlob = await new Promise((resolve, reject) => {
+        const blob = await new Promise((resolve, reject) => {
             gif.on("finished", resolve);
-            gif.on("abort", () => reject(new Error("GIF encoding aborted.")));
+            gif.on("abort", () => reject(new Error("GIF encoding was aborted.")));
             gif.render();
         });
-
-        const firstTime = runs[0]?.analysis_time || runIdToIso(runs[0]?.run);
-        const lastTime = runs.at(-1)?.analysis_time || runIdToIso(runs.at(-1)?.run);
-        downloadBlob(gifBlob, `3km_Mesoscale_Analysis_${exportFileTimeStamp(firstTime)}_to_${exportFileTimeStamp(lastTime)}.gif`);
-        if (statusElement) statusElement.textContent = `GIF saved (${runs.length} frames)`;
+        if (!blob?.size) throw new Error("GIF encoder produced an empty file.");
+        const first = runs[0], last = runs[runs.length - 1];
+        downloadBlob(blob, `3km_Mesoscale_Analysis_${exportFileTimeStamp(first.analysis_time || runIdToIso(first.run))}_to_${exportFileTimeStamp(last.analysis_time || runIdToIso(last.run))}.gif`);
+        if (statusElement) statusElement.textContent = runs.length === 1 ?
+            "One-frame GIF test saved; animation needs 2+ analyses." : `GIF saved (${runs.length} frames)`;
     } catch (error) {
         console.error("GIF export failed:", error);
-        if (statusElement) statusElement.textContent = "GIF export failed";
+        if (statusElement) statusElement.textContent = `GIF export failed: ${error.message || error}`;
     } finally {
-        if (originalRun && currentRun !== originalRun) {
-            const originalItem = timelineState.availableRuns.find(item => item.run === originalRun);
-            if (originalItem) await applyRun(originalItem, { render: true, preload: true });
+        if (originalState) {
+            try { await window.__mpGifFinish(originalState); }
+            catch (error) { console.warn("GIF run restore failed:", error); }
         }
         if (workerUrl) URL.revokeObjectURL(workerUrl);
-        if (saveGifButton) {
-            saveGifButton.disabled = false;
-            saveGifButton.textContent = oldText || "Save GIF";
-        }
+        if (saveGifButton) {saveGifButton.disabled = false; saveGifButton.textContent = oldText;}
         if (savePngButton) savePngButton.disabled = false;
-        if (originalPlaying) setPlaying(true);
     }
 }
 
@@ -15204,3 +15509,4 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
