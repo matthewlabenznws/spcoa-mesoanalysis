@@ -1,3 +1,26 @@
+// SCP contour lines use the same blue-to-purple contour colors as SRH.
+// Map the ranked SCP contour levels onto the SRH contour color progression,
+// rather than comparing dimensionless SCP values directly with SRH (m²/s²).
+const SPCOA_SCP_CONTOUR_LEVELS = [1,2,4,6,8,10,12,14,16,18,20,24,28,32,40,48];
+const SPCOA_SRH_CONTOUR_LEVELS = [50,100,150,200,250,300,400,500,600,800,1000];
+function getSrhContourColor(level) {
+    return level >= 800 ? "#9b1d95" :
+           level >= 600 ? "#d3491f" :
+           level >= 400 ? "#dfae5a" :
+           level >= 250 ? "#3b5269" :
+           level >= 150 ? "#60798a" : "#166b9a";
+}
+function getScpContourColorMatchingSrh(level) {
+    let nearest = 0;
+    for (let i = 1; i < SPCOA_SCP_CONTOUR_LEVELS.length; i++) {
+        if (Math.abs(SPCOA_SCP_CONTOUR_LEVELS[i] - level) <
+            Math.abs(SPCOA_SCP_CONTOUR_LEVELS[nearest] - level)) nearest = i;
+    }
+    const srhIndex = Math.round(nearest * (SPCOA_SRH_CONTOUR_LEVELS.length - 1) /
+                                (SPCOA_SCP_CONTOUR_LEVELS.length - 1));
+    return getSrhContourColor(SPCOA_SRH_CONTOUR_LEVELS[srhIndex]);
+}
+
 /* =========================================================================================
    MULTI-PANEL HOST / CHILD MODE
    ========================================================================================= */
@@ -10534,8 +10557,8 @@ async function renderContourField(
     for (const level of levelsToRender) {
 
         const contourColor =
-            colorScheme === "scp_spc" ? getDiscreteContourColor(level, SCP_BOUNDS, SCP_COLORS) :
-            colorScheme === "srh_spc" ? (level >= 800 ? "#9b1d95" : level >= 600 ? "#d3491f" : level >= 400 ? "#dfae5a" : level >= 250 ? "#3b5269" : level >= 150 ? "#60798a" : "#166b9a") :
+            colorScheme === "scp_spc" ? getScpContourColorMatchingSrh(level) :
+            colorScheme === "srh_spc" ? getSrhContourColor(level) :
             colorScheme === "spc_composite" ? getSpcCompositeContourColor(level) :
             colorScheme === "blues" ? getCinBluesColor(level) :
             colorScheme === "pressure_temperature_isotherms"
@@ -15672,4 +15695,5 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
