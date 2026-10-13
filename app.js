@@ -1822,7 +1822,7 @@ if (!__MP_CHILD) {
      - Numerical canvas follows camera during pan/zoom
      - Fresh numerical redraw after movement ends
      - MSLP numerical contours every 2 hPa
-     - DCAPE numerical contours every 200 J/kg beginning at 100 J/kg
+     - DCAPE numerical contours every 250 J/kg beginning at 250 J/kg
      - Warm Cloud Depth numerical contours every 250 m beginning at 250 m
      - 925/850/700/500 mb height contours every 30 m
      - 250 mb height contours every 60 m
@@ -2970,8 +2970,8 @@ const CONTOUR_FIELDS = {
         name: "Downdraft CAPE",
         shortName: "DCAPE",
         units: "J/kg",
-        interval: 200,
-        minimum: 100,
+        interval: 250,
+        minimum: 250,
         colorScheme: "dcape",
         color: null
     },
@@ -10338,17 +10338,19 @@ async function renderContourField(
                     : values
             );
 
-    const interval =
+    // DCAPE is fixed at 250 J/kg even if cached backend metadata is older.
+    const interval = field === "dcape" ? 250 : (
         Number(
             metadata.display &&
             metadata.display.interval
         ) ||
         Number(definition.interval) ||
-        2;
+        2
+    );
 
     const configuredMinimum =
         field === "dcape"
-            ? 200
+            ? 250
             : (
                 metadata.display &&
                 metadata.display.minimum !== undefined &&
@@ -10363,20 +10365,23 @@ async function renderContourField(
             );
 
     const metadataAnchor = metadata.display?.anchor;
-    const contourAnchor = metadataAnchor !== undefined && metadataAnchor !== null &&
-                          Number.isFinite(Number(metadataAnchor))
-        ? Number(metadataAnchor)
-        : (definition.anchor !== undefined && definition.anchor !== null &&
-           Number.isFinite(Number(definition.anchor)) ? Number(definition.anchor) : 0);
+    const contourAnchor = field === "dcape" ? 0 : (
+        metadataAnchor !== undefined && metadataAnchor !== null &&
+        Number.isFinite(Number(metadataAnchor))
+            ? Number(metadataAnchor)
+            : (definition.anchor !== undefined && definition.anchor !== null &&
+               Number.isFinite(Number(definition.anchor)) ? Number(definition.anchor) : 0)
+    );
 
     const explicitLevelsRaw =
         (metadata.display && Array.isArray(metadata.display.levels) && metadata.display.levels.length)
             ? metadata.display.levels
             : (Array.isArray(definition.levels) ? definition.levels : null);
 
-    const explicitLevels = explicitLevelsRaw
+    // Old stored DCAPE level lists must not override the new 250-J/kg spacing.
+    const explicitLevels = field === "dcape" ? null : (explicitLevelsRaw
         ? explicitLevelsRaw.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
-        : null;
+        : null);
 
     let firstLevel =
         contourAnchor + Math.ceil(
