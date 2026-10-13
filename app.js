@@ -5,6 +5,10 @@ function installSpcoaRedoControl() {
     const redo = undo.cloneNode(false);
     redo.id = "draw-redo";
     redo.removeAttribute("data-tool");
+    // Undo is styled like a drawing tool in some versions of index.html.
+    // Redo is an ACTION, never an active drawing mode.
+    redo.classList.remove("draw-tool", "active", "drawing-active", "selected");
+    redo.classList.add("draw-history-action");
     redo.type = "button";
     redo.textContent = "↷ Redo";
     redo.title = "Redo the most recently undone drawing";
@@ -1243,6 +1247,20 @@ if (!__MP_CHILD) {
             if (!button) return;
             if (button.id === "save-png") { event.preventDefault(); event.stopImmediatePropagation(); saveCombinedPng(); return; }
             if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); void saveCombinedGif(); return; }
+            // History controls are actions, not tools. Consume their host clicks
+            // so index.html cannot accidentally treat them as a tool selection.
+            if (button.id === "draw-undo" || button.id === "draw-redo") {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (drawingScope.value === "all") {
+                    if (button.id === "draw-undo") sharedUndo();
+                    else sharedRedo();
+                } else {
+                    clickChildById(button.id, activePanel);
+                    setTimeout(syncHostFromActiveChild, 30);
+                }
+                return;
+            }
             if (drawingScope.value === "all") {
                 if (button.dataset.tool) {
                     setSharedDrawingTool(button.dataset.tool);
@@ -15381,8 +15399,17 @@ if (drawingToolbar && annotationCanvas) {
     annotationCanvas.addEventListener("pointercancel", finishAnnotation);
 }
 
-if (drawUndoButton) drawUndoButton.addEventListener("click", undoAnnotation);
-if (drawRedoButton) drawRedoButton.addEventListener("click", redoAnnotation);
+// Don't let history-button clicks change the currently selected drawing tool.
+if (drawUndoButton) drawUndoButton.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    undoAnnotation();
+});
+if (drawRedoButton) drawRedoButton.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    redoAnnotation();
+});
 
 if (drawClearButton) drawClearButton.addEventListener("click", () => {
     if (annotations.length) saveAnnotationUndo();
@@ -15538,7 +15565,7 @@ document.addEventListener("visibilitychange", () => {
         });
     });
 
-    if (drawUndoButton) drawUndoButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
+    // Undo/redo handlers send their own annotation state after restoring history.
     if (drawClearButton) drawClearButton.addEventListener("click", () => setTimeout(sendAnnotationState, 0));
 
     /* Single-pass snapshot/restore. These are UI preferences only, never run IDs or GIF state. */
@@ -15769,6 +15796,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
