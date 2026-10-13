@@ -20,6 +20,10 @@ function installSpcoaRedoControl() {
     redo.textContent = "↷ Redo";
     redo.title = "Redo the most recently undone drawing";
     redo.setAttribute("aria-label", "Redo drawing");
+    undo.classList.remove("draw-tool", "active", "drawing-active", "selected");
+    undo.removeAttribute("data-tool");
+    undo.classList.add("draw-history-action");
+    undo.type = "button";
     undo.insertAdjacentElement("afterend", redo);
 }
 installSpcoaRedoControl();
@@ -595,14 +599,18 @@ if (!__MP_CHILD) {
             sharedRedoHistory.push(cloneAnnotations(sharedAnnotations));
             sharedAnnotations = sharedUndoHistory.pop();
             sharedCurrentAnnotation = null;
+            sharedPointerId = null;
             renderSharedOverlay();
+            setSharedDrawingTool(sharedDrawingTool);
         }
         function sharedRedo() {
             if (!sharedRedoHistory.length) return;
             sharedUndoHistory.push(cloneAnnotations(sharedAnnotations));
             sharedAnnotations = sharedRedoHistory.pop();
             sharedCurrentAnnotation = null;
+            sharedPointerId = null;
             renderSharedOverlay();
+            setSharedDrawingTool(sharedDrawingTool);
         }
         let sharedCurrentAnnotation = null;
         let sharedPointerId = null;
@@ -1263,7 +1271,10 @@ if (!__MP_CHILD) {
                     if (button.id === "draw-undo") sharedUndo();
                     else sharedRedo();
                 } else {
-                    clickChildById(button.id, activePanel);
+                    const cw = panels[activePanel]?.frame?.contentWindow;
+                    const method = button.id === "draw-undo" ? "__mpUndoAnnotation" : "__mpRedoAnnotation";
+                    if (typeof cw?.[method] === "function") cw[method]();
+                    else clickChildById(button.id, activePanel);
                     setTimeout(syncHostFromActiveChild, 30);
                 }
                 return;
@@ -3156,9 +3167,9 @@ const CONTOUR_FIELDS = {
     temperature_contours_500mb: { name: "500 mb Temperature Isotherms", shortName: "500 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
     temperature_contours_250mb: { name: "250 mb Temperature Isotherms", shortName: "250 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
 
-    frontogenesis_925mb: { name: "925 mb Frontogenesis", shortName: "925 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
-    frontogenesis_850mb: { name: "850 mb Frontogenesis", shortName: "850 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
-    frontogenesis_700mb: { name: "700 mb Frontogenesis", shortName: "700 mb Frontogenesis", units: "K/(100 km)/3 hr", interval: 1, minimum: 1, maximum: 49, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 4 },
+    frontogenesis_925mb: { name: "925 mb Petterssen Frontogenesis", shortName: "925 mb Petterssen FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
+    frontogenesis_850mb: { name: "850 mb Petterssen Frontogenesis", shortName: "850 mb Petterssen FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
+    frontogenesis_700mb: { name: "700 mb Petterssen Frontogenesis", shortName: "700 mb Petterssen FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
 
     divergence_925mb: {
         name: "925 mb Divergence",
@@ -3229,26 +3240,26 @@ const CONTOUR_FIELDS = {
         name: "850 mb Frontogenesis",
         shortName: "850 mb Frontogenesis",
         units: "K / (100 km) / 3 h",
-        interval: 1,
-        minimum: 1,
+        interval: 2,
+        minimum: 2,
         maximum: null,
         colorScheme: "fixed",
         color: "#990099",
         smoothGeometry: true,
-        smoothIterations: 4
+        smoothIterations: 5
     },
 
     frontogenesis_700mb: {
         name: "700 mb Frontogenesis",
         shortName: "700 mb Frontogenesis",
         units: "K / (100 km) / 3 h",
-        interval: 1,
-        minimum: 1,
+        interval: 2,
+        minimum: 2,
         maximum: null,
         colorScheme: "fixed",
         color: "#990099",
         smoothGeometry: true,
-        smoothIterations: 4
+        smoothIterations: 5
     }
 
 };
@@ -10608,7 +10619,7 @@ async function renderContourField(
             : isPressureTemperatureContour
                 ? 2.0
                 : isFrontogenesisContour
-                    ? 2.0
+                    ? 3.0
             : (
                 field === "dcape" ||
                 field === "warm_cloud_depth" ||
@@ -10660,6 +10671,7 @@ async function renderContourField(
                 );
 
         contourCtx.strokeStyle = contourColor;
+        if (isFrontogenesisContour) contourCtx.lineWidth = 3.0;
         if (isPressureTemperatureContour) {
             const isFreezing = Math.abs(level) < 0.001;
             contourCtx.lineWidth = isFreezing ? 2.8 : 1.5;
@@ -14493,22 +14505,38 @@ function saveAnnotationUndo() {
     if (annotationUndoHistory.length > ANNOTATION_HISTORY_LIMIT) annotationUndoHistory.shift();
     annotationRedoHistory.length = 0;
 }
+function resetHistoryPointerState() {
+    if (annotationCanvas && annotationPointerId !== null) {
+        try { if (annotationCanvas.hasPointerCapture(annotationPointerId))
+            annotationCanvas.releasePointerCapture(annotationPointerId); } catch (_) {}
+    }
+    annotationPointerId = null;
+    currentAnnotation = null;
+}
+function finishHistoryAction() {
+    resetHistoryPointerState();
+    renderAnnotations();
+    // History actions must never put the canvas into Pan/disabled drawing mode.
+    setDrawingTool(activeDrawingTool);
+    window.__mpSendAnnotationState?.();
+}
 function undoAnnotation() {
-    if (!annotationUndoHistory.length) return;
+    if (!annotationUndoHistory.length) return false;
     annotationRedoHistory.push(copyAnnotationList(annotations));
     annotations = annotationUndoHistory.pop();
-    currentAnnotation = null;
-    renderAnnotations();
-    window.__mpSendAnnotationState?.();
+    finishHistoryAction();
+    return true;
 }
 function redoAnnotation() {
-    if (!annotationRedoHistory.length) return;
+    if (!annotationRedoHistory.length) return false;
     annotationUndoHistory.push(copyAnnotationList(annotations));
     annotations = annotationRedoHistory.pop();
-    currentAnnotation = null;
-    renderAnnotations();
-    window.__mpSendAnnotationState?.();
+    finishHistoryAction();
+    return true;
 }
+// The host calls these methods directly; clicking the nested iframe toolbar is unreliable.
+window.__mpUndoAnnotation = undoAnnotation;
+window.__mpRedoAnnotation = redoAnnotation;
 let currentAnnotation = null;
 let annotationPointerId = null;
 
@@ -15803,6 +15831,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
