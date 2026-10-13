@@ -399,7 +399,12 @@ const SPC_EXTRA_COMPOSITE_TOGGLES = [
     {field: "microburst_composite", stateKey: "microburstContours", toggleId: "microburst-contours-toggle", label: "Microburst Composite"},
     {field: "esp_contours", stateKey: "espContours", toggleId: "esp-contours-toggle", label: "Enhanced Stretching Potential"},
     {field: "tehi_contours", stateKey: "tehiContours", toggleId: "tehi-contours-toggle", label: "Tornadic 0–1 km EHI"},
-    {field: "tts_contours", stateKey: "ttsContours", toggleId: "tts-contours-toggle", label: "Tornadic Tilting and Stretching"}
+    {field: "tts_contours", stateKey: "ttsContours", toggleId: "tts-contours-toggle", label: "Tornadic Tilting and Stretching"},
+    {field: "scp_right_contours", stateKey: "scpRightContours", toggleId: "scp-right-contours-toggle", label: "Right-Moving SCP"},
+    {field: "scp_left_contours", stateKey: "scpLeftContours", toggleId: "scp-left-contours-toggle", label: "Left-Moving SCP"},
+    {field: "srh_0_500m_contours", stateKey: "srh500Contours", toggleId: "srh-500m-contours-toggle", label: "0–500 m SRH"},
+    {field: "srh_0_1km_contours", stateKey: "srh01Contours", toggleId: "srh-01-contours-toggle", label: "0–1 km SRH"},
+    {field: "srh_0_3km_contours", stateKey: "srh03Contours", toggleId: "srh-03-contours-toggle", label: "0–3 km SRH"}
 ];
 function installSpcoaCompositeContourToggles() {
     const original = document.getElementById("shp-contours-toggle") ||
@@ -441,7 +446,12 @@ function installSpcoaStpDisplayControls() {
     const entries = [
         {field: "stp_eff", id: "stp-eff-toggle", title: "Effective-Layer STP"},
         {field: "stp_fix", id: "stp-fix-contours-toggle", title: "Fixed-Layer STP"},
-        {field: "stp_500m", id: "stp-500m-contours-toggle", title: "STP (0–500 m SRH)"}
+        {field: "stp_500m", id: "stp-500m-contours-toggle", title: "STP (0–500 m SRH)"},
+        {field: "scp_right", id: "scp-right-contours-toggle", title: "Right-Moving SCP"},
+        {field: "scp_left", id: "scp-left-contours-toggle", title: "Left-Moving SCP"},
+        {field: "srh_0_500m", id: "srh-500m-contours-toggle", title: "0–500 m SRH"},
+        {field: "srh_0_1km", id: "srh-01-contours-toggle", title: "0–1 km SRH"},
+        {field: "srh_0_3km", id: "srh-03-contours-toggle", title: "0–3 km SRH"}
     ];
     for (const item of entries) {
         let button = section.querySelector(`.field-choice[data-field="${item.field}"]`);
@@ -2923,6 +2933,11 @@ const CONTOUR_FIELDS = {
     esp_contours: {name: "Enhanced Stretching Potential", shortName: "ESP", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
     tehi_contours: {name: "Tornadic 0–1 km EHI", shortName: "Tornadic EHI", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
     tts_contours: {name: "Tornadic Tilting and Stretching", shortName: "TTS", units: "", interval: 2, anchor: 1, minimum: 1, colorScheme: "spc_composite", compositeContour: true},
+    scp_right_contours: {name: "Right-Moving SCP", shortName: "Right SCP", units: "", levels: [1,2,4,6,8,10,12,14,16,18,20,24,28,32,40,48], colorScheme: "scp_spc", compositeContour: true},
+    scp_left_contours: {name: "Left-Moving SCP", shortName: "Left SCP", units: "", levels: [1,2,4,6,8,10,12,14,16,18,20,24,28,32,40,48], colorScheme: "scp_spc", compositeContour: true},
+    srh_0_500m_contours: {name: "0–500 m SRH", shortName: "0–500 m SRH", units: "m²/s²", levels: [50,100,150,200,250,300,400,500,600,800,1000], colorScheme: "srh_spc", compositeContour: true},
+    srh_0_1km_contours: {name: "0–1 km SRH", shortName: "0–1 km SRH", units: "m²/s²", levels: [50,100,150,200,250,300,400,500,600,800,1000], colorScheme: "srh_spc", compositeContour: true},
+    srh_0_3km_contours: {name: "0–3 km SRH", shortName: "0–3 km SRH", units: "m²/s²", levels: [50,100,150,200,250,300,400,500,600,800,1000], colorScheme: "srh_spc", compositeContour: true},
     dcp_contours: {
         compositeContour: true,
         name: "Derecho Composite Parameter", shortName: "DCP", units: "",
@@ -10519,6 +10534,8 @@ async function renderContourField(
     for (const level of levelsToRender) {
 
         const contourColor =
+            colorScheme === "scp_spc" ? getDiscreteContourColor(level, SCP_BOUNDS, SCP_COLORS) :
+            colorScheme === "srh_spc" ? (level >= 800 ? "#9b1d95" : level >= 600 ? "#d3491f" : level >= 400 ? "#dfae5a" : level >= 250 ? "#3b5269" : level >= 150 ? "#60798a" : "#166b9a") :
             colorScheme === "spc_composite" ? getSpcCompositeContourColor(level) :
             colorScheme === "blues" ? getCinBluesColor(level) :
             colorScheme === "pressure_temperature_isotherms"
