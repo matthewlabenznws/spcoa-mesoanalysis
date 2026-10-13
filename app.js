@@ -1,3 +1,10 @@
+/* Normalize annotation coordinates for snapshots, child-panel sync and Redo.
+   Mapbox accepts both [lon,lat] and {lng,lat}, but history must not assume one. */
+function spcoaClonePoint(point) {
+    const lng = Array.isArray(point) ? Number(point[0]) : Number(point?.lng);
+    const lat = Array.isArray(point) ? Number(point[1]) : Number(point?.lat);
+    return {lng, lat};
+}
 /* Drawing toolbar: traditional Undo/Redo controls, including child panels. */
 function installSpcoaRedoControl() {
     const undo = document.getElementById("draw-undo");
@@ -777,7 +784,7 @@ if (!__MP_CHILD) {
             return (Array.isArray(data) ? data : []).map(a => ({
                 ...a,
                 points: Array.isArray(a.points)
-                    ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) }))
+                    ? a.points.map(spcoaClonePoint)
                     : []
             }));
         }
@@ -14479,7 +14486,7 @@ const annotationUndoHistory = [];
 const annotationRedoHistory = [];
 const ANNOTATION_HISTORY_LIMIT = 100;
 function copyAnnotationList(list) {
-    return list.map(a => ({...a, points: (a.points || []).map(p => ({...p}))}));
+    return list.map(a => ({...a, points: (a.points || []).map(spcoaClonePoint)}));
 }
 function saveAnnotationUndo() {
     annotationUndoHistory.push(copyAnnotationList(annotations));
@@ -14550,7 +14557,7 @@ function eventLngLat(event) {
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
     const ll = map.unproject([x, y]);
-    return [ll.lng, ll.lat];
+    return {lng: ll.lng, lat: ll.lat};
 }
 
 function annotationScreenPoints(annotation) {
@@ -15404,12 +15411,12 @@ if (drawUndoButton) drawUndoButton.addEventListener("click", event => {
     event.preventDefault();
     event.stopImmediatePropagation();
     undoAnnotation();
-});
+}, true);
 if (drawRedoButton) drawRedoButton.addEventListener("click", event => {
     event.preventDefault();
     event.stopImmediatePropagation();
     redoAnnotation();
-});
+}, true);
 
 if (drawClearButton) drawClearButton.addEventListener("click", () => {
     if (annotations.length) saveAnnotationUndo();
@@ -15482,7 +15489,7 @@ document.addEventListener("visibilitychange", () => {
         const source = currentAnnotation ? [...annotations, currentAnnotation] : annotations;
         return source.map(a => ({
             ...a,
-            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+            points: Array.isArray(a.points) ? a.points.map(spcoaClonePoint) : []
         }));
     }
 
@@ -15490,7 +15497,7 @@ document.addEventListener("visibilitychange", () => {
         if (!Array.isArray(annotationData)) return;
         annotations = annotationData.map(a => ({
             ...a,
-            points: Array.isArray(a.points) ? a.points.map(p => ({ lng: Number(p.lng), lat: Number(p.lat) })) : []
+            points: Array.isArray(a.points) ? a.points.map(spcoaClonePoint) : []
         }));
         currentAnnotation = null;
         renderAnnotations();
@@ -15796,6 +15803,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
