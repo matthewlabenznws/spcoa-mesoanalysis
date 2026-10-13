@@ -54,6 +54,94 @@ function getScpContourColorMatchingSrh(level) {
 /* =========================================================================================
    MULTI-PANEL HOST / CHILD MODE
    ========================================================================================= */
+/* Visible sidebar color pickers for the multi-panel host.
+   The host returns before child-only ensureVectorControls(), so it needs
+   its own matching controls. IDs match the child panel for event relaying. */
+const SPCOA_VECTOR_COLOR_KEY = "spcoa_vector_colors_v1";
+const SPCOA_VECTOR_CONTROL_ROWS = [
+    ["q_vector_925mb","q-vector-925mb-toggle","925 mb Q-vectors"],
+    ["q_vector_850mb","q-vector-850mb-toggle","850 mb Q-vectors"],
+    ["q_vector_700mb","q-vector-700mb-toggle","700 mb Q-vectors"],
+    ["sfc_wind","sfc-wind-toggle","Surface Wind"],
+    ["sfc_axes_dilatation","sfc-axes-dilatation-toggle","Surface Dilation Axes"],
+    ["axes_dilatation_925mb","axes-dilatation-925mb-toggle","925 mb Dilation Axes"],
+    ["axes_dilatation_850mb","axes-dilatation-850mb-toggle","850 mb Dilation Axes"],
+    ["axes_dilatation_700mb","axes-dilatation-700mb-toggle","700 mb Dilation Axes"],
+    ["srwind_0_2km","srwind-02-toggle","0–2 km Storm-Relative Wind"],
+    ["srwind_4_6km","srwind-46-toggle","4–6 km Storm-Relative Wind"],
+    ["srwind_9_11km","srwind-911-toggle","9–11 km Storm-Relative Wind"],
+    ["srwind_effective","srwind-effective-toggle","Effective Storm-Relative Wind"],
+    ["srwind_anvil","srwind-anvil-toggle","Anvil-Level Storm-Relative Wind"],
+    ["shear_0_1km","shear-01-toggle","0–1 km Bulk Shear"],
+    ["shear_0_3km","shear-03-toggle","0–3 km Bulk Shear"],
+    ["shear_0_6km","shear-06-toggle","0–6 km Bulk Shear"],
+    ["shear_0_8km","shear-08-toggle","0–8 km Bulk Shear"],
+    ["effective_shear","effective-shear-toggle","Effective Bulk Shear"],
+    ["bunkers_right","bunkers-right-toggle","Bunkers Right-Mover"],
+    ["bunkers_left","bunkers-left-toggle","Bunkers Left-Mover"],
+    ["mean_wind_0_6km","mean-wind-06-toggle","0–6 km Mean Wind"],
+    ["mean_wind_mu_lcl_el","mean-wind-mu-lcl-el-toggle","MU LCL–EL Mean Wind"],
+    ["wind_925mb","wind-925mb-toggle","925 mb Wind"],
+    ["wind_850mb","wind-850mb-toggle","850 mb Wind"],
+    ["wind_700mb","wind-700mb-toggle","700 mb Wind"],
+    ["wind_500mb","wind-500mb-toggle","500 mb Wind"],
+    ["wind_250mb","wind-250mb-toggle","250 mb Wind"]
+];
+function spcoaReadVectorColors() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(SPCOA_VECTOR_COLOR_KEY)) || {};
+        return typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    } catch (_) { return {}; }
+}
+function spcoaSaveVectorColor(field, color) {
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) return;
+    try {
+        const saved = spcoaReadVectorColors();
+        saved[field] = color;
+        localStorage.setItem(SPCOA_VECTOR_COLOR_KEY, JSON.stringify(saved));
+    } catch (_) {}
+}
+function spcoaInstallHostVectorColors() {
+    const anchor = document.getElementById("srwind-46-toggle")?.closest("label") ||
+                   document.getElementById("sfc-wind-toggle")?.closest("label");
+    if (!anchor?.parentElement) {
+        console.warn("SPCOA: couldn't locate wind overlay sidebar group for color controls");
+        return;
+    }
+    const container = anchor.parentElement;
+    const saved = spcoaReadVectorColors();
+    for (const [field, toggleId, title] of SPCOA_VECTOR_CONTROL_ROWS) {
+        let toggle = document.getElementById(toggleId);
+        let row = toggle?.closest("label");
+        if (!row) {
+            row = document.createElement("label");
+            row.className = anchor.className || "toggle-row";
+            toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.id = toggleId;
+            row.append(toggle, document.createTextNode(" " + title));
+            container.appendChild(row);
+        }
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.gap = "6px";
+        let picker = row.querySelector('input[type="color"][data-vector-field="' + field + '"]');
+        if (!picker) {
+            picker = document.createElement("input");
+            picker.type = "color";
+            picker.id = "spcoa-vector-color-" + field.replace(/_/g, "-");
+            picker.dataset.vectorField = field;
+            picker.title = title + " color";
+            picker.setAttribute("aria-label", title + " color");
+            picker.style.cssText = "width:28px;height:24px;padding:0;border:0;cursor:pointer;background:transparent;flex:0 0 28px;margin-left:auto;";
+            picker.addEventListener("click", e => e.stopPropagation());
+            picker.addEventListener("pointerdown", e => e.stopPropagation());
+            row.appendChild(picker);
+        }
+        picker.value = /^#[0-9a-fA-F]{6}$/.test(saved[field] || "") ? saved[field] : "#000000";
+    }
+}
+
 const __MP_PARAMS = new URLSearchParams(window.location.search);
 const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 
@@ -567,6 +655,7 @@ if (!__MP_CHILD) {
         const sidebar = document.getElementById("sidebar");
         installSpcoaRoadControls();
         installSpcoaCityControls();
+        spcoaInstallHostVectorColors();
         installSpcoaCompositeContourToggles();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
@@ -1223,6 +1312,11 @@ if (!__MP_CHILD) {
         sidebar.addEventListener("input", event => {
             const el = event.target;
             if (!el) return;
+            if (el.type === "color" && el.dataset.vectorField) {
+                spcoaSaveVectorColor(el.dataset.vectorField, el.value);
+                for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
+                return;
+            }
             if (el.id.startsWith("roads-color-")) {
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
                 return;
@@ -3013,6 +3107,11 @@ const vectorColors = Object.fromEntries(
         ([field, definition]) => [field, definition.defaultColor || "#000000"]
     )
 );
+for (const [field, color] of Object.entries(spcoaReadVectorColors())) {
+    if (Object.prototype.hasOwnProperty.call(vectorColors, field) && /^#[0-9a-fA-F]{6}$/.test(color))
+        vectorColors[field] = color;
+}
+
 
 
 /* =========================================================================================
@@ -4176,7 +4275,9 @@ function ensureVectorControls() {
             if (!colorInput) {
                 colorInput = document.createElement("input");
                 colorInput.type = "color";
-                colorInput.value = VECTOR_FIELDS[config.field].defaultColor;
+                colorInput.id = "spcoa-vector-color-" + config.field.replace(/_/g, "-");
+                colorInput.value = /^#[0-9a-fA-F]{6}$/.test(spcoaReadVectorColors()[config.field] || "")
+                    ? spcoaReadVectorColors()[config.field] : "#000000";
                 colorInput.dataset.vectorField = config.field;
                 colorInput.title = `Choose ${VECTOR_FIELDS[config.field].shortName} color`;
                 colorInput.setAttribute(
@@ -13921,6 +14022,7 @@ for (const config of VECTOR_OVERLAY_CONFIG) {
 
                 vectorColors[config.field] =
                     event.target.value || "#000000";
+                spcoaSaveVectorColor(config.field, vectorColors[config.field]);
 
                 requestAnimationFrame(updateActiveLayersStrip);
 
@@ -15831,6 +15933,11 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
+
+
+
+
 
 
 
