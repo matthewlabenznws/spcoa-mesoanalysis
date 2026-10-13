@@ -1,3 +1,18 @@
+/* Drawing toolbar: traditional Undo/Redo controls, including child panels. */
+function installSpcoaRedoControl() {
+    const undo = document.getElementById("draw-undo");
+    if (!undo || document.getElementById("draw-redo")) return;
+    const redo = undo.cloneNode(false);
+    redo.id = "draw-redo";
+    redo.removeAttribute("data-tool");
+    redo.type = "button";
+    redo.textContent = "↷ Redo";
+    redo.title = "Redo the most recently undone drawing";
+    redo.setAttribute("aria-label", "Redo drawing");
+    undo.insertAdjacentElement("afterend", redo);
+}
+installSpcoaRedoControl();
+
 // SCP contour lines use the same blue-to-purple contour colors as SRH.
 // Map the ranked SCP contour levels onto the SRH contour color progression,
 // rather than comparing dimensionless SCP values directly with SRH (m²/s²).
@@ -556,6 +571,28 @@ if (!__MP_CHILD) {
         let cameraBroadcasting = false;
         let lastTimelineValue = null;
         let sharedAnnotations = [];
+        const sharedUndoHistory = [];
+        const sharedRedoHistory = [];
+        const SHARED_HISTORY_LIMIT = 100;
+        function sharedSaveUndo() {
+            sharedUndoHistory.push(cloneAnnotations(sharedAnnotations));
+            if (sharedUndoHistory.length > SHARED_HISTORY_LIMIT) sharedUndoHistory.shift();
+            sharedRedoHistory.length = 0;
+        }
+        function sharedUndo() {
+            if (!sharedUndoHistory.length) return;
+            sharedRedoHistory.push(cloneAnnotations(sharedAnnotations));
+            sharedAnnotations = sharedUndoHistory.pop();
+            sharedCurrentAnnotation = null;
+            renderSharedOverlay();
+        }
+        function sharedRedo() {
+            if (!sharedRedoHistory.length) return;
+            sharedUndoHistory.push(cloneAnnotations(sharedAnnotations));
+            sharedAnnotations = sharedRedoHistory.pop();
+            sharedCurrentAnnotation = null;
+            renderSharedOverlay();
+        }
         let sharedCurrentAnnotation = null;
         let sharedPointerId = null;
         let sharedSourcePanel = -1;
@@ -929,7 +966,7 @@ if (!__MP_CHILD) {
                 else for(let j=1;j<pts.length;j++)d=Math.min(d,sharedPointSegmentDistance(x,y,pts[j-1].x,pts[j-1].y,pts[j].x,pts[j].y));
                 if(d<bestD){bestD=d;best=idx;}
             });
-            if(best>=0&&bestD<=18){sharedAnnotations.splice(best,1);renderSharedOverlay();}
+            if(best>=0&&bestD<=18){sharedSaveUndo();sharedAnnotations.splice(best,1);renderSharedOverlay();}
         }
 
         function canvasXY(event){
@@ -944,7 +981,7 @@ if (!__MP_CHILD) {
             if(sharedDrawingTool==="eraser"){eraseSharedAt(panel,p.x,p.y);return;}
             const ll=unprojectShared(panel,p.x,p.y); if(!ll)return;
             if(sharedDrawingTool==="high"||sharedDrawingTool==="low"){
-                sharedAnnotations.push({type:sharedDrawingTool,points:[ll]});renderSharedOverlay();return;
+                sharedSaveUndo();sharedAnnotations.push({type:sharedDrawingTool,points:[ll]});renderSharedOverlay();return;
             }
             sharedPointerId=event.pointerId;sharedSourcePanel=panel;sharedCanvas.setPointerCapture(event.pointerId);
             sharedCurrentAnnotation={type:sharedDrawingTool,points:[ll],color:document.getElementById("draw-color")?.value||"#ff3030",width:Math.max(1,Math.min(12,Number(document.getElementById("draw-width")?.value)||4))};
@@ -963,7 +1000,7 @@ if (!__MP_CHILD) {
         function finishSharedDrawing(event){
             if(!sharedCurrentAnnotation||event.pointerId!==sharedPointerId)return;
             event.preventDefault();
-            if(sharedCurrentAnnotation.points.length>=2)sharedAnnotations.push(sharedCurrentAnnotation);
+            if(sharedCurrentAnnotation.points.length>=2){sharedSaveUndo();sharedAnnotations.push(sharedCurrentAnnotation);}
             sharedCurrentAnnotation=null;sharedPointerId=null;sharedSourcePanel=-1;
             try{sharedCanvas.releasePointerCapture(event.pointerId);}catch(_){}
             renderSharedOverlay();
@@ -1210,9 +1247,11 @@ if (!__MP_CHILD) {
                 if (button.dataset.tool) {
                     setSharedDrawingTool(button.dataset.tool);
                 } else if (button.id === "draw-undo") {
-                    if (sharedAnnotations.length) sharedAnnotations.pop();
-                    renderSharedOverlay();
+                    sharedUndo();
+                } else if (button.id === "draw-redo") {
+                    sharedRedo();
                 } else if (button.id === "draw-clear") {
+                    if (sharedAnnotations.length) sharedSaveUndo();
                     sharedAnnotations = []; sharedCurrentAnnotation = null; renderSharedOverlay();
                 }
                 return;
@@ -1233,6 +1272,8 @@ if (!__MP_CHILD) {
                     sharedAnnotations = child && typeof child.__mpGetAnnotations === "function"
                         ? cloneAnnotations(child.__mpGetAnnotations()) : [];
                 } catch (_) { sharedAnnotations = []; }
+                sharedUndoHistory.length = 0;
+                sharedRedoHistory.length = 0;
                 for (let i=0;i<layoutCount;i++) {
                     const d=childDoc(i), pan=d&&d.querySelector('.draw-tool[data-tool="pan"]');
                     if(pan) pan.click();
@@ -14399,6 +14440,7 @@ const drawingToolbar = document.getElementById("drawing-toolbar");
 const drawColorInput = document.getElementById("draw-color");
 const drawWidthInput = document.getElementById("draw-width");
 const drawUndoButton = document.getElementById("draw-undo");
+const drawRedoButton = document.getElementById("draw-redo");
 const drawClearButton = document.getElementById("draw-clear");
 const savePngButton = document.getElementById("save-png");
 const saveGifButton = document.getElementById("save-gif");
@@ -14415,6 +14457,33 @@ const ANNOTATION_STYLE = {
 
 let activeDrawingTool = "pan";
 let annotations = [];
+const annotationUndoHistory = [];
+const annotationRedoHistory = [];
+const ANNOTATION_HISTORY_LIMIT = 100;
+function copyAnnotationList(list) {
+    return list.map(a => ({...a, points: (a.points || []).map(p => ({...p}))}));
+}
+function saveAnnotationUndo() {
+    annotationUndoHistory.push(copyAnnotationList(annotations));
+    if (annotationUndoHistory.length > ANNOTATION_HISTORY_LIMIT) annotationUndoHistory.shift();
+    annotationRedoHistory.length = 0;
+}
+function undoAnnotation() {
+    if (!annotationUndoHistory.length) return;
+    annotationRedoHistory.push(copyAnnotationList(annotations));
+    annotations = annotationUndoHistory.pop();
+    currentAnnotation = null;
+    renderAnnotations();
+    window.__mpSendAnnotationState?.();
+}
+function redoAnnotation() {
+    if (!annotationRedoHistory.length) return;
+    annotationUndoHistory.push(copyAnnotationList(annotations));
+    annotations = annotationRedoHistory.pop();
+    currentAnnotation = null;
+    renderAnnotations();
+    window.__mpSendAnnotationState?.();
+}
 let currentAnnotation = null;
 let annotationPointerId = null;
 
@@ -14656,6 +14725,7 @@ function eraseAt(event) {
         if (d < bestDistance) { bestDistance = d; bestIndex = i; }
     });
     if (bestIndex >= 0) {
+        saveAnnotationUndo();
         annotations.splice(bestIndex, 1);
         renderAnnotations();
     }
@@ -15261,6 +15331,7 @@ if (drawingToolbar && annotationCanvas) {
         }
         const ll = eventLngLat(event);
         if (activeDrawingTool === "high" || activeDrawingTool === "low") {
+            saveAnnotationUndo();
             annotations.push({ type: activeDrawingTool, points: [ll] });
             renderAnnotations();
             setTimeout(() => {
@@ -15294,7 +15365,10 @@ if (drawingToolbar && annotationCanvas) {
     const finishAnnotation = event => {
         if (!currentAnnotation || event.pointerId !== annotationPointerId) return;
         event.preventDefault();
-        if (currentAnnotation.points.length >= 2) annotations.push(currentAnnotation);
+        if (currentAnnotation.points.length >= 2) {
+            saveAnnotationUndo();
+            annotations.push(currentAnnotation);
+        }
         currentAnnotation = null;
         annotationPointerId = null;
         try { annotationCanvas.releasePointerCapture(event.pointerId); } catch (_) {}
@@ -15307,15 +15381,15 @@ if (drawingToolbar && annotationCanvas) {
     annotationCanvas.addEventListener("pointercancel", finishAnnotation);
 }
 
-if (drawUndoButton) drawUndoButton.addEventListener("click", () => {
-    if (annotations.length) annotations.pop();
-    renderAnnotations();
-});
+if (drawUndoButton) drawUndoButton.addEventListener("click", undoAnnotation);
+if (drawRedoButton) drawRedoButton.addEventListener("click", redoAnnotation);
 
 if (drawClearButton) drawClearButton.addEventListener("click", () => {
+    if (annotations.length) saveAnnotationUndo();
     annotations = [];
     currentAnnotation = null;
     renderAnnotations();
+    window.__mpSendAnnotationState?.();
 });
 
 /* Keep annotations geographically anchored during map navigation and resizing. */
@@ -15695,5 +15769,6 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
