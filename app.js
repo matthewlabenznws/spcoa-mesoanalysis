@@ -1281,7 +1281,7 @@ if (!__MP_CHILD) {
         layoutSelect.addEventListener("change", () => applyLayout(layoutSelect.value));
 
         sidebar.addEventListener("click", event => {
-            const clearButton = event.target.closest("button#clear-fill, button#clear-contours");
+            const clearButton = event.target.closest("button#clear-fill, button#clear-contours, button#clear-vectors, button#clear-all");
             if (clearButton) {
                 event.preventDefault();
                 for (const i of parameterTargets()) clickChildById(clearButton.id, i);
@@ -13735,6 +13735,94 @@ if (clearContoursButton) {
 }
 
 /* =========================================================================================
+   CLEAR VECTORS / CLEAR ALL NUMERICAL LAYERS
+
+   These buttons exist in index.html but previously had no child-panel handler.
+   The multipanel host relays the click to the selected panel(s).
+   Keep ALL geography, camera, CWA/county/city/road choices and drawing annotations.
+   ========================================================================================= */
+const clearVectorsButton = document.getElementById("clear-vectors");
+const clearAllButton = document.getElementById("clear-all");
+
+function uncheckNumericalOverlayControls(configs) {
+    for (const config of configs) {
+        const input = document.getElementById(config.toggleId);
+        if (input) input.checked = false;
+    }
+}
+
+function removeNumericalFrameHoldovers() {
+    // A camera redraw can retain a snapshot OVER cleared numerical canvases.
+    // Invalidate its token and remove the snapshots immediately.
+    finishNumericalHoldover(++numericalHoldoverId);
+}
+
+if (clearVectorsButton) {
+    clearVectorsButton.addEventListener("click", async () => {
+        for (const config of VECTOR_OVERLAY_CONFIG) {
+            activeOverlays[config.stateKey] = false;
+        }
+        uncheckNumericalOverlayControls(VECTOR_OVERLAY_CONFIG);
+
+        // Invalidate any vector tile requests already in progress.
+        vectorRenderGeneration++;
+        removeNumericalFrameHoldovers();
+        resetNumericalCanvasTransforms();
+        await renderVectors();
+        renderGeography();
+        updateActiveLayersStrip();
+    });
+}
+
+if (clearAllButton) {
+    clearAllButton.addEventListener("click", async () => {
+        // Stop previous asynchronous numerical renders from restoring old layers.
+        invalidateNumericalRenders();
+        removeNumericalFrameHoldovers();
+
+        // Clear scalar shading and its selection in the sidebar.
+        activeField = "none";
+        if (fieldSelect) fieldSelect.value = "none";
+        document.querySelectorAll("#sidebar .field-choice.active")
+            .forEach(button => button.classList.remove("active"));
+
+        // All keys in this object are numerical contour/vector overlays;
+        // map geography and annotations are stored separately.
+        for (const key of Object.keys(activeOverlays)) {
+            activeOverlays[key] = false;
+        }
+
+        const overlayConfigs = [
+            ...VECTOR_OVERLAY_CONFIG,
+            ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
+            ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
+            ...FRONTOGENESIS_CONTOUR_OVERLAYS,
+            ...THERMODYNAMIC_CONTOUR_OVERLAYS
+        ];
+        uncheckNumericalOverlayControls(overlayConfigs);
+        for (const id of ["mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle"]) {
+            const input = document.getElementById(id);
+            if (input) input.checked = false;
+        }
+
+        clearCursor();
+        updateLegend();
+        resetNumericalCanvasTransforms();
+
+        // These routines synchronously clear their canvases before any awaits.
+        // Contours also clear the separate contour-label canvas.
+        await Promise.all([
+            renderWeather(),
+            renderVectors(),
+            renderContours()
+        ]);
+        renderGeography();
+        captureCanvasCamera(getNumericalCameraSnapshot());
+        updateActiveLayersStrip();
+    });
+}
+
+/* =========================================================================================
    FILLED FIELD CHANGE
    ========================================================================================= */
 
@@ -15933,12 +16021,6 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
-
-
-
-
-
 
 
 
