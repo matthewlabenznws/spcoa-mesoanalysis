@@ -646,6 +646,43 @@ function installSpcoaStpDisplayControls() {
 installSpcoaCompositeContourToggles();
 installSpcoaStpDisplayControls();
 
+
+/* SPC-style ASOS/AWOS station-model controls in both host and child sidebars. */
+function installSpcoaSurfaceObservationsControls() {
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar || document.getElementById("surface-obs-toggle")) return;
+    const sector = document.createElement("div");
+    sector.className = "spcoa-surface-observations-controls";
+    sector.style.cssText = "margin-top:9px;padding:9px 0 4px;border-top:1px solid rgba(170,190,205,.26)";
+    sector.setAttribute("aria-label", "ASOS and AWOS surface observations");
+    sector.innerHTML = `
+        <span class="small-heading">Surface Observations</span>
+        <label style="display:flex;align-items:center;gap:7px;margin:6px 0;font-size:12px;cursor:pointer">
+          <input id="surface-obs-toggle" type="checkbox" style="accent-color:#3ba8ef">
+          Show ASOS / AWOS station plots
+        </label>
+        <label style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px">
+          Station density
+          <select id="surface-obs-density" style="min-width:100px;font-size:11px">
+            <option value="sparse">Sparse</option>
+            <option value="standard" selected>Standard</option>
+            <option value="dense">Dense</option>
+          </select>
+        </label>
+        <span id="surface-obs-status" style="display:block;font-size:10px;opacity:.8;margin-top:4px">Off</span>
+    `;
+    // Put station observations with the rest of the Surface category controls.
+    // Both the multi-panel host and each map child have this category.
+    const surfaceContent = sidebar.querySelector("#surface-category .cat-content");
+    if (surfaceContent) {
+        surfaceContent.appendChild(sector);
+    } else {
+        // Defensive fallback if an older/custom index omits the Surface category.
+        sidebar.querySelector(".sidebar-body")?.appendChild(sector);
+    }
+}
+installSpcoaSurfaceObservationsControls();
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -1250,7 +1287,7 @@ if (!__MP_CHILD) {
             // Mirror run information and loading status from the active map panel.
             // These labels live in the host sidebar and otherwise remain stuck
             // at the HTML defaults ("Loading..." / "Initializing...").
-            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status"].forEach(id => {
+            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status", "surface-obs-status"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child && !(hostGifExporting && id === "status")) host.textContent = child.textContent;
             });
@@ -3806,6 +3843,17 @@ Object.assign(cityLabelCanvas.style, {
 });
 
 
+/* Surface METAR station-model layer, geographically anchored during movement. */
+const stationObsCanvas = document.createElement("canvas");
+stationObsCanvas.id = "station-obs-canvas";
+stationObsCanvas.setAttribute("aria-hidden", "true");
+Object.assign(stationObsCanvas.style, {
+    position: "absolute", inset: "0", width: "100%", height: "100%",
+    pointerEvents: "none", zIndex: "8"
+});
+mapWrapper.appendChild(stationObsCanvas);
+const stationObsCtx = stationObsCanvas.getContext("2d");
+
 /* =========================================================================================
    CANVAS STACK
    ========================================================================================= */
@@ -5358,6 +5406,8 @@ function resizeAllCanvases() {
         contourLabelCanvas
     );
 
+    requestSurfaceObsDraw();
+
 }
 
 
@@ -5717,6 +5767,7 @@ async function applyRun(runItem, { render = true, preload = true } = {}) {
         invalidateNumericalRenders();
         currentRun = runItem.run;
         currentAnalysisTime = runItem.analysis_time || bundle.metadata.analysis_time || runIdToIso(runItem.run);
+        void refreshSurfaceObsForRun();
         runMetadata = bundle.metadata;
         fieldMetadata = bundle.fields;
         vectorMetadata = bundle.vectors;
@@ -13512,6 +13563,263 @@ async function renderAll() {
 
 
 /* =========================================================================================
+   SPC-STYLE TIME-MATCHED ASOS/AWOS SURFACE OBSERVATIONS + PRESENT WEATHER
+   Source: per-run surface_obs.json in the same S3 run as SPCOA-HRRR fields.
+   Each 18Z map uses the latest reports from 17:50–18:00Z (strict 10 min).
+   ========================================================================================= */
+const surfaceObsToggle = document.getElementById("surface-obs-toggle");
+const surfaceObsDensity = document.getElementById("surface-obs-density");
+const surfaceObsStatus = document.getElementById("surface-obs-status");
+const surfaceObsCache = new Map();
+let surfaceObsRequestSerial = 0;
+let surfaceObsStationList = [];
+let surfaceObsLoadedRun = null;
+let surfaceObsDrawPending = false;
+let surfaceObsWeatherImages = new Map();
+
+function prepareSurfaceObsWeatherImages(wxData) {
+    surfaceObsWeatherImages = new Map();
+    if (!wxData || typeof wxData !== 'object') return;
+    for (const [code, src] of Object.entries(wxData)) {
+        if (typeof src !== 'string' || !src.startsWith('data:image/png;base64,')) continue;
+        const img = new Image();
+        surfaceObsWeatherImages.set(code, img);
+        img.onload = requestSurfaceObsDraw;
+        img.onerror = () => console.warn(`SPCOA present weather icon unavailable: ${code}`);
+        img.src = src;
+    }
+}
+
+function setSurfaceObsStatus(message) {
+    if (surfaceObsStatus) surfaceObsStatus.textContent = message;
+}
+
+function resizeStationObsCanvas() {
+    const box = mapWrapper.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const width = Math.max(1, Math.round(box.width * dpr));
+    const height = Math.max(1, Math.round(box.height * dpr));
+    if (stationObsCanvas.width !== width || stationObsCanvas.height !== height) {
+        stationObsCanvas.width = width;
+        stationObsCanvas.height = height;
+    }
+    stationObsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return {width: box.width, height: box.height};
+}
+
+function paintStationSky(ctx, x, y, cover) {
+    ctx.save();
+    ctx.lineWidth = 1.15;
+    ctx.strokeStyle = "#111111";
+    ctx.fillStyle = "#111111";
+    const r = 3.6;
+    const fraction = ({SKC: 0, CLR: 0, NSC: 0, NCD: 0,
+                       FEW: 0.125, SCT: 0.375, BKN: 0.75,
+                       OVC: 1, VV: 1})[cover];
+    // Null sky-cover means unknown, not clear skies.
+    if (fraction != null && fraction > 0) {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.arc(x, y, r - 0.2, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * fraction);
+        ctx.closePath();
+        ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.stroke();
+    if (cover === "VV") {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - 1.7, y - 1.7); ctx.lineTo(x + 1.7, y + 1.7);
+        ctx.moveTo(x + 1.7, y - 1.7); ctx.lineTo(x - 1.7, y + 1.7);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function paintStationWindBarb(ctx, x, y, degrees, speed, bearing) {
+    if (!Number.isFinite(speed)) return;
+    if (speed < 2) {
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+        return;
+    }
+    if (!Number.isFinite(degrees)) return; // METAR VRB: no specified direction
+    const rad = (degrees - bearing) * Math.PI / 180;
+    const ux = Math.sin(rad), uy = -Math.cos(rad);
+    const px = -uy, py = ux;
+    const fullSpeed = Math.max(0, Math.round(speed / 5) * 5);
+    let flags = Math.floor(fullSpeed / 50);
+    let remaining = fullSpeed % 50;
+    let tens = Math.floor(remaining / 10);
+    let half = remaining % 10 >= 5;
+    let distance = 24;
+    const start = 4, tip = 24;
+    const pos = d => [x + ux * d, y + uy * d];
+    ctx.lineWidth = 1.15;
+    ctx.strokeStyle = "#111"; ctx.fillStyle = "#111";
+    ctx.beginPath();
+    ctx.moveTo(...pos(start)); ctx.lineTo(...pos(tip)); ctx.stroke();
+    for (let flag = 0; flag < flags && distance >= 10; flag++) {
+        const [tx, ty] = pos(distance);
+        const [bx, by] = pos(distance - 5.5);
+        ctx.beginPath(); ctx.moveTo(tx, ty);
+        ctx.lineTo(bx + px * 8, by + py * 8);
+        ctx.lineTo(bx, by); ctx.closePath(); ctx.fill();
+        distance -= 6.8;
+    }
+    for (let barb = 0; barb < tens && distance >= 8; barb++) {
+        const [bx, by] = pos(distance);
+        ctx.beginPath(); ctx.moveTo(bx, by);
+        ctx.lineTo(bx + px * 8 - ux * 3.8, by + py * 8 - uy * 3.8); ctx.stroke();
+        distance -= 4;
+    }
+    if (half && distance >= 7) {
+        const [bx, by] = pos(distance);
+        ctx.beginPath(); ctx.moveTo(bx, by);
+        ctx.lineTo(bx + px * 4 - ux * 2, by + py * 4 - uy * 2); ctx.stroke();
+    }
+}
+
+function drawStationModel(ctx, obs, x, y, bearing) {
+    ctx.save();
+    // Small SPC-style text without large backgrounds, with a white micro-halo
+    // only so it remains readable on dark numerical fields.
+    ctx.font = '600 11px Arial, Helvetica, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 2.1;
+    ctx.strokeStyle = 'rgba(255,255,255,.84)';
+    const write = (value, tx, ty, color, align='right') => {
+        if (value == null || !Number.isFinite(value)) return;
+        const str = String(Math.round(value));
+        ctx.textAlign = align;
+        ctx.strokeText(str, tx, ty); ctx.fillStyle = color; ctx.fillText(str, tx, ty);
+    };
+    // Compact layout from the approved Colab preview, with space for weather.
+    write(obs.temp_f, x - 7, y - 11, '#d51c24');
+    write(obs.dewpoint_f, x - 7, y + 12, '#198d37');
+    write(obs.mslp_hpa, x + 8, y - 8, '#101010', 'left');
+    // Actual WMO symbol rendered by backend from MetPy's weather-symbol font.
+    const wxImage = obs.wx_code == null ? null : surfaceObsWeatherImages.get(String(obs.wx_code));
+    if (wxImage && wxImage.complete && wxImage.naturalWidth) {
+        ctx.drawImage(wxImage, x - 26, y - 10, 20, 20);
+    } else if (obs.wx_code === 10) {
+        // Mist (BR): use the standard two purple bars, even if the sprite fails.
+        ctx.save();
+        ctx.strokeStyle = '#a000b0'; ctx.lineWidth = 1.45;
+        ctx.beginPath();
+        ctx.moveTo(x - 26, y - 3); ctx.lineTo(x - 16, y - 3);
+        ctx.moveTo(x - 26, y + 3); ctx.lineTo(x - 16, y + 3);
+        ctx.stroke(); ctx.restore();
+    }
+    paintStationWindBarb(ctx, x, y, obs.wind_dir_deg, obs.wind_speed_kt, bearing);
+    paintStationSky(ctx, x, y, obs.sky_cover);
+    ctx.font = '500 9px Arial, Helvetica, sans-serif';
+    ctx.textAlign = 'left'; ctx.fillStyle = '#8f781c';
+    const id = obs.id.startsWith('K') && obs.id.length === 4 ? obs.id.substring(1) : obs.id;
+    ctx.strokeText(id, x + 6, y + 10);
+    ctx.fillText(id, x + 6, y + 10);
+    ctx.restore();
+}
+
+function renderSurfaceObs() {
+    const dimensions = resizeStationObsCanvas();
+    stationObsCtx.clearRect(0, 0, dimensions.width, dimensions.height);
+    if (!surfaceObsToggle?.checked || !surfaceObsStationList.length ||
+        !currentRun || surfaceObsLoadedRun !== currentRun) return;
+    const zoom = map.getZoom();
+    const density = surfaceObsDensity?.value || 'standard';
+    const baseSpacing = density === 'dense' ? 37 : density === 'sparse' ? 83 : 55;
+    // Additional thinning at CONUS scale; relax spacing when zoomed in.
+    const spacing = Math.max(21, baseSpacing + Math.max(0, 5.2 - zoom) * 14);
+    const occupancy = new Map();
+    const bearing = map.getBearing();
+    const visible = [];
+    for (const obs of surfaceObsStationList) {
+        if (!Number.isFinite(obs.lon) || !Number.isFinite(obs.lat)) continue;
+        const pt = map.project([obs.lon, obs.lat]);
+        if (pt.x < 28 || pt.y < 36 || pt.x > dimensions.width - 48 || pt.y > dimensions.height - 28) continue;
+        visible.push({obs, x: pt.x, y: pt.y});
+    }
+    // Deterministic priority: sites with more plotted variables get first choice.
+    visible.sort((a, b) => {
+        const score = v => ['temp_f','dewpoint_f','mslp_hpa','wind_speed_kt','sky_cover']
+            .reduce((n,k) => n + (v[k] == null ? 0 : 1), 0);
+        return score(b.obs) - score(a.obs) || a.obs.id.localeCompare(b.obs.id);
+    });
+    for (const item of visible) {
+        const cx = Math.floor(item.x / spacing), cy = Math.floor(item.y / spacing);
+        let available = true;
+        for (let dx = -1; dx <= 1 && available; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                const occupied = occupancy.get(`${cx + dx}:${cy + dy}`);
+                if (occupied && Math.hypot(occupied.x - item.x, occupied.y - item.y) < spacing) {
+                    available = false; break;
+                }
+            }
+        }
+        if (!available) continue;
+        occupancy.set(`${cx}:${cy}`, item);
+        drawStationModel(stationObsCtx, item.obs, item.x, item.y, bearing);
+    }
+}
+
+function requestSurfaceObsDraw() {
+    if (surfaceObsDrawPending) return;
+    surfaceObsDrawPending = true;
+    requestAnimationFrame(() => {
+        surfaceObsDrawPending = false;
+        renderSurfaceObs();
+    });
+}
+
+async function refreshSurfaceObsForRun() {
+    const requestSerial = ++surfaceObsRequestSerial;
+    const run = currentRun;
+    surfaceObsLoadedRun = null;
+    surfaceObsStationList = [];
+    surfaceObsWeatherImages = new Map();
+    requestSurfaceObsDraw();
+    if (!surfaceObsToggle?.checked || !run) {
+        setSurfaceObsStatus('Off');
+        return;
+    }
+    setSurfaceObsStatus(`Loading observations for ${run}...`);
+    try {
+        let document = surfaceObsCache.get(run);
+        if (!document) {
+            document = await fetchJSON(`${S3_BASE_URL}/runs/${run}/surface_obs.json`);
+            if (document?.run !== run) throw new Error(`Observation run mismatch: ${document?.run}`);
+            const selectedTime = currentAnalysisTime || runIdToIso(run);
+            if (document.analysis_time && Math.abs(Date.parse(document.analysis_time) - Date.parse(selectedTime)) > 1000) {
+                throw new Error('Observation valid time does not match displayed SPCOA analysis');
+            }
+            if (surfaceObsCache.size > 30) surfaceObsCache.delete(surfaceObsCache.keys().next().value);
+            surfaceObsCache.set(run, document);
+        }
+        if (requestSerial !== surfaceObsRequestSerial || run !== currentRun || !surfaceObsToggle.checked) return;
+        surfaceObsStationList = Array.isArray(document.stations) ? document.stations : [];
+        prepareSurfaceObsWeatherImages(document.wx_images);
+        surfaceObsLoadedRun = run;
+        setSurfaceObsStatus(document.warning
+            ? 'Observation archive unavailable for this run'
+            : `${surfaceObsStationList.length} stations • ${run.slice(-2)}Z observations (10 min)`);
+        requestSurfaceObsDraw();
+    } catch (error) {
+        if (requestSerial !== surfaceObsRequestSerial) return;
+        setSurfaceObsStatus('No observation file for this run');
+        console.warn('SPCOA surface observation overlay:', error);
+        requestSurfaceObsDraw();
+    }
+}
+
+surfaceObsToggle?.addEventListener('change', () => { void refreshSurfaceObsForRun(); });
+surfaceObsDensity?.addEventListener('change', requestSurfaceObsDraw);
+map.on('move', requestSurfaceObsDraw);
+map.on('resize', requestSurfaceObsDraw);
+
+/* =========================================================================================
    MAP MOVE START
    ========================================================================================= */
 
@@ -15059,6 +15367,7 @@ async function saveCurrentMapPng4k() {
             geographyCanvas,
             vectorCanvas,
             cityLabelCanvas,
+            stationObsCanvas,
             annotationCanvas,
             contourLabelCanvas
         ].filter(Boolean);
@@ -15280,6 +15589,7 @@ async function buildGifFrameCanvas(outW = 1920) {
         geographyCanvas,
         vectorCanvas,
         cityLabelCanvas,
+        stationObsCanvas,
         annotationCanvas,
         contourLabelCanvas
     ].filter(Boolean);
@@ -15915,7 +16225,7 @@ document.addEventListener("visibilitychange", () => {
         const ctx = out.getContext("2d", { alpha: false });
         ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, outW, outH);
         const mapH = outH - footerH;
-        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, cityLabelCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
+        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, cityLabelCanvas, stationObsCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
         for (const layer of layers) ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, outW, mapH);
 
         if (legend && legend.style.display !== "none") {
