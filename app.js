@@ -683,6 +683,51 @@ function installSpcoaSurfaceObservationsControls() {
 }
 installSpcoaSurfaceObservationsControls();
 
+/* HRRR F00 sampled hodograph controls. Installed in host and all child panels. */
+function installSpcoaHodographControls() {
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar || document.getElementById("spcoa-hodo-toggle")) return;
+    const section = document.createElement("div");
+    section.className = "spcoa-hodograph-controls";
+    section.setAttribute("aria-label", "HRRR F00 hodographs");
+    section.style.cssText = "margin-top:10px;padding:9px 0 5px;border-top:1px solid rgba(170,190,205,.26)";
+    section.innerHTML = `
+      <span class="small-heading">Hodographs (HRRR F00)</span>
+      <label style="display:flex;gap:7px;align-items:center;margin:7px 0;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="spcoa-hodo-toggle" style="accent-color:#39a7f0">
+        Show 0–9 km hodographs
+      </label>
+      <label style="display:flex;gap:7px;align-items:center;margin:6px 0;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="spcoa-hodo-effective" checked style="accent-color:#39a7f0">
+        Blue effective-inflow shading
+      </label>
+      <label style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;margin:7px 0">
+        Density
+        <select id="spcoa-hodo-density" style="min-width:104px;font-size:11px">
+          <option value="sparse">Sparse</option>
+          <option value="standard" selected>Standard</option>
+          <option value="dense">Dense</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;margin:7px 0">
+        Size
+        <input id="spcoa-hodo-size" type="range" min="75" max="150" value="115" step="5" style="width:115px">
+        <span id="spcoa-hodo-size-value" style="min-width:32px;text-align:right">115%</span>
+      </label>
+      <div style="display:flex;gap:9px;flex-wrap:wrap;font-size:10px;margin-top:6px">
+        <span style="color:#e17bda">● 0–0.5</span>
+        <span style="color:#ec4242">● 0.5–3</span>
+        <span style="color:#29bb51">● 3–6</span>
+        <span style="color:#d6b323">● 6–9 km</span>
+      </div>
+      <span id="spcoa-hodo-status" role="status" style="display:block;font-size:10px;opacity:.8;margin-top:7px">Off</span>
+    `;
+    const target = sidebar.querySelector("#surface-category .cat-content")
+        || sidebar.querySelector(".sidebar-body") || sidebar;
+    target.appendChild(section);
+}
+installSpcoaHodographControls();
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -1287,7 +1332,7 @@ if (!__MP_CHILD) {
             // Mirror run information and loading status from the active map panel.
             // These labels live in the host sidebar and otherwise remain stuck
             // at the HTML defaults ("Loading..." / "Initializing...").
-            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status", "surface-obs-status"].forEach(id => {
+            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status", "surface-obs-status", "spcoa-hodo-status"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child && !(hostGifExporting && id === "status")) host.textContent = child.textContent;
             });
@@ -3854,6 +3899,18 @@ Object.assign(stationObsCanvas.style, {
 mapWrapper.appendChild(stationObsCanvas);
 const stationObsCtx = stationObsCanvas.getContext("2d");
 
+/* Dedicated transparent hodograph overlay, behind station models/annotations. */
+const hodographCanvas = document.createElement("canvas");
+hodographCanvas.id = "spcoa-hodograph-canvas";
+hodographCanvas.setAttribute("aria-hidden", "true");
+Object.assign(hodographCanvas.style, {
+    position: "absolute", inset: "0", width: "100%", height: "100%",
+    pointerEvents: "none", zIndex: "7"
+});
+mapWrapper.appendChild(hodographCanvas);
+const hodographCtx = hodographCanvas.getContext("2d");
+
+
 /* =========================================================================================
    CANVAS STACK
    ========================================================================================= */
@@ -5768,6 +5825,7 @@ async function applyRun(runItem, { render = true, preload = true } = {}) {
         currentRun = runItem.run;
         currentAnalysisTime = runItem.analysis_time || bundle.metadata.analysis_time || runIdToIso(runItem.run);
         void refreshSurfaceObsForRun();
+        void refreshHodographsForRun();
         runMetadata = bundle.metadata;
         fieldMetadata = bundle.fields;
         vectorMetadata = bundle.vectors;
@@ -13820,6 +13878,275 @@ map.on('move', requestSurfaceObsDraw);
 map.on('resize', requestSurfaceObsDraw);
 
 /* =========================================================================================
+   HRRR F00 HODOGRAPHS — JSON VECTOR OVERLAY, STAGE 2
+   Reuses Stage 1 schema_version=1, no GRIB downloads in the browser.
+   Every selected hour looks up /runs/YYYYMMDD_HH/hodographs.json.
+   Display locations are model-sampled; 0–9 km winds are ground-relative (kt).
+   ========================================================================================= */
+const hodoToggle = document.getElementById("spcoa-hodo-toggle");
+const hodoEffectiveToggle = document.getElementById("spcoa-hodo-effective");
+const hodoDensitySelect = document.getElementById("spcoa-hodo-density");
+const hodoSizeInput = document.getElementById("spcoa-hodo-size");
+const hodoSizeLabel = document.getElementById("spcoa-hodo-size-value");
+const hodoStatusLabel = document.getElementById("spcoa-hodo-status");
+const hodoCache = new Map();
+let hodoRun = null;
+let hodoDocument = null;
+let hodoSerial = 0;
+let hodoDrawQueued = false;
+let hodoPendingPromise = Promise.resolve();
+
+const HODO_BANDS = [
+    {min: 0, max: 500, color: "#e17bda"},
+    {min: 500, max: 3000, color: "#e52b2b"},
+    {min: 3000, max: 6000, color: "#1ba93f"},
+    {min: 6000, max: 9000, color: "#e3bf16"}
+];
+
+function hodoStatus(message) {
+    if (hodoStatusLabel) hodoStatusLabel.textContent = message;
+}
+
+function hodoResizeCanvas() {
+    const rect = mapWrapper.getBoundingClientRect();
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const bw = Math.max(1, Math.round(rect.width * dpr));
+    const bh = Math.max(1, Math.round(rect.height * dpr));
+    if (hodographCanvas.width !== bw || hodographCanvas.height !== bh) {
+        hodographCanvas.width = bw;
+        hodographCanvas.height = bh;
+    }
+    hodographCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return {width: rect.width, height: rect.height};
+}
+
+function hodoValidate(doc, run) {
+    if (!doc || doc.schema_version !== 1 || doc.product !== "hrrr_f00_hodographs" ||
+        doc.run_id !== run || doc.forecast_hour !== 0 ||
+        doc.wind_units !== "kt" || !Array.isArray(doc.points) ||
+        !Array.isArray(doc.heights_m_agl)) {
+        throw new Error("Unsupported or mismatched hodograph JSON for " + run);
+    }
+    const heights = doc.heights_m_agl;
+    if (!heights.length || heights[0] !== 0 || heights.at(-1) !== 9000 ||
+        !heights.every((z, i) => Number.isFinite(z) && (i === 0 || z > heights[i-1]))) {
+        throw new Error("Invalid hodograph height coordinates");
+    }
+    if (doc.points.length > 10000) throw new Error("Hodograph dataset is unexpectedly large");
+    // Check timestamp against selected analysis; do not display another hour's data.
+    const expected = Date.parse(runIdToIso(run));
+    const found = Date.parse(doc.valid_time_utc);
+    if (!Number.isFinite(expected) || !Number.isFinite(found) || Math.abs(expected-found) > 1000)
+        throw new Error("Hodograph valid time does not match selected analysis");
+    for (const pt of doc.points) {
+        if (!Number.isFinite(pt.lat) || !Number.isFinite(pt.lon) ||
+            pt.lat < -90 || pt.lat > 90 || pt.lon < -180 || pt.lon > 180 ||
+            !Array.isArray(pt.u_kt) || !Array.isArray(pt.v_kt) ||
+            pt.u_kt.length !== heights.length || pt.v_kt.length !== heights.length ||
+            !pt.u_kt.every(Number.isFinite) || !pt.v_kt.every(Number.isFinite)) {
+            throw new Error("Invalid wind profile in hodograph JSON");
+        }
+    }
+    return doc;
+}
+
+function hodoInterpolate(z, heights, values) {
+    if (z <= heights[0]) return values[0];
+    const last = heights.length - 1;
+    if (z >= heights[last]) return values[last];
+    // 91-level schema, linear scan is bounded and predictable.
+    let i = 1;
+    while (i < heights.length && heights[i] < z) i++;
+    const fraction = (z - heights[i-1]) / (heights[i] - heights[i-1]);
+    return values[i-1] + fraction * (values[i] - values[i-1]);
+}
+
+function hodoTrace(ctx, prof, h, zmin, zmax, ox, oy, east, north, pxPerKnot) {
+    if (!(zmax > zmin)) return false;
+    const u = prof.u_kt, v = prof.v_kt;
+    const zs = [zmin];
+    for (let k=0; k<h.length; k++) if (h[k] > zmin && h[k] < zmax) zs.push(h[k]);
+    zs.push(zmax);
+    let started = false;
+    for (const z of zs) {
+        const uu = hodoInterpolate(z, h, u);
+        const vv = hodoInterpolate(z, h, v);
+        if (!Number.isFinite(uu) || !Number.isFinite(vv)) continue;
+        const x = ox + pxPerKnot * (uu*east.x + vv*north.x);
+        const y = oy + pxPerKnot * (uu*east.y + vv*north.y);
+        if (!started) { ctx.moveTo(x,y); started=true; }
+        else ctx.lineTo(x,y);
+    }
+    return started;
+}
+
+function hodoDirections(lon, lat) {
+    // Use the map projection itself: handles bearings and nonzero pitch without
+    // rotating the scientific wind vectors in raw geographic coordinates.
+    const p = map.project([lon, lat]);
+    const cosLat = Math.max(0.15, Math.cos(lat * Math.PI / 180));
+    const pE = map.project([lon + 0.08 / cosLat, lat]);
+    const pN = map.project([lon, Math.min(85, lat + 0.08)]);
+    const eastVec = {x: pE.x-p.x, y: pE.y-p.y};
+    const northVec = {x: pN.x-p.x, y: pN.y-p.y};
+    const en = Math.hypot(eastVec.x,eastVec.y);
+    const nn = Math.hypot(northVec.x,northVec.y);
+    if (en < 0.001 || nn < 0.001) return null;
+    return {
+        east: {x:eastVec.x/en, y:eastVec.y/en},
+        north: {x:northVec.x/nn, y:northVec.y/nn}
+    };
+}
+
+function drawOneHodograph(ctx, loc, heights, sizeRadius40, showEffective) {
+    const {x,y,point} = loc;
+    const scale = sizeRadius40 / 40;
+    const basis = hodoDirections(point.lon, point.lat);
+    if (!basis) return;
+    const {east,north} = basis;
+    ctx.save();
+    // Gray dashed rings; reference speeds 20 and 40 kt.
+    ctx.lineWidth = 0.9;
+    ctx.strokeStyle = "rgba(130,135,142,.85)";
+    ctx.setLineDash([3.5,3.5]);
+    for (const ring of [20,40]) {
+        ctx.beginPath(); ctx.arc(x,y,ring*scale,0,Math.PI*2); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "rgba(155,160,165,.60)";
+    ctx.lineWidth = 0.65;
+    ctx.beginPath();
+    ctx.moveTo(x-42*scale,y); ctx.lineTo(x+42*scale,y);
+    ctx.moveTo(x,y-42*scale); ctx.lineTo(x,y+42*scale);
+    ctx.stroke();
+
+    // SPC-inspired blue effective-inflow polygon: wind hodograph path and origin.
+    // The effective layer is thermodynamically conditional; stable profiles
+    // still show colored hodographs but no blue fill.
+    const eff = point.effective_inflow;
+    if (showEffective && eff && Number.isFinite(eff.base_m_agl) &&
+        Number.isFinite(eff.top_m_agl) && eff.top_m_agl > eff.base_m_agl &&
+        eff.base_m_agl >= 0 && eff.top_m_agl <= 9000) {
+        ctx.beginPath();
+        ctx.moveTo(x,y);
+        hodoTrace(ctx,point,heights,eff.base_m_agl,eff.top_m_agl,x,y,east,north,scale);
+        ctx.closePath();
+        ctx.fillStyle = "rgba(61,157,245,.46)";
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = "rgba(22,96,202,.88)";
+        ctx.stroke();
+    }
+
+    // Exact SPC layer boundaries: 0–500 m, 500–3000 m, 3–6 km, 6–9 km.
+    ctx.lineWidth = 2.7;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    for (const b of HODO_BANDS) {
+        ctx.beginPath();
+        if (hodoTrace(ctx,point,heights,b.min,b.max,x,y,east,north,scale)) {
+            ctx.strokeStyle = b.color;
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+}
+
+function renderHodographs() {
+    const {width, height} = hodoResizeCanvas();
+    hodographCtx.clearRect(0,0,width,height);
+    if (!hodoToggle?.checked || !hodoDocument || hodoRun !== currentRun) return;
+
+    const sizeFraction = Math.max(0.75, Math.min(1.50, Number(hodoSizeInput?.value || 115) / 100));
+    const radius40 = Math.max(13, Math.min(55, Math.min(width,height)*0.051 * sizeFraction));
+    const density = hodoDensitySelect?.value || "standard";
+    const spacingFactor = density === "dense" ? 1.00 : density === "sparse" ? 1.80 : 1.36;
+    const spacing = Math.max(35, radius40 * 2 * spacingFactor);
+    const occupancy = new Set();
+    const visible = [];
+    for (const point of hodoDocument.points) {
+        const xy = map.project([point.lon, point.lat]);
+        if (xy.x < -radius40*2 || xy.y < -radius40*2 ||
+            xy.x > width+radius40*2 || xy.y > height+radius40*2) continue;
+        visible.push({x:xy.x,y:xy.y,point});
+    }
+    // Keep geographical sample order stable while the map moves.
+    const h = hodoDocument.heights_m_agl;
+    let displayed = 0, effectiveShown = 0;
+    for (const loc of visible) {
+        const ix = Math.floor(loc.x/spacing), iy = Math.floor(loc.y/spacing);
+        let blocked = false;
+        for (let dx=-1;dx<=1&&!blocked;dx++) for (let dy=-1;dy<=1;dy++) {
+            if (occupancy.has(`${ix+dx}:${iy+dy}`)) {blocked=true;break;}
+        }
+        if (blocked) continue;
+        occupancy.add(`${ix}:${iy}`);
+        drawOneHodograph(hodographCtx,loc,h,radius40,!!hodoEffectiveToggle?.checked);
+        displayed++;
+        if (loc.point.effective_inflow) effectiveShown++;
+    }
+    hodoStatus(`${displayed} shown of ${hodoDocument.points.length} • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z`);
+}
+
+function requestHodographDraw() {
+    if (hodoDrawQueued) return;
+    hodoDrawQueued = true;
+    requestAnimationFrame(() => {
+        hodoDrawQueued = false;
+        renderHodographs();
+    });
+}
+
+function refreshHodographsForRun() {
+    const serial = ++hodoSerial;
+    const run = currentRun;
+    hodoRun = null;
+    hodoDocument = null;
+    requestHodographDraw();
+    if (!hodoToggle?.checked || !run) {
+        hodoStatus("Off");
+        hodoPendingPromise = Promise.resolve();
+        return hodoPendingPromise;
+    }
+    hodoStatus(`Loading HRRR F00 hodographs for ${run}...`);
+    hodoPendingPromise = (async () => {
+        try {
+            let doc = hodoCache.get(run);
+            if (!doc) {
+                const url = `${S3_BASE_URL}/runs/${run}/hodographs.json`;
+                const response = await fetch(url, {cache:"no-store"});
+                if (response.status === 404) throw new Error("404: file not published");
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                doc = hodoValidate(await response.json(), run);
+                if (hodoCache.size >= 24) hodoCache.delete(hodoCache.keys().next().value);
+                hodoCache.set(run, doc);
+            }
+            if (serial !== hodoSerial || run !== currentRun || !hodoToggle?.checked) return;
+            hodoRun = run;
+            hodoDocument = doc;
+            requestHodographDraw();
+        } catch (error) {
+            if (serial !== hodoSerial) return;
+            console.info(`SPCOA hodographs ${run}:`, error);
+            hodoStatus(`Hodograph data unavailable for ${run.slice(-2)}Z`);
+            requestHodographDraw();
+        }
+    })();
+    return hodoPendingPromise;
+}
+
+hodoToggle?.addEventListener("change", () => { void refreshHodographsForRun(); });
+hodoEffectiveToggle?.addEventListener("change", requestHodographDraw);
+hodoDensitySelect?.addEventListener("change", requestHodographDraw);
+hodoSizeInput?.addEventListener("input", () => {
+    if (hodoSizeLabel) hodoSizeLabel.textContent = `${hodoSizeInput.value}%`;
+    requestHodographDraw();
+});
+map.on("move", requestHodographDraw);
+map.on("resize", requestHodographDraw);
+
+
+/* =========================================================================================
    MAP MOVE START
    ========================================================================================= */
 
@@ -15316,6 +15643,8 @@ async function saveCurrentMapPng4k() {
 
     try {
         renderAnnotations();
+        if (hodoToggle?.checked) await hodoPendingPromise;
+        requestHodographDraw();
         if (statusElement) statusElement.textContent = "Preparing PNG...";
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
@@ -15367,6 +15696,7 @@ async function saveCurrentMapPng4k() {
             geographyCanvas,
             vectorCanvas,
             cityLabelCanvas,
+            hodographCanvas,
             stationObsCanvas,
             annotationCanvas,
             contourLabelCanvas
@@ -15589,6 +15919,7 @@ async function buildGifFrameCanvas(outW = 1920) {
         geographyCanvas,
         vectorCanvas,
         cityLabelCanvas,
+        hodographCanvas,
         stationObsCanvas,
         annotationCanvas,
         contourLabelCanvas
@@ -15779,6 +16110,8 @@ window.__mpGifSetRun = async function(item) {
         await renderAll();
     }
     ensureGifProductsAvailable();
+    if (hodoToggle?.checked) await hodoPendingPromise;
+    requestHodographDraw();
     // Let the browser submit canvas/map rendering before compositing a frame.
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     return true;
@@ -16206,6 +16539,7 @@ document.addEventListener("visibilitychange", () => {
                 pitch: Number.isFinite(Number(saved.camera.pitch)) ? Number(saved.camera.pitch) : 0});
             updateLegend();
             await renderAll();
+            void refreshHodographsForRun();
             updateActiveLayersStrip();
             return true;
         } finally {
@@ -16216,6 +16550,8 @@ document.addEventListener("visibilitychange", () => {
 
     window.__mpCapturePanel = async function(outW = 1800) {
         renderAnnotations();
+        if (hodoToggle?.checked) await hodoPendingPromise;
+        requestHodographDraw();
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const rect = mapWrapper.getBoundingClientRect();
         const srcW = Math.max(1, rect.width), srcH = Math.max(1, rect.height);
@@ -16225,7 +16561,7 @@ document.addEventListener("visibilitychange", () => {
         const ctx = out.getContext("2d", { alpha: false });
         ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, outW, outH);
         const mapH = outH - footerH;
-        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, cityLabelCanvas, stationObsCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
+        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, cityLabelCanvas, hodographCanvas, stationObsCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
         for (const layer of layers) ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, outW, mapH);
 
         if (legend && legend.style.display !== "none") {
@@ -16331,6 +16667,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
