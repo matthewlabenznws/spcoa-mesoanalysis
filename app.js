@@ -683,7 +683,7 @@ function installSpcoaSurfaceObservationsControls() {
 }
 installSpcoaSurfaceObservationsControls();
 
-/* HRRR F00 sampled hodograph controls. Installed in host and all child panels. */
+/* HRRR F00 sampled hodograph controls under Wind Shear / Storm Motion (host + child panels). */
 function installSpcoaHodographControls() {
     const sidebar = document.getElementById("sidebar");
     if (!sidebar || document.getElementById("spcoa-hodo-toggle")) return;
@@ -722,7 +722,9 @@ function installSpcoaHodographControls() {
       </div>
       <span id="spcoa-hodo-status" role="status" style="display:block;font-size:10px;opacity:.8;margin-top:7px">Off</span>
     `;
-    const target = sidebar.querySelector("#surface-category .cat-content")
+    // Wind Shear / Storm Motion category (not Surface). Host and every child
+    // panel share the same category IDs in index.html.
+    const target = sidebar.querySelector("#shear-category .cat-content")
         || sidebar.querySelector(".sidebar-body") || sidebar;
     target.appendChild(section);
 }
@@ -16667,6 +16669,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
