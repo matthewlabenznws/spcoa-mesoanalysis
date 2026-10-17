@@ -14004,6 +14004,15 @@ function drawOneHodograph(ctx, loc, heights, sizeRadius40, showEffective, profil
     const {east, north} = basis;
     ctx.save();
 
+    // Counties can be visually busier than the wind profiles. A soft, circular
+    // white backing lets the hodographs remain readable without disabling
+    // geography or permanently covering the rest of the meteorological field.
+    // Stations/annotations still render above this independent overlay.
+    ctx.beginPath();
+    ctx.arc(x, y, sizeRadius40 + 3, 0, Math.PI * 2);
+    ctx.fillStyle = countiesEnabled ? "rgba(255,255,255,0.72)" : "rgba(255,255,255,0.26)";
+    ctx.fill();
+
     // SPC-like dashed gray 20/40-kt reference rings. The *spacing* is
     // Pivotal-inspired, but the wind-profile heights/colors remain SPC-style.
     ctx.strokeStyle = "rgba(128,128,128,.82)";
@@ -14042,13 +14051,18 @@ function drawOneHodograph(ctx, loc, heights, sizeRadius40, showEffective, profil
     }
 
     // SPC 0-500 m magenta, 500 m-3 km red, 3-6 km green, 6-9 km yellow.
-    ctx.lineWidth = profileWidth;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     for (const band of HODO_BANDS) {
         ctx.beginPath();
         if (hodoTrace(ctx, point, heights, band.min, band.max, x, y, east, north, scale)) {
+            // Draw the white halo first, then the original SPC height color.
+            // This isolates the color even from thick black county boundaries.
+            ctx.strokeStyle = "rgba(255,255,255,0.97)";
+            ctx.lineWidth = profileWidth + 3.1;
+            ctx.stroke();
             ctx.strokeStyle = band.color;
+            ctx.lineWidth = profileWidth;
             ctx.stroke();
         }
     }
@@ -14056,68 +14070,167 @@ function drawOneHodograph(ctx, loc, heights, sizeRadius40, showEffective, profil
 }
 
 /*
- * Zoom-sensitive Pivotal-style layout, based on the Colab previews:
- *     CONUS    -> approximately 18 evenly spaced display columns
- *     Regional -> approximately 12 columns
- *     State    -> approximately 8 columns
- *     Local    -> approximately 7 columns (data permitting)
+ * Wind-barb-like hodograph display density:
+ *   CONUS   -> approximately 75 px between hodograph centers
+ *   Regional-> 65/58 px
+ *   State   -> 52/47 px
+ *   Local   -> ~41 px
+ * So zooming in increases density on the same-sized viewport, rather than
+ * dropping from 18 columns to 7 (the behavior in the prior version).
  *
- * The raw JSON can contain many more profiles than are drawn. We use an
- * evenly spaced display lattice and assign the nearest REAL HRRR model
- * profile in that lattice cell. A sampled model point is not a sounding
- * at the displayed lattice center; the source coordinates remain in point.
- * Sparse source coverage leaves holes instead of fabricating profiles.
+ * WIND-PROFILE INTERPOLATION: At medium/close zoom, the browser can generate
+ * a display profile by inverse-distance weighting 2-4 neighboring HRRR
+ * sampled profiles.  This is a VISUAL SPATIAL ESTIMATE, not a newly computed
+ * native-resolution HRRR sounding.  The underlying JSON is unchanged.
+ * Effective-layer boundaries are copied only where an actual source profile
+ * is close enough; CAPE/CIN are never calculated or interpolated in JS.
  */
+const HODO_SPATIAL_INTERPOLATION = true;
+
 function spcoaHodoViewStyle(zoom, width, height) {
-    const density = hodoDensitySelect?.value || 'standard';
+    const density = hodoDensitySelect?.value || "standard";
     const userSize = Math.max(0.75, Math.min(1.50, Number(hodoSizeInput?.value || 115) / 100));
-    const mode = zoom < 4.65 ? 'CONUS' : zoom < 6.25 ? 'Regional' : zoom < 7.75 ? 'State' : 'Local';
-    const baseCols = mode === 'CONUS' ? 18 : mode === 'Regional' ? 12 : mode === 'State' ? 8 : 7;
-    const densityFactor = density === 'dense' ? 1.25 : density === 'sparse' ? 0.74 : 1.0;
-    // Respect narrow phone and multi-panel widths; target symbols must remain legible.
-    const usableWidth = Math.max(1, width);
-    const maxCols = Math.max(3, Math.floor(usableWidth / 52));
-    const targetColumns = Math.max(3, Math.min(maxCols, Math.round(baseCols * densityFactor)));
-    const spacing = usableWidth / targetColumns;
-    // At 115% ring size, radius is ~44% of spacing: nearly touching rings.
-    const radius40 = Math.max(11, Math.min(spacing * 0.485, spacing * 0.44 * userSize / 1.15));
-    const profileWidth = Math.max(1.35, Math.min(3.0, radius40 * 0.068));
+    const baseSpacing = zoom < 4.5 ? 76
+        : zoom < 5.5 ? 66
+        : zoom < 6.5 ? 58
+        : zoom < 7.5 ? 51
+        : zoom < 8.5 ? 46 : 41;
+    const densityFactor = density === "dense" ? 0.82 : density === "sparse" ? 1.22 : 1.0;
+    // Real CSS pixels, much like the existing getBarbSpacing() logic.
+    const spacing = Math.max(28, Math.round(baseSpacing * densityFactor));
+    const targetColumns = Math.max(1, Math.floor(width / spacing));
+    const mode = zoom < 4.5 ? "CONUS" : zoom < 6.5 ? "Regional"
+        : zoom < 8.5 ? "State" : "Local";
+    const radius40 = Math.max(12, Math.min(spacing * 0.485, spacing * 0.44 * userSize / 1.15));
+    // More contrast with county borders, but avoid painting opaque blobs.
+    const profileWidth = Math.max(1.85, Math.min(3.1, radius40 * 0.084));
     return {radius40, spacing, profileWidth, targetColumns, mode};
 }
 
-function spcoaChooseScreenHodographs(points, radius40, spacing, width, height) {
-    // Stable, regular viewport lattice. Each grid cell gets at most one
-    // sampled HRRR profile, selected by proximity to the cell's center.
-    // One underlying profile cannot be reused in another cell.
-    const maxColumns = Math.max(1, Math.ceil(width / spacing));
-    const maxRows = Math.max(1, Math.ceil(height / spacing));
-    const xInset = (width - maxColumns * spacing) / 2;
-    const yInset = (height - maxRows * spacing) / 2;
-    const maxDistanceSq = (0.69 * spacing) ** 2;
-    const cellBest = new Map();
+function spcoaHodoSourceSpacing(sources) {
+    // Estimate spacing of this *hour's* existing sampled HRRR profiles in
+    // screen pixels. At high zoom the same native samples are farther apart.
+    // Use up to 64 onscreen/nearby sources; O(64*N) with N about 1,390.
+    if (sources.length < 2) return NaN;
+    const step = Math.max(1, Math.floor(sources.length / 64));
+    const nearest = [];
+    for (let i = 0; i < sources.length; i += step) {
+        const a = sources[i];
+        let best = Infinity;
+        for (let j = 0; j < sources.length; j++) {
+            if (i === j) continue;
+            const b = sources[j];
+            const dx = a.x - b.x, dy = a.y - b.y;
+            const d2 = dx*dx + dy*dy;
+            if (d2 > 1 && d2 < best) best = d2;
+        }
+        if (Number.isFinite(best)) nearest.push(Math.sqrt(best));
+        if (nearest.length >= 64) break;
+    }
+    if (!nearest.length) return NaN;
+    nearest.sort((a, b) => a - b);
+    return nearest[Math.floor(nearest.length / 2)];
+}
+
+function spcoaHodoBlendProfile(neighbors, sx, sy, heights, sourceSpacing) {
+    // IDW mixing of winds at the SAME AGL levels.  No vertical synthesis.
+    // Use at most 4 source profiles, weighting closer samples more heavily.
+    const soft = Math.max(2, Math.min(14, sourceSpacing * 0.075));
+    const close = neighbors.filter(n => n.d2 <= (Math.max(2 * sourceSpacing, 70)) ** 2);
+    if (close.length < 2) return null;
+    const w = close.map(n => 1 / (n.d2 + soft * soft));
+    const wsum = w.reduce((a, b) => a + b, 0);
+    if (!(wsum > 0)) return null;
+    const nlev = heights.length;
+    const u = new Array(nlev), v = new Array(nlev);
+    for (let i = 0; i < nlev; i++) {
+        let uu = 0, vv = 0;
+        for (let k = 0; k < close.length; k++) {
+            uu += w[k] * close[k].point.u_kt[i];
+            vv += w[k] * close[k].point.v_kt[i];
+        }
+        u[i] = uu / wsum;
+        v[i] = vv / wsum;
+    }
+    // Effective inflow from the nearest actual profile only, and ONLY near
+    // that sample. Interpolating parcel CAPE/CIN in the browser would be wrong.
+    // The layer boundary is nearest-neighbor estimated for display purposes.
+    const nearest = close[0];
+    const effective = Math.sqrt(nearest.d2) <= sourceSpacing * 0.82
+        ? nearest.point.effective_inflow : null;
+    const lngLat = map.unproject([sx, sy]);
+    return {lat: lngLat.lat, lon: lngLat.lng, u_kt: u, v_kt: v,
+        effective_inflow: effective, display_interpolated: true};
+}
+
+function spcoaChooseScreenHodographs(points, radius40, spacing, width, height, heights) {
+    // First project every sampled source. We preserve the geographic limits
+    // of the dataset and never fabricate new native-level HRRR data.
+    const pad = Math.max(350, spacing * 4);
+    const sources = [];
     for (const point of points) {
         if (!Number.isFinite(point.lon) || !Number.isFinite(point.lat)) continue;
-        const pt = map.project([point.lon, point.lat]);
-        if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) continue;
-        const ix = Math.floor((pt.x - xInset) / spacing);
-        const iy = Math.floor((pt.y - yInset) / spacing);
-        if (ix < 0 || iy < 0 || ix >= maxColumns || iy >= maxRows) continue;
-        const x = xInset + (ix + 0.5) * spacing;
-        const y = yInset + (iy + 0.5) * spacing;
-        if (x < -radius40 || x > width + radius40 ||
-            y < -radius40 || y > height + radius40) continue;
-        const distanceSq = (pt.x-x) ** 2 + (pt.y-y) ** 2;
-        // A grid cell with no nearby HRRR sounding stays unfilled.
-        if (distanceSq > maxDistanceSq) continue;
-        const key = `${ix}:${iy}`;
-        const prior = cellBest.get(key);
-        if (!prior || distanceSq < prior.score ||
-            (distanceSq === prior.score && (point.lat < prior.point.lat ||
-             (point.lat === prior.point.lat && point.lon < prior.point.lon)))) {
-            cellBest.set(key, {x, y, point, score: distanceSq, cx: ix, cy: iy});
+        const p = map.project([point.lon, point.lat]);
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+        if (p.x < -pad || p.y < -pad || p.x > width + pad || p.y > height + pad) continue;
+        sources.push({x: p.x, y: p.y, point});
+    }
+    if (!sources.length) return [];
+
+    const measuredSpacing = spcoaHodoSourceSpacing(sources);
+    const sourceSpacing = Number.isFinite(measuredSpacing) ? measuredSpacing : spacing;
+    // Don't extrapolate wind profiles arbitrarily far from real samples.
+    // When very zoomed in, backend sampling eventually becomes limiting.
+    const supportRadius = Math.min(300, Math.max(spacing * 0.9, sourceSpacing * 0.80));
+    const supportSq = supportRadius * supportRadius;
+    const cols = Math.max(1, Math.floor(width / spacing));
+    const rows = Math.max(1, Math.floor(height / spacing));
+    const xStep = width / cols;
+    const yStep = height / rows;
+    const selected = [];
+    for (let iy = 0; iy < rows; iy++) {
+        const y = (iy + 0.5) * yStep;
+        for (let ix = 0; ix < cols; ix++) {
+            const x = (ix + 0.5) * xStep;
+            const neighbors = [];
+            // Four nearest genuine HRRR samples to this display-grid point.
+            for (const src of sources) {
+                const dx = src.x - x, dy = src.y - y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 > Math.max(supportSq * 8, 100 * 100)) continue;
+                const item = {d2, point: src.point, x: src.x, y: src.y};
+                let k = 0;
+                while (k < neighbors.length && neighbors[k].d2 < d2) k++;
+                if (k < 4) {
+                    neighbors.splice(k, 0, item);
+                    if (neighbors.length > 4) neighbors.pop();
+                }
+            }
+            if (!neighbors.length || neighbors[0].d2 > supportSq) continue;
+            let point;
+            if (HODO_SPATIAL_INTERPOLATION && neighbors.length >= 2 &&
+                neighbors[0].d2 > 1 && Array.isArray(heights)) {
+                // Do not interpolate outside the local model-sample envelope;
+                // otherwise offshore/wide-domain ghost hodographs can appear.
+                const minX = Math.min(...neighbors.map(n => n.x));
+                const maxX = Math.max(...neighbors.map(n => n.x));
+                const minY = Math.min(...neighbors.map(n => n.y));
+                const maxY = Math.max(...neighbors.map(n => n.y));
+                const margin = Math.min(spacing * 0.30, sourceSpacing * 0.20);
+                if (x >= minX-margin && x <= maxX+margin &&
+                    y >= minY-margin && y <= maxY+margin) {
+                    point = spcoaHodoBlendProfile(neighbors, x, y, heights, sourceSpacing);
+                }
+            }
+            if (!point) {
+                // Preserve actual sample winds close to its display cell.
+                if (Math.sqrt(neighbors[0].d2) > Math.min(spacing * 0.45, sourceSpacing * 0.4)) continue;
+                point = neighbors[0].point;
+            }
+            selected.push({x, y, point, cx: ix, cy: iy});
         }
     }
-    return [...cellBest.values()].sort((a,b) => a.cy-b.cy || a.cx-b.cx);
+    return selected;
 }
 
 function renderHodographs() {
@@ -14126,14 +14239,15 @@ function renderHodographs() {
     if (!hodoToggle?.checked || !hodoDocument || hodoRun !== currentRun) return;
 
     const {radius40, spacing, profileWidth, mode, targetColumns} = spcoaHodoViewStyle(map.getZoom(), width, height);
-    const selected = spcoaChooseScreenHodographs(hodoDocument.points, radius40, spacing, width, height);
+    const selected = spcoaChooseScreenHodographs(hodoDocument.points, radius40, spacing, width, height, hodoDocument.heights_m_agl);
     let effectiveShown = 0;
     const heights = hodoDocument.heights_m_agl;
     for (const item of selected) {
         drawOneHodograph(hodographCtx, item, heights, radius40, !!hodoEffectiveToggle?.checked, profileWidth);
         if (item.point.effective_inflow) effectiveShown++;
     }
-    hodoStatus(`${mode} (${targetColumns} columns) • ${selected.length} shown of ${hodoDocument.points.length} • ${effectiveShown} blue layers • ${hodoRun.slice(-2)}Z`);
+    const interpolated = selected.filter(item => item.point.display_interpolated).length;
+    hodoStatus(`${mode} (${targetColumns} columns) • ${selected.length} shown (${interpolated} spatial wind interpolations) • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z`);
 }
 
 function requestHodographDraw() {
@@ -14619,6 +14733,7 @@ if (countiesToggle) {
         event => {
             countiesEnabled = event.target.checked;
             renderGeography();
+            requestHodographDraw();
         }
     );
 
