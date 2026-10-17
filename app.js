@@ -659,7 +659,7 @@ function installSpcoaSurfaceObservationsControls() {
         <span class="small-heading">Surface Observations</span>
         <label style="display:flex;align-items:center;gap:7px;margin:6px 0;font-size:12px;cursor:pointer">
           <input id="surface-obs-toggle" type="checkbox" style="accent-color:#3ba8ef">
-          Show ASOS / AWOS station plots
+          Show Station Plots
         </label>
         <label style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px">
           Station density
@@ -695,7 +695,7 @@ function installSpcoaHodographControls() {
       <span class="small-heading">Hodographs (HRRR F00)</span>
       <label style="display:flex;gap:7px;align-items:center;margin:7px 0;font-size:12px;cursor:pointer">
         <input type="checkbox" id="spcoa-hodo-toggle" style="accent-color:#39a7f0">
-        Show 0–9 km hodographs
+        Show 0–9 km Hodographs
       </label>
       <label style="display:flex;gap:7px;align-items:center;margin:6px 0;font-size:12px;cursor:pointer">
         <input type="checkbox" id="spcoa-hodo-effective" checked style="accent-color:#39a7f0">
@@ -13775,11 +13775,7 @@ function drawStationModel(ctx, obs, x, y, bearing) {
     }
     paintStationWindBarb(ctx, x, y, obs.wind_dir_deg, obs.wind_speed_kt, bearing);
     paintStationSky(ctx, x, y, obs.sky_cover);
-    ctx.font = '500 9px Arial, Helvetica, sans-serif';
-    ctx.textAlign = 'left'; ctx.fillStyle = '#8f781c';
-    const id = obs.id.startsWith('K') && obs.id.length === 4 ? obs.id.substring(1) : obs.id;
-    ctx.strokeText(id, x + 6, y + 10);
-    ctx.fillText(id, x + 6, y + 10);
+    // Intentionally omit the station identifier: plot the weather data only.
     ctx.restore();
 }
 
@@ -14000,94 +13996,144 @@ function hodoDirections(lon, lat) {
     };
 }
 
-function drawOneHodograph(ctx, loc, heights, sizeRadius40, showEffective) {
-    const {x,y,point} = loc;
+function drawOneHodograph(ctx, loc, heights, sizeRadius40, showEffective, profileWidth) {
+    const {x, y, point} = loc;
     const scale = sizeRadius40 / 40;
     const basis = hodoDirections(point.lon, point.lat);
     if (!basis) return;
-    const {east,north} = basis;
+    const {east, north} = basis;
     ctx.save();
-    // Gray dashed rings; reference speeds 20 and 40 kt.
-    ctx.lineWidth = 0.9;
-    ctx.strokeStyle = "rgba(130,135,142,.85)";
-    ctx.setLineDash([3.5,3.5]);
-    for (const ring of [20,40]) {
-        ctx.beginPath(); ctx.arc(x,y,ring*scale,0,Math.PI*2); ctx.stroke();
+
+    // SPC-like dashed gray 20/40-kt reference rings. The *spacing* is
+    // Pivotal-inspired, but the wind-profile heights/colors remain SPC-style.
+    ctx.strokeStyle = "rgba(128,128,128,.82)";
+    ctx.lineWidth = Math.max(0.75, Math.min(1.05, sizeRadius40 / 31));
+    ctx.setLineDash([3, 3]);
+    for (const ring of [20, 40]) {
+        ctx.beginPath();
+        ctx.arc(x, y, ring * scale, 0, Math.PI * 2);
+        ctx.stroke();
     }
     ctx.setLineDash([]);
-    ctx.strokeStyle = "rgba(155,160,165,.60)";
+    ctx.strokeStyle = "rgba(160,160,160,.62)";
     ctx.lineWidth = 0.65;
     ctx.beginPath();
-    ctx.moveTo(x-42*scale,y); ctx.lineTo(x+42*scale,y);
-    ctx.moveTo(x,y-42*scale); ctx.lineTo(x,y+42*scale);
+    ctx.moveTo(x - 42 * scale, y);
+    ctx.lineTo(x + 42 * scale, y);
+    ctx.moveTo(x, y - 42 * scale);
+    ctx.lineTo(x, y + 42 * scale);
     ctx.stroke();
 
-    // SPC-inspired blue effective-inflow polygon: wind hodograph path and origin.
-    // The effective layer is thermodynamically conditional; stable profiles
-    // still show colored hodographs but no blue fill.
+    // Effective-layer shade is thermodynamically conditional. Stable
+    // profiles retain the regular height-colored curves without blue fill.
     const eff = point.effective_inflow;
     if (showEffective && eff && Number.isFinite(eff.base_m_agl) &&
         Number.isFinite(eff.top_m_agl) && eff.top_m_agl > eff.base_m_agl &&
         eff.base_m_agl >= 0 && eff.top_m_agl <= 9000) {
         ctx.beginPath();
-        ctx.moveTo(x,y);
-        hodoTrace(ctx,point,heights,eff.base_m_agl,eff.top_m_agl,x,y,east,north,scale);
+        ctx.moveTo(x, y);
+        hodoTrace(ctx, point, heights, eff.base_m_agl, eff.top_m_agl, x, y, east, north, scale);
         ctx.closePath();
-        ctx.fillStyle = "rgba(61,157,245,.46)";
+        ctx.fillStyle = "rgba(70,167,245,.52)";
         ctx.fill();
-        ctx.lineWidth = 1.2;
-        ctx.strokeStyle = "rgba(22,96,202,.88)";
+        ctx.lineWidth = 0.90;
+        ctx.strokeStyle = "rgba(30,100,203,.65)";
         ctx.stroke();
     }
 
-    // Exact SPC layer boundaries: 0–500 m, 500–3000 m, 3–6 km, 6–9 km.
-    ctx.lineWidth = 2.7;
+    // SPC 0-500 m magenta, 500 m-3 km red, 3-6 km green, 6-9 km yellow.
+    ctx.lineWidth = profileWidth;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    for (const b of HODO_BANDS) {
+    for (const band of HODO_BANDS) {
         ctx.beginPath();
-        if (hodoTrace(ctx,point,heights,b.min,b.max,x,y,east,north,scale)) {
-            ctx.strokeStyle = b.color;
+        if (hodoTrace(ctx, point, heights, band.min, band.max, x, y, east, north, scale)) {
+            ctx.strokeStyle = band.color;
             ctx.stroke();
         }
     }
     ctx.restore();
 }
 
+/*
+ * Zoom-sensitive Pivotal-style layout, based on the Colab previews:
+ *     CONUS    -> approximately 18 evenly spaced display columns
+ *     Regional -> approximately 12 columns
+ *     State    -> approximately 8 columns
+ *     Local    -> approximately 7 columns (data permitting)
+ *
+ * The raw JSON can contain many more profiles than are drawn. We use an
+ * evenly spaced display lattice and assign the nearest REAL HRRR model
+ * profile in that lattice cell. A sampled model point is not a sounding
+ * at the displayed lattice center; the source coordinates remain in point.
+ * Sparse source coverage leaves holes instead of fabricating profiles.
+ */
+function spcoaHodoViewStyle(zoom, width, height) {
+    const density = hodoDensitySelect?.value || 'standard';
+    const userSize = Math.max(0.75, Math.min(1.50, Number(hodoSizeInput?.value || 115) / 100));
+    const mode = zoom < 4.65 ? 'CONUS' : zoom < 6.25 ? 'Regional' : zoom < 7.75 ? 'State' : 'Local';
+    const baseCols = mode === 'CONUS' ? 18 : mode === 'Regional' ? 12 : mode === 'State' ? 8 : 7;
+    const densityFactor = density === 'dense' ? 1.25 : density === 'sparse' ? 0.74 : 1.0;
+    // Respect narrow phone and multi-panel widths; target symbols must remain legible.
+    const usableWidth = Math.max(1, width);
+    const maxCols = Math.max(3, Math.floor(usableWidth / 52));
+    const targetColumns = Math.max(3, Math.min(maxCols, Math.round(baseCols * densityFactor)));
+    const spacing = usableWidth / targetColumns;
+    // At 115% ring size, radius is ~44% of spacing: nearly touching rings.
+    const radius40 = Math.max(11, Math.min(spacing * 0.485, spacing * 0.44 * userSize / 1.15));
+    const profileWidth = Math.max(1.35, Math.min(3.0, radius40 * 0.068));
+    return {radius40, spacing, profileWidth, targetColumns, mode};
+}
+
+function spcoaChooseScreenHodographs(points, radius40, spacing, width, height) {
+    // Stable, regular viewport lattice. Each grid cell gets at most one
+    // sampled HRRR profile, selected by proximity to the cell's center.
+    // One underlying profile cannot be reused in another cell.
+    const maxColumns = Math.max(1, Math.ceil(width / spacing));
+    const maxRows = Math.max(1, Math.ceil(height / spacing));
+    const xInset = (width - maxColumns * spacing) / 2;
+    const yInset = (height - maxRows * spacing) / 2;
+    const maxDistanceSq = (0.69 * spacing) ** 2;
+    const cellBest = new Map();
+    for (const point of points) {
+        if (!Number.isFinite(point.lon) || !Number.isFinite(point.lat)) continue;
+        const pt = map.project([point.lon, point.lat]);
+        if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) continue;
+        const ix = Math.floor((pt.x - xInset) / spacing);
+        const iy = Math.floor((pt.y - yInset) / spacing);
+        if (ix < 0 || iy < 0 || ix >= maxColumns || iy >= maxRows) continue;
+        const x = xInset + (ix + 0.5) * spacing;
+        const y = yInset + (iy + 0.5) * spacing;
+        if (x < -radius40 || x > width + radius40 ||
+            y < -radius40 || y > height + radius40) continue;
+        const distanceSq = (pt.x-x) ** 2 + (pt.y-y) ** 2;
+        // A grid cell with no nearby HRRR sounding stays unfilled.
+        if (distanceSq > maxDistanceSq) continue;
+        const key = `${ix}:${iy}`;
+        const prior = cellBest.get(key);
+        if (!prior || distanceSq < prior.score ||
+            (distanceSq === prior.score && (point.lat < prior.point.lat ||
+             (point.lat === prior.point.lat && point.lon < prior.point.lon)))) {
+            cellBest.set(key, {x, y, point, score: distanceSq, cx: ix, cy: iy});
+        }
+    }
+    return [...cellBest.values()].sort((a,b) => a.cy-b.cy || a.cx-b.cx);
+}
+
 function renderHodographs() {
     const {width, height} = hodoResizeCanvas();
-    hodographCtx.clearRect(0,0,width,height);
+    hodographCtx.clearRect(0, 0, width, height);
     if (!hodoToggle?.checked || !hodoDocument || hodoRun !== currentRun) return;
 
-    const sizeFraction = Math.max(0.75, Math.min(1.50, Number(hodoSizeInput?.value || 115) / 100));
-    const radius40 = Math.max(13, Math.min(55, Math.min(width,height)*0.051 * sizeFraction));
-    const density = hodoDensitySelect?.value || "standard";
-    const spacingFactor = density === "dense" ? 1.00 : density === "sparse" ? 1.80 : 1.36;
-    const spacing = Math.max(35, radius40 * 2 * spacingFactor);
-    const occupancy = new Set();
-    const visible = [];
-    for (const point of hodoDocument.points) {
-        const xy = map.project([point.lon, point.lat]);
-        if (xy.x < -radius40*2 || xy.y < -radius40*2 ||
-            xy.x > width+radius40*2 || xy.y > height+radius40*2) continue;
-        visible.push({x:xy.x,y:xy.y,point});
+    const {radius40, spacing, profileWidth, mode, targetColumns} = spcoaHodoViewStyle(map.getZoom(), width, height);
+    const selected = spcoaChooseScreenHodographs(hodoDocument.points, radius40, spacing, width, height);
+    let effectiveShown = 0;
+    const heights = hodoDocument.heights_m_agl;
+    for (const item of selected) {
+        drawOneHodograph(hodographCtx, item, heights, radius40, !!hodoEffectiveToggle?.checked, profileWidth);
+        if (item.point.effective_inflow) effectiveShown++;
     }
-    // Keep geographical sample order stable while the map moves.
-    const h = hodoDocument.heights_m_agl;
-    let displayed = 0, effectiveShown = 0;
-    for (const loc of visible) {
-        const ix = Math.floor(loc.x/spacing), iy = Math.floor(loc.y/spacing);
-        let blocked = false;
-        for (let dx=-1;dx<=1&&!blocked;dx++) for (let dy=-1;dy<=1;dy++) {
-            if (occupancy.has(`${ix+dx}:${iy+dy}`)) {blocked=true;break;}
-        }
-        if (blocked) continue;
-        occupancy.add(`${ix}:${iy}`);
-        drawOneHodograph(hodographCtx,loc,h,radius40,!!hodoEffectiveToggle?.checked);
-        displayed++;
-        if (loc.point.effective_inflow) effectiveShown++;
-    }
-    hodoStatus(`${displayed} shown of ${hodoDocument.points.length} • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z`);
+    hodoStatus(`${mode} (${targetColumns} columns) • ${selected.length} shown of ${hodoDocument.points.length} • ${effectiveShown} blue layers • ${hodoRun.slice(-2)}Z`);
 }
 
 function requestHodographDraw() {
@@ -14137,7 +14183,12 @@ function refreshHodographsForRun() {
     return hodoPendingPromise;
 }
 
-hodoToggle?.addEventListener("change", () => { void refreshHodographsForRun(); });
+hodoToggle?.addEventListener("change", () => {
+    // Re-fetch on enable, so a newly uploaded test JSON can replace the
+    // earlier sparse dataset without requiring a full browser reload.
+    if (hodoToggle.checked && currentRun) hodoCache.delete(currentRun);
+    void refreshHodographsForRun();
+});
 hodoEffectiveToggle?.addEventListener("change", requestHodographDraw);
 hodoDensitySelect?.addEventListener("change", requestHodographDraw);
 hodoSizeInput?.addEventListener("input", () => {
@@ -16669,6 +16720,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
