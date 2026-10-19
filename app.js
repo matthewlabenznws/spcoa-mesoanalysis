@@ -13876,7 +13876,7 @@ map.on('move', requestSurfaceObsDraw);
 map.on('resize', requestSurfaceObsDraw);
 
 /* =========================================================================================
-   HRRR F00 HODOGRAPHS — JSON VECTOR OVERLAY, STAGE 2
+   HRRR F00 HODOGRAPHS — TILED XYZ PROFILES + LEGACY FALLBACK (V9)
    Reuses Stage 1 schema_version=1, no GRIB downloads in the browser.
    Every selected hour looks up /runs/YYYYMMDD_HH/hodographs.json.
    Display locations are model-sampled; 0–9 km winds are ground-relative (kt).
@@ -13893,6 +13893,20 @@ let hodoDocument = null;
 let hodoSerial = 0;
 let hodoDrawQueued = false;
 let hodoPendingPromise = Promise.resolve();
+
+// V9: independent geographic HRRR hodograph tiles, using the existing
+// SPCOA hourly XYZ layout. This feature does not modify numerical overlays.
+const HODO_TILE_CACHE_MAX = 160;
+const HODO_MAX_VIEWPORT_TILES_PER_TIER = 160;
+const hodoTileCache = new Map();    // key = run/z/x/y; value = Promise<points[]>
+let hodoTiledMode = false;
+let hodoTileManifest = null;
+let hodoTileIndexes = new Map();  // tier zoom => Set("x/y")
+let hodoViewportPoints = new Map(); // tier zoom => points available in view
+let hodoViewportSerial = 0;
+let hodoTileLoading = false;
+let hodoTileErrors = 0;
+
 
 const HODO_BANDS = [
     {min: 0, max: 500, color: "#e17bda"},
@@ -14076,20 +14090,25 @@ const HODO_SPATIAL_INTERPOLATION = false;
 function spcoaHodoViewStyle(zoom, width, height) {
     const density = hodoDensitySelect?.value || "standard";
     const userSize = Math.max(0.75, Math.min(1.50, Number(hodoSizeInput?.value || 115) / 100));
-    // Tighter spacing means more centers on-screen as you zoom in, while the
-    // ring radius stays THE SAME physical size in CSS pixels at every zoom.
-    const baseSpacing = zoom < 4.5 ? 76
-        : zoom < 5.5 ? 68
-        : zoom < 6.5 ? 63
-        : zoom < 7.5 ? 59
-        : zoom < 8.5 ? 56 : 54;
+
+    // V10 display-only change. Preserve the V9 CONUS/overview appearance
+    // EXACTLY for zoom < 5.5, including its 25 px 40-kt ring radius and
+    // 76/68 px center spacing at the default controls.
+    //
+    // On the detailed tiled views use larger 32 px rings and a much less
+    // cluttered 95 px lattice. The *data* still comes from the same native
+    // HRRR z4/z6/z8/z10 tiles. No wind interpolation or data resampling.
+    const detailView = zoom >= 5.5;
+    const baseSpacing = detailView ? 95 : (zoom < 4.5 ? 76 : 68);
     const densityFactor = density === "dense" ? 0.91 : density === "sparse" ? 1.18 : 1.0;
-    const spacing = Math.max(48, Math.round(baseSpacing * densityFactor));
+    const spacing = detailView
+        ? Math.max(76, Math.round(baseSpacing * densityFactor))
+        : Math.max(48, Math.round(baseSpacing * densityFactor));
     const targetColumns = Math.max(1, Math.floor(width / spacing));
     const mode = zoom < 4.5 ? "CONUS" : zoom < 6.5 ? "Regional"
         : zoom < 8.5 ? "State" : "Local";
-    // At default size=115%, radius40 is 25px at ALL zoom levels.
-    const radius40 = 25 * userSize / 1.15;
+    // Default size slider=115%; honor the existing size slider for both views.
+    const radius40 = (detailView ? 32 : 25) * userSize / 1.15;
     const profileWidth = 2.35;
     return {radius40, spacing, profileWidth, targetColumns, mode};
 }
@@ -14122,23 +14141,188 @@ function spcoaChooseScreenHodographs(points, radius40, spacing, width, height) {
     return [...cells.values()].sort((a,b)=>a.cy-b.cy || a.cx-b.cx);
 }
 
+/*
+ * REGIONAL/LOCAL DETAIL SELECTOR (V8)
+ *
+ * Screen centers remain FIXED to a regular lattice during panning, exactly
+ * like the CONUS layer. Unlike the old "point must fall inside its cell"
+ * selector, nearby samples from adjoining cells are considered.
+ *
+ * Match candidates in ascending distance so that no HRRR profile or screen
+ * cell is assigned twice. No synthesized winds or duplicate soundings.
+ * A finite maximum distance avoids attaching a sounding hundreds of miles
+ * away when the underlying backend dataset is too sparse.
+ */
+function spcoaChooseNearbyScreenHodographs(points, spacing, width, height) {
+    const cols = Math.max(1, Math.floor(width / spacing));
+    const rows = Math.max(1, Math.floor(height / spacing));
+    const stepX = width / cols;
+    const stepY = height / rows;
+    const candidateLimit = 1.25 * Math.max(stepX, stepY);
+    const candidateLimit2 = candidateLimit * candidateLimit;
+
+    const candidates = [];
+    let visibleSources = 0;
+    for (let pointIndex = 0; pointIndex < points.length; pointIndex++) {
+        const point = points[pointIndex];
+        if (!Number.isFinite(point.lon) || !Number.isFinite(point.lat)) continue;
+        const pt = map.project([point.lon, point.lat]);
+        const px = pt.x, py = pt.y;
+        if (!Number.isFinite(px) || !Number.isFinite(py) ||
+            px < -candidateLimit || py < -candidateLimit ||
+            px >= width + candidateLimit || py >= height + candidateLimit) continue;
+        if (px >= 0 && px < width && py >= 0 && py < height) visibleSources++;
+
+        // Identify the nearest grid center, then check adjacent centers.
+        const nearCol = Math.round(px / stepX - 0.5);
+        const nearRow = Math.round(py / stepY - 0.5);
+        for (let dr = -1; dr <= 1; dr++) {
+            const row = nearRow + dr;
+            if (row < 0 || row >= rows) continue;
+            const y = (row + 0.5) * stepY;
+            for (let dc = -1; dc <= 1; dc++) {
+                const col = nearCol + dc;
+                if (col < 0 || col >= cols) continue;
+                const x = (col + 0.5) * stepX;
+                const dx = px - x, dy = py - y;
+                const d2 = dx*dx + dy*dy;
+                if (d2 <= candidateLimit2) {
+                    candidates.push({pointIndex, cellIndex:row*cols+col,
+                                     row, col, x, y, d2});
+                }
+            }
+        }
+    }
+
+    // Prefer actual profiles closest to their assigned geographic slot.
+    candidates.sort((a,b) => a.d2-b.d2 || a.cellIndex-b.cellIndex ||
+                                 a.pointIndex-b.pointIndex);
+    const usedPoints = new Set();
+    const usedCells = new Set();
+    const selected = [];
+    for (const c of candidates) {
+        if (usedPoints.has(c.pointIndex) || usedCells.has(c.cellIndex)) continue;
+        usedPoints.add(c.pointIndex);
+        usedCells.add(c.cellIndex);
+        selected.push({x:c.x, y:c.y, point:points[c.pointIndex],
+                       d2:c.d2, cx:c.col, cy:c.row});
+        if (usedCells.size === cols*rows) break;
+    }
+    selected.sort((a,b) => a.cy-b.cy || a.cx-b.cx);
+    return {selected, visibleSources, totalCells:cols*rows};
+}
+
+/*
+ * Pick the closest DISTINCT native HRRR profile for each fixed-screen lattice
+ * position. Higher resolution tiles take precedence; lower tiers fill only
+ * remaining positions. No browser horizontal interpolation or profile reuse.
+ */
+function spcoaChooseTiledScreenHodographs(levels, spacing, width, height) {
+    const cols = Math.max(1, Math.floor(width / spacing));
+    const rows = Math.max(1, Math.floor(height / spacing));
+    const stepX = width / cols;
+    const stepY = height / rows;
+    const maxDist = 1.15 * Math.max(stepX, stepY);
+    const maxDist2 = maxDist * maxDist;
+    const usedSources = new Set(), usedCells = new Set();
+    const selected = [], byTier = {};
+    let visibleSources = 0;
+
+    for (const [zoom, points] of levels) {
+        const candidates = [];
+        for (let i = 0; i < points.length; i++) {
+            const point = points[i];
+            if (!Number.isFinite(point.lon) || !Number.isFinite(point.lat)) continue;
+            const pxObj = map.project([point.lon, point.lat]);
+            const px = pxObj.x, py = pxObj.y;
+            if (!Number.isFinite(px) || !Number.isFinite(py) ||
+                px < -maxDist || px > width + maxDist ||
+                py < -maxDist || py > height + maxDist) continue;
+            if (px >= 0 && px < width && py >= 0 && py < height) visibleSources++;
+            const nativeKey = Number.isInteger(point.native_i) && Number.isInteger(point.native_j)
+                ? `${point.native_i}/${point.native_j}` : `${point.lat}/${point.lon}`;
+            if (usedSources.has(nativeKey)) continue;
+            const nearCol = Math.round(px / stepX - 0.5);
+            const nearRow = Math.round(py / stepY - 0.5);
+            for (let dr = -1; dr <= 1; dr++) {
+                const row = nearRow + dr;
+                if (row < 0 || row >= rows) continue;
+                const y = (row + .5) * stepY;
+                for (let dc = -1; dc <= 1; dc++) {
+                    const col = nearCol + dc;
+                    if (col < 0 || col >= cols) continue;
+                    const cellIndex = row * cols + col;
+                    if (usedCells.has(cellIndex)) continue;
+                    const x = (col + .5) * stepX;
+                    const d2 = (px-x)**2 + (py-y)**2;
+                    if (d2 <= maxDist2)
+                        candidates.push({point, nativeKey, x,y,row,col,cellIndex,d2});
+                }
+            }
+        }
+        candidates.sort((a,b) => a.d2-b.d2 || a.cellIndex-b.cellIndex);
+        for (const c of candidates) {
+            if (usedSources.has(c.nativeKey) || usedCells.has(c.cellIndex)) continue;
+            usedSources.add(c.nativeKey);
+            usedCells.add(c.cellIndex);
+            selected.push({x:c.x,y:c.y,point:c.point,d2:c.d2,cx:c.col,cy:c.row});
+            byTier[zoom] = (byTier[zoom] || 0) + 1;
+            if (usedCells.size === cols*rows) break;
+        }
+        if (usedCells.size === cols*rows) break;
+    }
+    selected.sort((a,b) => a.cy-b.cy || a.cx-b.cx);
+    return {selected, visibleSources, totalCells:cols*rows, byTier};
+}
+
 function renderHodographs() {
-    // Freeze the overlay in the viewport during a user drag or zoom;
-    // update its data *after* the camera settles, not on every map move.
+    // The symbols stay at fixed screen centers while the map is dragged.
     if (typeof map.isMoving === "function" && map.isMoving()) return;
     const {width, height} = hodoResizeCanvas();
     hodographCtx.clearRect(0, 0, width, height);
     if (!hodoToggle?.checked || !hodoDocument || hodoRun !== currentRun) return;
 
-    const {radius40, spacing, profileWidth, mode, targetColumns} = spcoaHodoViewStyle(map.getZoom(), width, height);
-    const selected = spcoaChooseScreenHodographs(hodoDocument.points, radius40, spacing, width, height);
+    const {radius40, spacing, profileWidth, mode, targetColumns} =
+        spcoaHodoViewStyle(map.getZoom(), width, height);
+    let selected, report = "";
+    if (hodoTiledMode) {
+        const activeZoom = map.getZoom();
+        const levels = [...hodoViewportPoints.entries()]
+            .filter(([z]) => z <= activeZoom + 0.001)
+            .sort((a,b) => b[0]-a[0]);
+        if (activeZoom < 5.5) {
+            // Preserve the already-approved CONUS screen placement.
+            selected = spcoaChooseScreenHodographs(
+                hodoViewportPoints.get(4) || [], radius40, spacing, width, height);
+        } else {
+            const matching = spcoaChooseTiledScreenHodographs(levels, spacing, width, height);
+            selected = matching.selected;
+            const breakdown = Object.entries(matching.byTier)
+                .sort((a,b) => Number(b[0])-Number(a[0]))
+                .map(([z,n]) => `z${z}:${n}`).join(" ");
+            report = breakdown ? ` • ${breakdown}` : "";
+        }
+    } else {
+        const detailed = map.getZoom() >= 5.5;
+        selected = detailed
+            ? spcoaChooseNearbyScreenHodographs(hodoDocument.points, spacing, width, height).selected
+            : spcoaChooseScreenHodographs(hodoDocument.points, radius40, spacing, width, height);
+    }
     let effectiveShown = 0;
-    const heights = hodoDocument.heights_m_agl;
     for (const item of selected) {
-        drawOneHodograph(hodographCtx, item, heights, radius40, !!hodoEffectiveToggle?.checked, profileWidth);
+        drawOneHodograph(hodographCtx, item, hodoDocument.heights_m_agl,
+            radius40, !!hodoEffectiveToggle?.checked, profileWidth);
         if (item.point.effective_inflow) effectiveShown++;
     }
-    hodoStatus(`${mode} (${targetColumns} columns) • ${selected.length} genuine HRRR profiles • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z`);
+    const detail = hodoTiledMode ? "tiled native HRRR" : "legacy HRRR";
+    const loading = hodoTileLoading ? " • loading tiles..." : "";
+    const errors = hodoTileErrors ? ` • ${hodoTileErrors} tile errors` : "";
+    const warning = hodoTiledMode && !hodoTileLoading && map.getZoom() >= 6 &&
+        !(report.includes("z6:") || report.includes("z8:") || report.includes("z10:"))
+        ? " • outside uploaded detail coverage" : "";
+    hodoStatus(`${mode} (${targetColumns} columns) • ${selected.length} ${detail} profiles` +
+        ` • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z` +
+        report + loading + errors + warning);
 }
 
 function requestHodographDraw() {
@@ -14150,38 +14334,220 @@ function requestHodographDraw() {
     });
 }
 
+// ---------- Tiled hodograph loading (matching Colab V1 schema_version=2) ----------
+function hodoRoot(run) {
+    return `${S3_BASE_URL}/runs/${run}/overlays/hodographs`;
+}
+
+function hodoValidateTileManifest(doc, run) {
+    if (!doc || doc.schema_version !== 2 || doc.product !== "hrrr_f00_hodographs_tiled" ||
+        doc.run_id !== run || doc.forecast_hour !== 0 || doc.wind_units !== "kt" ||
+        !Array.isArray(doc.heights_m_agl) || doc.heights_m_agl[0] !== 0 ||
+        doc.heights_m_agl.at(-1) !== 9000 || !Array.isArray(doc.tiers) ||
+        !doc.tiers.some(t => t.zoom === 4)) {
+        throw new Error(`Invalid tiled hodograph manifest for ${run}`);
+    }
+    const expected = Date.parse(runIdToIso(run));
+    const received = Date.parse(doc.valid_time_utc);
+    if (!Number.isFinite(expected) || !Number.isFinite(received) || Math.abs(expected - received) > 1000)
+        throw new Error(`Tiled hodograph valid time differs from ${run}`);
+    const h = doc.heights_m_agl;
+    if (!h.every((v,i) => Number.isFinite(v) && (i===0 || v>h[i-1])))
+        throw new Error("Invalid tiled hodograph height coordinates");
+    return doc;
+}
+
+async function hodoGetPublishedTileIndex(run, tierZoom) {
+    const r = await fetch(`${hodoRoot(run)}/index_z${tierZoom}.json`, {cache:"no-store"});
+    if (!r.ok) throw new Error(`z${tierZoom} index HTTP ${r.status}`);
+    const d = await r.json();
+    if (!d || d.schema_version !== 2 || d.run_id !== run || d.z !== tierZoom ||
+        !Array.isArray(d.tile_coordinates)) throw new Error(`Invalid z${tierZoom} tile index`);
+    const set = new Set();
+    for (const xy of d.tile_coordinates) {
+        if (!Array.isArray(xy) || xy.length !== 2 ||
+            !Number.isInteger(xy[0]) || !Number.isInteger(xy[1]) ||
+            xy[0] < 0 || xy[1] < 0 || xy[0] >= 2**tierZoom || xy[1] >= 2**tierZoom)
+            throw new Error(`Invalid z${tierZoom} tile coordinate`);
+        set.add(`${xy[0]}/${xy[1]}`);
+    }
+    return set;
+}
+
+function hodoVisibleIndexedTiles(zoom, index) {
+    const n = 2**zoom;
+    const b = map.getBounds();
+    if (!b) return [];
+    // Add one tile of padding around the viewport to find profiles close to
+    // fixed-screen cell centers, including when they lie across tile edges.
+    const west = b.getWest(), east = b.getEast();
+    const south = Math.max(-85.0511, b.getSouth());
+    const north = Math.min(85.0511, b.getNorth());
+    const y0 = Math.max(0, Math.floor(latToTileY(north, zoom))-1);
+    const y1 = Math.min(n-1, Math.floor(latToTileY(south, zoom))+1);
+    if (![west,east,south,north].every(Number.isFinite) || y1 < y0) return [];
+    let x0 = Math.floor(lonToTileX(west, zoom))-1;
+    let x1 = Math.floor(lonToTileX(east, zoom))+1;
+    if (x1 - x0 + 1 >= n) { x0 = 0; x1 = n-1; }
+    const seen = new Set(), result = [];
+    for (let rawX=x0; rawX<=x1; rawX++) {
+        const x = ((rawX%n)+n)%n;
+        for (let y=y0; y<=y1; y++) {
+            const k = `${x}/${y}`;
+            if (!index.has(k) || seen.has(k)) continue;
+            seen.add(k); result.push({x,y});
+        }
+    }
+    if (result.length > HODO_MAX_VIEWPORT_TILES_PER_TIER) {
+        // Safety guard against huge downloads (e.g. an unusual map viewport).
+        // Prefer tiles nearest the current camera instead of requesting all.
+        const center = map.getCenter();
+        const cx = lonToTileX(center.lng, zoom), cy = latToTileY(center.lat, zoom);
+        result.sort((a,b) => {
+            const da=Math.min(Math.abs(a.x-cx),n-Math.abs(a.x-cx))**2 + (a.y-cy)**2;
+            const db=Math.min(Math.abs(b.x-cx),n-Math.abs(b.x-cx))**2 + (b.y-cy)**2;
+            return da-db;
+        });
+        result.length = HODO_MAX_VIEWPORT_TILES_PER_TIER;
+    }
+    return result;
+}
+
+function hodoFetchProfileTile(run, zoom, x, y, heightsLength) {
+    const key = `${run}/${zoom}/${x}/${y}`;
+    if (hodoTileCache.has(key)) {
+        const existing = hodoTileCache.get(key);
+        hodoTileCache.delete(key); hodoTileCache.set(key,existing); // LRU touch
+        return existing;
+    }
+    const promise = (async () => {
+        const url = `${hodoRoot(run)}/z${zoom}/${x}/${y}.json`;
+        // Colab uploader sets Content-Encoding:gzip; fetch().json() unzips it.
+        const r = await fetch(url, {cache:"no-store"});
+        if (!r.ok) throw new Error(`z${zoom}/${x}/${y} HTTP ${r.status}`);
+        const d = await r.json();
+        if (!d || d.schema_version !== 2 || d.product !== "hrrr_f00_hodographs_tiled" ||
+            d.run_id !== run || d.forecast_hour !== 0 ||
+            d.z !== zoom || d.x !== x || d.y !== y || !Array.isArray(d.points))
+            throw new Error(`Wrong tiled HRRR product at z${zoom}/${x}/${y}`);
+        for (const p of d.points) {
+            if (!Number.isFinite(p.lon) || !Number.isFinite(p.lat) ||
+                !Number.isInteger(p.native_i) || !Number.isInteger(p.native_j) ||
+                !Array.isArray(p.u_kt) || !Array.isArray(p.v_kt) ||
+                p.u_kt.length !== heightsLength || p.v_kt.length !== heightsLength ||
+                !p.u_kt.every(Number.isFinite) || !p.v_kt.every(Number.isFinite))
+                throw new Error(`Corrupted hodograph profile at z${zoom}/${x}/${y}`);
+        }
+        return d.points;
+    })();
+    hodoTileCache.set(key,promise);
+    while (hodoTileCache.size > HODO_TILE_CACHE_MAX)
+        hodoTileCache.delete(hodoTileCache.keys().next().value);
+    promise.catch(() => {
+        if (hodoTileCache.get(key) === promise) hodoTileCache.delete(key);
+    });
+    return promise;
+}
+
+function hodoLoadVisibleTiles() {
+    if (!hodoTiledMode || !hodoToggle?.checked || hodoRun !== currentRun) return Promise.resolve();
+    const serial = ++hodoViewportSerial;
+    const run = currentRun;
+    const zoom = map.getZoom();
+    hodoTileLoading = true;
+    hodoTileErrors = 0;
+    const viewportPoints = new Map();
+    hodoViewportPoints = viewportPoints;
+    const jobs = [];
+    for (const tier of hodoTileManifest.tiers) {
+        const z = tier.zoom;
+        if (!Number.isInteger(z) || (z !== 4 && z > zoom + .001)) continue;
+        const index = hodoTileIndexes.get(z);
+        if (!index) continue;
+        const records = [];
+        viewportPoints.set(z, records);
+        const tiles = hodoVisibleIndexedTiles(z,index);
+        for (const {x,y} of tiles) {
+            jobs.push(hodoFetchProfileTile(run,z,x,y,hodoTileManifest.heights_m_agl.length)
+                .then(pts => {
+                    if (serial !== hodoViewportSerial || run !== currentRun || !hodoTiledMode) return;
+                    records.push(...pts);
+                    requestHodographDraw();
+                }).catch(error => {
+                    if (serial === hodoViewportSerial && run === currentRun) {
+                        hodoTileErrors++;
+                        console.warn("SPCOA hodograph tile:",error);
+                    }
+                }));
+        }
+    }
+    requestHodographDraw();
+    const done = Promise.all(jobs).then(() => {
+        if (serial === hodoViewportSerial && run === currentRun) {
+            hodoTileLoading = false;
+            requestHodographDraw();
+        }
+    });
+    hodoPendingPromise = done;
+    return done;
+}
+
 function refreshHodographsForRun() {
     const serial = ++hodoSerial;
+    ++hodoViewportSerial;
     const run = currentRun;
     hodoRun = null;
     hodoDocument = null;
+    hodoTiledMode = false;
+    hodoTileManifest = null;
+    hodoTileIndexes = new Map();
+    hodoViewportPoints = new Map();
+    hodoTileLoading = false;
     requestHodographDraw();
     if (!hodoToggle?.checked || !run) {
         hodoStatus("Off");
         hodoPendingPromise = Promise.resolve();
         return hodoPendingPromise;
     }
-    hodoStatus(`Loading HRRR F00 hodographs for ${run}...`);
+    hodoStatus(`Checking tiled HRRR hodographs for ${run}...`);
     hodoPendingPromise = (async () => {
         try {
+            const metaUrl = `${hodoRoot(run)}/metadata.json`;
+            const response = await fetch(metaUrl, {cache:"no-store"});
+            if (serial !== hodoSerial || run !== currentRun || !hodoToggle?.checked) return;
+            if (response.ok) {
+                const manifest = hodoValidateTileManifest(await response.json(), run);
+                const results = await Promise.all(manifest.tiers.map(async tier =>
+                    [tier.zoom, await hodoGetPublishedTileIndex(run,tier.zoom)]));
+                if (serial !== hodoSerial || run !== currentRun || !hodoToggle?.checked) return;
+                hodoTileManifest = manifest;
+                hodoTileIndexes = new Map(results);
+                hodoDocument = {heights_m_agl: manifest.heights_m_agl, points: []};
+                hodoRun = run;
+                hodoTiledMode = true;
+                await hodoLoadVisibleTiles();
+                return;
+            }
+            if (response.status !== 404) throw new Error(`Tiled metadata HTTP ${response.status}`);
+
+            // Backward compatibility for hours that only have the original JSON.
             let doc = hodoCache.get(run);
             if (!doc) {
                 const url = `${S3_BASE_URL}/runs/${run}/hodographs.json`;
-                const response = await fetch(url, {cache:"no-store"});
-                if (response.status === 404) throw new Error("404: file not published");
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                doc = hodoValidate(await response.json(), run);
+                const oldResponse = await fetch(url, {cache:"no-store"});
+                if (!oldResponse.ok) throw new Error(`Legacy JSON HTTP ${oldResponse.status}`);
+                doc = hodoValidate(await oldResponse.json(),run);
                 if (hodoCache.size >= 24) hodoCache.delete(hodoCache.keys().next().value);
-                hodoCache.set(run, doc);
+                hodoCache.set(run,doc);
             }
             if (serial !== hodoSerial || run !== currentRun || !hodoToggle?.checked) return;
             hodoRun = run;
             hodoDocument = doc;
             requestHodographDraw();
-        } catch (error) {
-            if (serial !== hodoSerial) return;
-            console.info(`SPCOA hodographs ${run}:`, error);
-            hodoStatus(`Hodograph data unavailable for ${run.slice(-2)}Z`);
+        } catch(error) {
+            if (serial !== hodoSerial || run !== currentRun) return;
+            console.warn(`SPCOA tiled hodographs ${run}:`,error);
+            hodoStatus(`Hodograph data unavailable for ${run.slice(-2)}Z — ${error.message}`);
             requestHodographDraw();
         }
     })();
@@ -14189,9 +14555,14 @@ function refreshHodographsForRun() {
 }
 
 hodoToggle?.addEventListener("change", () => {
-    // Re-fetch on enable, so a newly uploaded test JSON can replace the
-    // earlier sparse dataset without requiring a full browser reload.
-    if (hodoToggle.checked && currentRun) hodoCache.delete(currentRun);
+    if (hodoToggle.checked && currentRun) {
+        hodoCache.delete(currentRun);
+        // A Colab test may republish the same run: force fresh tiles when
+        // the user disables/re-enables the overlay, without a full reload.
+        for (const key of [...hodoTileCache.keys()]) {
+            if (key.startsWith(`${currentRun}/`)) hodoTileCache.delete(key);
+        }
+    }
     void refreshHodographsForRun();
 });
 hodoEffectiveToggle?.addEventListener("change", requestHodographDraw);
@@ -14200,9 +14571,17 @@ hodoSizeInput?.addEventListener("input", () => {
     if (hodoSizeLabel) hodoSizeLabel.textContent = `${hodoSizeInput.value}%`;
     requestHodographDraw();
 });
-// Screen grid stays motionless while panning; reassign profiles on settle.
-map.on("moveend", requestHodographDraw);
-map.on("resize", requestHodographDraw);
+// Fixed grid is never dragged; tiles are refreshed only after camera settles.
+map.on("moveend", () => {
+    if (hodoTiledMode && hodoToggle?.checked && hodoRun === currentRun)
+        void hodoLoadVisibleTiles();
+    else requestHodographDraw();
+});
+map.on("resize", () => {
+    if (hodoTiledMode && hodoToggle?.checked && hodoRun === currentRun)
+        void hodoLoadVisibleTiles();
+    else requestHodographDraw();
+});
 
 
 /* =========================================================================================
@@ -16727,7 +17106,6 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
 
 
 
