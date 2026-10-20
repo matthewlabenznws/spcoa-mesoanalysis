@@ -14136,15 +14136,14 @@ function spcoaHodoViewStyle(zoom, width, height) {
     const density = hodoDensitySelect?.value || "standard";
     const userSize = Math.max(0.75, Math.min(1.50, Number(hodoSizeInput?.value || 115) / 100));
 
-    // V10 display-only change. Preserve the V9 CONUS/overview appearance
-    // EXACTLY for zoom < 5.5, including its 25 px 40-kt ring radius and
-    // 76/68 px center spacing at the default controls.
-    //
-    // On the detailed tiled views use larger 32 px rings and a much less
-    // cluttered 95 px lattice. The *data* still comes from the same native
-    // HRRR z4/z6/z8/z10 tiles. No wind interpolation or data resampling.
-    const detailView = zoom >= 5.5;
-    const baseSpacing = detailView ? 95 : (zoom < 4.5 ? 76 : 68);
+    // V12: preserve the smaller 25 px rings and 76 px center spacing ONLY
+    // in the CONUS overview (zoom below 4.5). As soon as the map enters the
+    // regional view (zoom 4.5+), keep 32 px rings and 95 px lattice spacing
+    // regardless of further zooming, including extreme close-up views.
+    // These are SCREEN PIXELS, not ground-relative distances. The user-facing
+    // size slider is still honored, and tiled/native HRRR data are unchanged.
+    const detailView = zoom >= 4.5;
+    const baseSpacing = detailView ? 95 : 76;
     const densityFactor = density === "dense" ? 0.91 : density === "sparse" ? 1.18 : 1.0;
     const spacing = detailView
         ? Math.max(76, Math.round(baseSpacing * densityFactor))
@@ -17169,7 +17168,6 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
 
 
 
