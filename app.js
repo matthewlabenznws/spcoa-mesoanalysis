@@ -3284,6 +3284,16 @@ const CONTOUR_FIELDS = {
         color: null
     },
 
+    freezing_level_height: {
+        name: "Freezing Level Height (AGL)",
+        shortName: "Freezing Level AGL",
+        units: "m AGL",
+        interval: 250,
+        minimum: 250,
+        colorScheme: "wcd",
+        color: null
+    },
+
     hght_925mb: {
         name: "925 mb Geopotential Height",
         shortName: "925 mb Height",
@@ -3513,6 +3523,7 @@ const activeOverlays = {
     mslp: false,
     dcape: false,
     warmCloudDepth: false,
+    freezingLevel: false,
     hght925: false,
     hght850: false,
     hght700: false,
@@ -4538,6 +4549,32 @@ if (!warmCloudDepthToggle) {
 
 
 /* =========================================================================================
+   FREEZING LEVEL HEIGHT (AGL) TOGGLE — 250 m contours, WCD colors
+   ========================================================================================= */
+
+let freezingLevelToggle = document.getElementById("freezing-level-toggle");
+if (!freezingLevelToggle) {
+    const anchor = warmCloudDepthToggle
+        ? warmCloudDepthToggle.closest("label")
+        : (dcapeToggle ? dcapeToggle.closest("label") : null);
+    const parent = anchor ? anchor.parentElement : null;
+    if (parent) {
+        const label = document.createElement("label");
+        label.style.display = "block";
+        label.style.marginTop = "6px";
+        freezingLevelToggle = document.createElement("input");
+        freezingLevelToggle.type = "checkbox";
+        freezingLevelToggle.id = "freezing-level-toggle";
+        freezingLevelToggle.checked = false;
+        label.appendChild(freezingLevelToggle);
+        label.appendChild(document.createTextNode(" Freezing Level Height (AGL)"));
+        // Place directly after Warm Cloud Depth, in the existing contour category.
+        if (anchor.nextSibling) parent.insertBefore(label, anchor.nextSibling);
+        else parent.appendChild(label);
+    }
+}
+
+/* =========================================================================================
    GEOPOTENTIAL HEIGHT TOGGLES
    ========================================================================================= */
 
@@ -4843,6 +4880,7 @@ function getActiveLayerDescriptions() {
         { field: "sfc_mslp", stateKey: "mslp", units: "mb" },
         { field: "dcape", stateKey: "dcape" },
         { field: "warm_cloud_depth", stateKey: "warmCloudDepth" },
+        { field: "freezing_level_height", stateKey: "freezingLevel" },
         ...GEOPOTENTIAL_HEIGHT_OVERLAYS.map(config => ({
             field: config.field,
             stateKey: config.stateKey
@@ -5949,6 +5987,7 @@ function selectedProductKeys() {
     if (activeOverlays.mslp) contours.push("sfc_mslp");
     if (activeOverlays.dcape) contours.push("dcape");
     if (activeOverlays.warmCloudDepth) contours.push("warm_cloud_depth");
+    if (activeOverlays.freezingLevel) contours.push("freezing_level_height");
     return { scalar: [...new Set(scalar)], vectors: [...new Set(vectors)], contours: [...new Set(contours)] };
 }
 
@@ -10660,7 +10699,7 @@ async function renderContourField(
         useGaussianContourSmoothing
             ? smoothContourGrid(values, columns, rows, 2.0)
             : (
-                (field === "dcape" || field === "warm_cloud_depth")
+                (field === "dcape" || field === "warm_cloud_depth" || field === "freezing_level_height")
                     ? smoothContourGrid(values, columns, rows, 1.0)
                     : values
             );
@@ -10786,7 +10825,7 @@ async function renderContourField(
             : field === "dcape"
             ? "dcape"
             : (
-                field === "warm_cloud_depth"
+                (field === "warm_cloud_depth" || field === "freezing_level_height")
                     ? "wcd"
                     : (
                         metadataColorScheme ||
@@ -10835,6 +10874,7 @@ async function renderContourField(
             : (
                 field === "dcape" ||
                 field === "warm_cloud_depth" ||
+                field === "freezing_level_height" ||
                 field === "lcl_height"
             )
                 ? 1.5
@@ -11198,7 +11238,7 @@ async function renderContourField(
 
     const minimumLabelDistance =
         definition.compositeContour ? 195 :
-        (field === "dcape" || field === "warm_cloud_depth" || field === "lcl_height")
+        (field === "dcape" || field === "warm_cloud_depth" || field === "freezing_level_height" || field === "lcl_height")
             ? 80 : 95;
 
     for (
@@ -11342,6 +11382,9 @@ async function renderContours() {
 
     if (activeOverlays.warmCloudDepth) {
         fields.push("warm_cloud_depth");
+    }
+    if (activeOverlays.freezingLevel) {
+        fields.push("freezing_level_height");
     }
 
     for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
@@ -13188,6 +13231,7 @@ function getActiveContourSamples() {
     add(activeOverlays.mslp, "sfc_mslp");
     add(activeOverlays.dcape, "dcape");
     add(activeOverlays.warmCloudDepth, "warm_cloud_depth");
+    add(activeOverlays.freezingLevel, "freezing_level_height");
     add(activeOverlays.lclHeight, "lcl_height");
     for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
         add(activeOverlays[config.stateKey], config.field);
@@ -13293,6 +13337,7 @@ function formatContourSample(field, value) {
     if (field === "dcape") return `${Math.round(value)} J/kg`;
     if (field === "lcl_height") return `${Math.round(value)} m AGL`;
     if (field === "warm_cloud_depth") return `${Math.round(value)} m`;
+    if (field === "freezing_level_height") return `${Math.round(value)} m AGL`;
     if (field.endsWith("cin_contours")) return `${Math.round(value)} J/kg`;
     if (field === "stp_eff_contours") return value.toFixed(1);
     if (field === "theta_2m_contours" || field === "thetae_2m_contours") return `${Math.round(value)} K`;
@@ -14780,7 +14825,7 @@ if (clearFillButton) {
 
 if (clearContoursButton) {
     clearContoursButton.addEventListener("click", async () => {
-        const contourKeys = new Set(["mslp", "dcape", "warmCloudDepth"]);
+        const contourKeys = new Set(["mslp", "dcape", "warmCloudDepth", "freezingLevel"]);
         const configs = [
             ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
             ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
@@ -14790,7 +14835,7 @@ if (clearContoursButton) {
         for (const config of configs) contourKeys.add(config.stateKey);
         for (const key of contourKeys) activeOverlays[key] = false;
 
-        for (const id of ["mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle"]) {
+        for (const id of ["mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle", "freezing-level-toggle"]) {
             const input = document.getElementById(id);
             if (input) input.checked = false;
         }
@@ -14873,7 +14918,7 @@ if (clearAllButton) {
             ...THERMODYNAMIC_CONTOUR_OVERLAYS
         ];
         uncheckNumericalOverlayControls(overlayConfigs);
-        for (const id of ["mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle"]) {
+        for (const id of ["mslp-toggle", "dcape-toggle", "warm-cloud-depth-toggle", "freezing-level-toggle"]) {
             const input = document.getElementById(id);
             if (input) input.checked = false;
         }
@@ -14938,6 +14983,7 @@ if (fieldSelect) {
                 activeOverlays.mslp ||
                 activeOverlays.dcape ||
                 activeOverlays.warmCloudDepth ||
+                activeOverlays.freezingLevel ||
                 activeOverlays.lclHeight ||
                 activeOverlays.stpEff ||
                 activeOverlays.dcpContours ||
@@ -15308,6 +15354,20 @@ if (warmCloudDepthToggle) {
 
 
 /* =========================================================================================
+   FREEZING LEVEL HEIGHT (AGL) TOGGLE EVENT
+   ========================================================================================= */
+if (freezingLevelToggle) {
+    freezingLevelToggle.addEventListener("change", async event => {
+        activeOverlays.freezingLevel = event.target.checked;
+        contourRenderGeneration++;
+        resetNumericalCanvasTransforms();
+        await renderContours();
+        renderGeography();
+        updateActiveLayersStrip();
+    });
+}
+
+/* =========================================================================================
    GEOPOTENTIAL HEIGHT TOGGLE EVENTS
    ========================================================================================= */
 
@@ -15579,6 +15639,9 @@ async function initialize() {
             activeOverlays.warmCloudDepth =
                 warmCloudDepthToggle.checked;
 
+        }
+        if (freezingLevelToggle) {
+            activeOverlays.freezingLevel = freezingLevelToggle.checked;
         }
 
 
