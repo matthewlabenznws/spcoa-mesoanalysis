@@ -3360,6 +3360,11 @@ const CONTOUR_FIELDS = {
     temperature_contours_500mb: { name: "500 mb Temperature Isotherms", shortName: "500 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
     temperature_contours_250mb: { name: "250 mb Temperature Isotherms", shortName: "250 mb Isotherms", units: "°C", levels: Array.from({length:61},(_,i)=>(i-40)*2), interval: 2, minimum: -80, maximum: 40, colorScheme: "pressure_temperature_isotherms", color: null, smoothGeometry: true, smoothIterations: 4 },
 
+    // V13: independent layer-mean and surface 2-D Petterssen frontogenesis contours.
+    frontogenesis_surface: { name: "Surface Frontogenesis", shortName: "Surface FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
+    frontogenesis_925_850mb: { name: "925–850 mb Layer-Mean Frontogenesis", shortName: "925–850 mb FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
+    frontogenesis_850_700mb: { name: "850–700 mb Layer-Mean Frontogenesis", shortName: "850–700 mb FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
+
     frontogenesis_925mb: { name: "925 mb Petterssen Frontogenesis", shortName: "925 mb Petterssen FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
     frontogenesis_850mb: { name: "850 mb Petterssen Frontogenesis", shortName: "850 mb Petterssen FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
     frontogenesis_700mb: { name: "700 mb Petterssen Frontogenesis", shortName: "700 mb Petterssen FGEN", units: "K/(100 km)/3 h", interval: 2, minimum: 2, maximum: 50, colorScheme: "fixed", color: "#990099", smoothGeometry: true, smoothIterations: 5 },
@@ -3534,6 +3539,9 @@ const activeOverlays = {
     tempContour700: false,
     tempContour500: false,
     tempContour250: false,
+    frontogenesisSurface: false,
+    frontogenesis925850: false,
+    frontogenesis850700: false,
     frontogenesis925: false,
     frontogenesis850: false,
     frontogenesis700: false,
@@ -4602,14 +4610,45 @@ for (const config of PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS) {
 }
 
 const FRONTOGENESIS_CONTOUR_OVERLAYS = [
+    { field: "frontogenesis_surface", stateKey: "frontogenesisSurface", toggleId: "frontogenesis-surface-toggle", label: "Surface Frontogenesis" },
+    { field: "frontogenesis_925_850mb", stateKey: "frontogenesis925850", toggleId: "frontogenesis-925-850mb-toggle", label: "925–850 mb Frontogenesis" },
+    { field: "frontogenesis_850_700mb", stateKey: "frontogenesis850700", toggleId: "frontogenesis-850-700mb-toggle", label: "850–700 mb Frontogenesis" },
     { field: "frontogenesis_925mb", stateKey: "frontogenesis925", toggleId: "frontogenesis-925mb-toggle", label: "925 mb Frontogenesis" },
     { field: "frontogenesis_850mb", stateKey: "frontogenesis850", toggleId: "frontogenesis-850mb-toggle", label: "850 mb Frontogenesis" },
     { field: "frontogenesis_700mb", stateKey: "frontogenesis700", toggleId: "frontogenesis-700mb-toggle", label: "700 mb Frontogenesis" }
 ];
 const frontogenesisContourToggles = {};
-for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
-    const toggle = document.getElementById(config.toggleId);
-    if (toggle) frontogenesisContourToggles[config.stateKey] = toggle;
+{
+    // Ensure newly added FGEN overlays are available even when the site's
+    // index.html does not yet contain a matching checkbox.
+    const anchor = freezingLevelToggle?.closest("label") ||
+                   warmCloudDepthToggle?.closest("label") ||
+                   dcapeToggle?.closest("label");
+    const parent = anchor?.parentElement || document.getElementById("contour-category");
+    let following = anchor;
+    for (const config of FRONTOGENESIS_CONTOUR_OVERLAYS) {
+        let toggle = document.getElementById(config.toggleId);
+        if (!toggle && parent) {
+            const label = document.createElement("label");
+            label.style.display = "block";
+            label.style.marginTop = "6px";
+            toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.id = config.toggleId;
+            toggle.checked = false;
+            label.appendChild(toggle);
+            label.appendChild(document.createTextNode(` ${config.label}`));
+            if (following && following.parentElement === parent) {
+                following.insertAdjacentElement("afterend", label);
+            } else {
+                parent.appendChild(label);
+            }
+            following = label;
+        } else if (toggle) {
+            following = toggle.closest("label") || following;
+        }
+        if (toggle) frontogenesisContourToggles[config.stateKey] = toggle;
+    }
 }
 
 {
