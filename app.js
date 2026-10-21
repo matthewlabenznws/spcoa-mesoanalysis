@@ -455,75 +455,162 @@ function spcoaCameraMatches(a, b) {
 }
 
 /* =========================================================================================
-   GIF FRAME PLAN — preserve the selected timeline range while bounding browser RAM.
+   HIGH-RESOLUTION GIF EXPORT
+   GIF is limited to 256 indexed colors.  To keep meteorological shades and
+   contours recognizable, reserve real legend/overlay colors and quantize the
+   remaining colors across the entire timeline (not just the first frame).
    ========================================================================================= */
 const SPCOA_GIF_MAX_FRAMES = 24;
+const SPCOA_GIF_PANEL_WIDTH = 3072;              // 80% of the 3840px single-panel PNG
+const SPCOA_GIF_MULTI_PANEL_WIDTH = 1536;        // 3072px-wide 2/4-panel output
+const SPCOA_GIF_RAW_FRAME_BUDGET = 288 * 1024 * 1024;
 function spcoaGifFramePlan(runs, maxFrames = SPCOA_GIF_MAX_FRAMES) {
     if (!Array.isArray(runs) || !runs.length) return [];
+    maxFrames = Math.max(1, Math.floor(maxFrames));
     if (runs.length <= maxFrames) return runs.slice();
-    // Uniform chronological subsampling keeps the first AND latest valid times.
+    if (maxFrames === 1) return [runs[runs.length - 1]];
     const out = [];
     for (let i = 0; i < maxFrames; i++) {
         out.push(runs[Math.round(i * (runs.length - 1) / (maxFrames - 1))]);
     }
     return out;
 }
-
-/* =========================================================================================
-   GIF COLOR CONSISTENCY
-
-   gif.js defaults to generating a new 256-color table for each frame. With
-   meteorological palettes this makes identical colors change between runs.
-   Build ONE fixed color table from samples of ALL frames before encoding,
-   including late-forming colors that weren't visible in the first analysis.
-
-   Frequently occurring exact RGBs are favored. In practice those are the
-   discrete shaded meteorological colors, not anti-aliased map label fringes.
-   This cannot avoid GIF's 256-color limit, but avoids temporal palette drift.
-   ========================================================================================= */
-function spcoaGifSharedPalette(canvases) {
-    const hist = new Map();
-    for (const canvas of canvases) {
-        if (!canvas || !canvas.width || !canvas.height) continue;
-        const ctx = canvas.getContext('2d', {willReadFrequently: true});
-        if (!ctx) throw new Error('GIF canvas cannot be read for palette generation.');
-        let pixels;
-        try { pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data; }
-        catch (err) { throw new Error('GIF canvas contains non-exportable map imagery (CORS): ' + (err.message || err)); }
-        // ~50,000 to 100,000 samples per frame, including the legend and labels.
-        const step = Math.max(2, Math.ceil(Math.sqrt(canvas.width * canvas.height / 75000)));
-        for (let y = 0; y < canvas.height; y += step) {
-            for (let x = 0; x < canvas.width; x += step) {
-                const i = (y * canvas.width + x) * 4;
-                if (pixels[i+3] < 128) continue;
-                const rgb = (pixels[i] << 16) | (pixels[i+1] << 8) | pixels[i+2];
-                hist.set(rgb, (hist.get(rgb) || 0) + 1);
-            }
-        }
-    }
-    // Stable colors for background, geographic lines, branding, text and labels.
+function spcoaGifMemoryLimitedRuns(runs, canvas) {
+    // gif.js retains uncompressed RGBA for every frame until encoding. At 3K
+    // this can use hundreds of MB; bound the number of frames, not resolution.
+    const frameBytes = Math.max(1, canvas.width * canvas.height * 4);
+    const maxFrames = Math.max(2, Math.min(SPCOA_GIF_MAX_FRAMES,
+        Math.floor(SPCOA_GIF_RAW_FRAME_BUDGET / frameBytes)));
+    return spcoaGifFramePlan(runs, maxFrames);
+}
+function spcoaGifSharedPalette(canvases, hintColors = []) {
+    // Stable branding/map/text colors. Real overlay/legend RGBs are added below.
     const fixed = [
         0xffffff, 0x000000, 0x102433, 0xd7e7f2, 0xc7d6e1, 0xf7f8fa,
         0x17232d, 0x425766, 0xaeb7bf, 0x66727c, 0x41647d, 0xf4f8fb,
         0x8b969f, 0x202020, 0x333333, 0xe6e6e6
     ];
-    const chosen = new Set(fixed);
-    const entries = Array.from(hist, ([rgb, count]) => ({rgb, count}));
-    entries.sort((a,b) => b.count-a.count || a.rgb-b.rgb);
-    for (const item of entries) {
-        if (chosen.size >= 256) break;
-        chosen.add(item.rgb);
-    }
-    // Fill remaining entries with neutral levels so the encoder always gets
-    // exactly the standard 256-entry palette (768 RGB bytes).
-    for (let v = 0; chosen.size < 256 && v <= 255; v++) chosen.add((v<<16)|(v<<8)|v);
     const palette = [];
-    for (const rgb of chosen) {
-        palette.push((rgb>>16)&255, (rgb>>8)&255, rgb&255);
-        if (palette.length === 768) break;
+    const chosen = new Set();
+    const add = rgb => {
+        if (rgb === null || rgb === undefined || chosen.size === 256) return;
+        rgb = rgb & 0xffffff;
+        if (!chosen.has(rgb)) {chosen.add(rgb); palette.push(rgb);}
+    };
+    fixed.forEach(add);
+    const parseRgb = hex => {
+        if (typeof hex !== 'string') return null;
+        const match = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+        return match ? parseInt(match[1], 16) : null;
+    };
+
+    // Preserve visible contour/vector strokes as literal palette entries.
+    // Reserve up to 96 hint slots for colors sampled from the displayed
+    // legend and selected overlays. Uniform sampling covers every color range.
+    const hints = Array.from(new Set(hintColors.map(parseRgb).filter(v => v !== null)));
+    const slots = Math.min(96, hints.length);
+    for (let i = 0; i < slots; i++) {
+        add(hints[Math.round(i * (hints.length - 1) / Math.max(1, slots - 1))]);
     }
-    if (palette.length !== 768) throw new Error('Could not construct a 256-color GIF palette.');
-    return palette;
+
+    // Build 5-bit/channel buckets from every frame to avoid anti-aliasing
+    // colors consuming the palette. Colorful weather fields receive additional
+    // weight, while neutrals are retained for county lines and text.
+    const buckets = new Map();
+    for (const canvas of canvases) {
+        if (!canvas?.width || !canvas?.height) continue;
+        const ctx = canvas.getContext('2d', {willReadFrequently: true});
+        if (!ctx) throw new Error('GIF canvas cannot be read for palette generation.');
+        let pixels;
+        try {pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;}
+        catch (error) {throw new Error('GIF map imagery is not exportable (CORS): ' + (error.message || error));}
+        const step = Math.max(2, Math.ceil(Math.sqrt(canvas.width * canvas.height / 110000)));
+        for (let y = 0; y < canvas.height; y += step) {
+            for (let x = 0; x < canvas.width; x += step) {
+                const i = (y * canvas.width + x) * 4;
+                if (pixels[i+3] < 128) continue;
+                const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+                const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+                const hi = Math.max(r,g,b), lo = Math.min(r,g,b);
+                const sat = hi ? (hi - lo) / hi : 0;
+                const weight = sat >= 0.35 ? 3 : sat >= 0.13 ? 2 : 1;
+                let entry = buckets.get(key);
+                if (!entry) {entry = {r:0,g:0,b:0,n:0}; buckets.set(key,entry);}
+                entry.r += r * weight; entry.g += g * weight; entry.b += b * weight;
+                entry.n += weight;
+            }
+        }
+    }
+    const categories = [[],[],[]];
+    for (const v of buckets.values()) {
+        const r = v.r/v.n, g = v.g/v.n, b = v.b/v.n;
+        const hi = Math.max(r,g,b), lo = Math.min(r,g,b);
+        const sat = hi ? (hi-lo)/hi : 0;
+        const group = sat >= .35 ? 0 : sat >= .13 ? 1 : 2;
+        const rgb = (Math.round(r)<<16)|(Math.round(g)<<8)|Math.round(b);
+        if (chosen.has(rgb)) continue;
+        categories[group].push({r,g,b,n:v.n,rgb});
+    }
+    const quantize = (points, requested) => {
+        if (!points.length || requested <= 0) return [];
+        if (points.length <= requested) return points.map(p => p.rgb);
+        function describe(values) {
+            const mins=[255,255,255], maxs=[0,0,0]; let weight=0;
+            for (const p of values) {
+                mins[0]=Math.min(mins[0],p.r); mins[1]=Math.min(mins[1],p.g); mins[2]=Math.min(mins[2],p.b);
+                maxs[0]=Math.max(maxs[0],p.r); maxs[1]=Math.max(maxs[1],p.g); maxs[2]=Math.max(maxs[2],p.b);
+                weight += p.n;
+            }
+            const ranges=maxs.map((v,i)=>v-mins[i]);
+            const axis=ranges.indexOf(Math.max(...ranges));
+            return {values,weight,axis,score:ranges[axis]*Math.sqrt(weight)};
+        }
+        const boxes=[describe(points)];
+        while (boxes.length < requested) {
+            let index=-1,score=-1;
+            boxes.forEach((box,i)=>{
+                if (box.values.length > 1 && box.score > score) {index=i;score=box.score;}
+            });
+            if (index<0) break;
+            const box=boxes.splice(index,1)[0];
+            const channel=['r','g','b'][box.axis];
+            box.values.sort((a,b)=>a[channel]-b[channel]);
+            let sum=0, cut=0;
+            for (;cut < box.values.length - 1;cut++) {
+                sum += box.values[cut].n;
+                if (sum >= box.weight / 2) {cut++;break;}
+            }
+            cut=Math.max(1,Math.min(box.values.length-1,cut));
+            boxes.push(describe(box.values.slice(0,cut)),describe(box.values.slice(cut)));
+        }
+        return boxes.map(box=>{
+            let r=0,g=0,b=0;
+            for (const p of box.values) {r+=p.r*p.n;g+=p.g*p.n;b+=p.b*p.n;}
+            r/=box.weight;g/=box.weight;b/=box.weight;
+            // Use an actual displayed color, not a synthetic median-cut shade.
+            let best=box.values[0],dmin=Infinity;
+            for (const p of box.values) {
+                const d=(p.r-r)**2+(p.g-g)**2+(p.b-b)**2;
+                if (d < dmin) {dmin=d;best=p;}
+            }
+            return best.rgb;
+        });
+    };
+
+    const free = 256 - palette.length;
+    const quotas=[Math.round(free*0.56),Math.round(free*0.29)];
+    quotas.push(free-quotas[0]-quotas[1]);
+    for (let group=0;group<3;group++) quantize(categories[group],quotas[group]).forEach(add);
+    // Reallocate any unused category slots to meaningful colors from all frames.
+    if (palette.length < 256) {
+        const all=categories.flat();
+        quantize(all,256-palette.length).forEach(add);
+        all.sort((a,b)=>b.n-a.n);
+        for (const p of all) {if (palette.length>=256) break; add(p.rgb);}
+    }
+    for (let v=0;palette.length<256 && v<256;v++) add((v<<16)|(v<<8)|v);
+    if (palette.length!==256) throw new Error('Could not construct a 256-color GIF palette.');
+    return palette.flatMap(rgb=>[(rgb>>16)&255,(rgb>>8)&255,rgb&255]);
 }
 
 /* =========================================================================================
@@ -1676,46 +1763,51 @@ if (!__MP_CHILD) {
             if (panelCount === 1) return captures[0];
             const cols = 2, rows = panelCount === 4 ? 2 : 1;
             const panelW = captures[0].width;
+            const s = panelW / 1920;
             const childHeaderH = Math.max(1, Math.round(92 * panelW / 3840));
             const cellH = Math.max(...captures.map(c => c.height - childHeaderH));
-            const gap = 5, headerH = 50;
+            const gap = Math.max(5, Math.round(8 * s));
+            const headerH = Math.max(50, Math.round(92 * s));
             const out = document.createElement("canvas");
             out.width = cols * panelW + (cols - 1) * gap;
             out.height = headerH + rows * cellH + (rows - 1) * gap;
             const ctx = out.getContext("2d", { alpha: false });
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
             ctx.fillStyle = "#102433";
             ctx.fillRect(0, 0, out.width, out.height);
             ctx.fillStyle = "#d7e7f2";
-            ctx.font = '600 14px Inter, "Segoe UI", Arial, sans-serif';
+            ctx.font = `600 ${Math.max(14, Math.round(25 * s))}px Inter, "Segoe UI", Arial, sans-serif`;
             ctx.textAlign = "left";
             ctx.textBaseline = "middle";
-            ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 15, 19);
+            ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE",
+                Math.round(42 * s), headerH * .44);
             ctx.fillStyle = "#ffffff";
-            ctx.font = '700 17px Inter, "Segoe UI", Arial, sans-serif';
+            ctx.font = `700 ${Math.max(16, Math.round(29 * s))}px Inter, "Segoe UI", Arial, sans-serif`;
             ctx.textAlign = "right";
-            ctx.fillText(`${panelCount}-Panel · 3-km Mesoscale Analysis`, out.width - 15, 19);
-            ctx.font = '500 11px Inter, Arial, sans-serif';
+            ctx.fillText(`${panelCount}-Panel · 3-km Mesoscale Analysis`, out.width - Math.round(42*s), headerH * .40);
+            ctx.font = `500 ${Math.max(11, Math.round(19 * s))}px Inter, Arial, sans-serif`;
             ctx.fillStyle = "#c7d6e1";
-            ctx.fillText(utcLabel, out.width - 15, 37);
+            ctx.fillText(utcLabel, out.width - Math.round(42*s), headerH * .77);
             for (let i = 0; i < panelCount; i++) {
                 const col = i % 2, row = panelCount === 4 ? Math.floor(i / 2) : 0;
                 const x = col * (panelW + gap), y = headerH + row * (cellH + gap);
                 const c = captures[i];
                 ctx.fillStyle = "#ffffff";
                 ctx.fillRect(x, y, panelW, cellH);
-                // GIF child exports include the same header as PNG. Remove duplicate headers
-                // here, retaining each panel's geography, legend, and valid-time footer.
                 ctx.drawImage(c, 0, childHeaderH, c.width, c.height - childHeaderH,
                     x, y, panelW, c.height - childHeaderH);
                 ctx.strokeStyle = "#425766";
-                ctx.lineWidth = 2;
-                ctx.strokeRect(x + 1, y + 1, panelW - 2, cellH - 2);
+                ctx.lineWidth = Math.max(2, Math.round(5 * s));
+                ctx.strokeRect(x + 2, y + 2, panelW - 4, cellH - 4);
+                const badgeX=x+Math.round(14*s), badgeY=y+Math.round(14*s);
+                const badgeW=Math.round(122*s), badgeH=Math.round(42*s);
                 ctx.fillStyle = "rgba(13,27,39,.9)";
-                ctx.fillRect(x + 8, y + 8, 72, 25);
-                ctx.fillStyle = "#fff";
+                ctx.fillRect(badgeX,badgeY,badgeW,badgeH);
+                ctx.fillStyle = "#ffffff";
                 ctx.textAlign = "center";
-                ctx.font = '700 13px Inter, Arial, sans-serif';
-                ctx.fillText(`Panel ${i + 1}`, x + 44, y + 20);
+                ctx.font = `700 ${Math.max(13, Math.round(21 * s))}px Inter, Arial, sans-serif`;
+                ctx.fillText(`Panel ${i + 1}`,badgeX+badgeW/2,badgeY+badgeH/2);
             }
             return out;
         }
@@ -1755,9 +1847,7 @@ if (!__MP_CHILD) {
                 const sharedRuns = activeRuns.filter(item => childWindows.every(w =>
                     w.__mpGifState().runs.some(candidate => candidate.run === item.run)));
                 if (!sharedRuns.length) throw new Error("Visible panels do not share an available SPCOA analysis.");
-                const runs = spcoaGifFramePlan(sharedRuns);
-                if (runs.length < sharedRuns.length)
-                    report(`Using ${runs.length} evenly spaced frames from ${sharedRuns.length} analyses to limit memory.`);
+                let runs = spcoaGifFramePlan(sharedRuns);
                 if (runs.length === 1)
                     report("Only one analysis is available; creating a one-frame test GIF. Animation needs 2+ analyses.");
 
@@ -1776,6 +1866,9 @@ if (!__MP_CHILD) {
                 if (!response.ok) throw new Error(`GIF encoder worker download failed (HTTP ${response.status}).`);
                 workerUrl = URL.createObjectURL(new Blob([await response.text()], {type: "text/javascript"}));
                 const frames = [];
+                const panelW = count === 1 ? SPCOA_GIF_PANEL_WIDTH : SPCOA_GIF_MULTI_PANEL_WIDTH;
+                const paletteHints = childWindows.flatMap(w => typeof w.__mpGifPaletteHints === "function"
+                    ? w.__mpGifPaletteHints() : []);
                 const speed = Math.max(0.25, Number(childWindows[0].__mpGifState().speed) || 1);
                 const delay = Math.max(160, Math.round(700 / speed));
                 for (let i = 0; i < runs.length; i++) {
@@ -1785,19 +1878,25 @@ if (!__MP_CHILD) {
                     // Await actual redraw completion rather than adding a delay and hoping
                     // that the numerical layers have finished loading.
                     await Promise.all(childWindows.map(w => w.__mpGifSetRun(item)));
-                    const panelW = count === 1 ? 1280 : 640;
                     const captures = await Promise.all(childWindows.map(w => w.__mpGifFrame(panelW)));
                     const time = item.analysis_time || childWindows[0].__mpGifState().currentAnalysisTime || item.run;
                     const frame = makeCombinedGifFrame(captures, count, String(time));
+                    if (i === 0) {
+                        const limited = spcoaGifMemoryLimitedRuns(sharedRuns, frame);
+                        if (limited.length < runs.length) {
+                            runs = limited;
+                            report(`High-resolution GIF: ${runs.length} evenly spaced frames from ${sharedRuns.length} analyses (browser memory limit).`);
+                        }
+                    }
                     frames.push({canvas: frame,
                         delay: i === runs.length - 1 ? Math.round(delay * 1.4) : delay});
                 }
                 report(`Building a consistent 256-color palette for ${frames.length} frames…`);
-                const palette = spcoaGifSharedPalette(frames.map(f => f.canvas));
-                const gif = new GIF({workers: 2, quality: 8, repeat: 0,
-                    // One fixed palette ensures the same meteorological RGB uses
-                    // the same indexed color throughout every analysis frame.
-                    globalPalette: palette, dither: false,
+                const palette = spcoaGifSharedPalette(frames.map(f => f.canvas), paletteHints);
+                const gif = new GIF({workers: 2, quality: 1, repeat: 0,
+                    // Global palette keeps layer colors stable across runs.
+                    // Serpentine error diffusion prevents harsh false color bands.
+                    globalPalette: palette, dither: "FloydSteinberg-serpentine",
                     width: frames[0].canvas.width, height: frames[0].canvas.height,
                     workerScript: workerUrl});
                 for (const frame of frames) {
@@ -16527,7 +16626,7 @@ if (savePngButton) {
    GIF EXPORT
    ========================================================================================= */
 
-async function buildGifFrameCanvas(outW = 1920) {
+async function buildGifFrameCanvas(outW = SPCOA_GIF_PANEL_WIDTH) {
     renderAnnotations();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
@@ -16739,6 +16838,32 @@ async function getGifWorkerUrl() {
     return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 }
 
+/* Return colors from the actual selected field and contour/vector layers.
+ * This is deliberately read from what is visible, not every product palette
+ * in the app, because only 256 colors fit in a GIF. */
+window.__mpGifPaletteHints = function() {
+    const colors = [];
+    try {
+        for (const item of getActiveLayerDescriptions()) {
+            if (typeof item.color === "string" && /^#[0-9a-f]{6}$/i.test(item.color))
+                colors.push(item.color);
+        }
+        if (legendCanvas?.width && legendCanvas?.height) {
+            const context = legendCanvas.getContext("2d", {willReadFrequently:true});
+            const y = Math.floor(legendCanvas.height / 2);
+            const bytes = context.getImageData(0,y,legendCanvas.width,1).data;
+            const sampleStep = Math.max(1, Math.floor(legendCanvas.width / 180));
+            for (let x=0;x<legendCanvas.width;x+=sampleStep) {
+                const index=x*4;
+                if (bytes[index+3]<128) continue;
+                colors.push("#"+[bytes[index],bytes[index+1],bytes[index+2]]
+                    .map(value=>value.toString(16).padStart(2,"0")).join(""));
+            }
+        }
+    } catch (error) {console.warn("GIF color sampling:",error);}
+    return colors;
+};
+
 /* The host uses these interfaces to synchronize 1/2/4 panel GIF captures.
  * The same functions are used by the child-only fallback export. */
 window.__spcoaGifExporting = false;
@@ -16777,7 +16902,7 @@ window.__mpGifSetRun = async function(item) {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     return true;
 };
-window.__mpGifFrame = async function(width = 1280) {
+window.__mpGifFrame = async function(width = SPCOA_GIF_PANEL_WIDTH) {
     if (!window.__spcoaGifExporting) throw new Error("GIF export is not running.");
     return buildGifFrameCanvas(width);
 };
@@ -16802,7 +16927,7 @@ async function saveTimelineGif() {
     }
     const oldText = saveGifButton?.textContent || "Save GIF";
     const selected = filteredTimelineRuns();
-    const runs = spcoaGifFramePlan(selected);
+    let runs = spcoaGifFramePlan(selected);
     if (!runs.length) {
         if (statusElement) statusElement.textContent = "No SPCOA analysis is available to export.";
         return;
@@ -16820,13 +16945,17 @@ async function saveTimelineGif() {
             if (statusElement) statusElement.textContent = `GIF ${i + 1}/${runs.length}: ${formatTimelineUtc(item.analysis_time || runIdToIso(item.run))}`;
             if (saveGifButton) saveGifButton.textContent = `${i + 1}/${runs.length}`;
             await window.__mpGifSetRun(item);
-            const frame = await window.__mpGifFrame(1280);
+            const frame = await window.__mpGifFrame(SPCOA_GIF_PANEL_WIDTH);
+            if (i === 0) {
+                const limited = spcoaGifMemoryLimitedRuns(selected, frame);
+                if (limited.length < runs.length) runs = limited;
+            }
             frames.push({canvas: frame, delay: i === runs.length - 1 ? Math.round(frameDelay * 1.4) : frameDelay});
         }
         if (statusElement) statusElement.textContent = "Building consistent GIF color palette…";
-        const palette = spcoaGifSharedPalette(frames.map(f => f.canvas));
-        const gif = new GIF({workers: 2, quality: 8, repeat: 0,
-            globalPalette: palette, dither: false,
+        const palette = spcoaGifSharedPalette(frames.map(f => f.canvas), window.__mpGifPaletteHints());
+        const gif = new GIF({workers: 2, quality: 1, repeat: 0,
+            globalPalette: palette, dither: "FloydSteinberg-serpentine",
             width: frames[0].canvas.width, height: frames[0].canvas.height,
             workerScript: workerUrl});
         for (const frame of frames) gif.addFrame(frame.canvas, {copy: true, delay: frame.delay});
@@ -17328,7 +17457,6 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
 
 
 
