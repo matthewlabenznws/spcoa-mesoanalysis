@@ -1,0 +1,107 @@
+name: SPCOA - Main Analysis to S3
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Republish the newest available hour if already published?'
+        type: boolean
+        required: false
+        default: false
+  # Used after cronjob.org setup; not scheduled yet.
+  repository_dispatch:
+    types: [spcoa_hourly_update]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spcoa-main-s3
+  cancel-in-progress: false
+
+jobs:
+  generate-and-publish:
+    # Dispatch automation stays off until manually enabled in repository variables.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.SPCOA_AUTOMATION_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      AWS_REGION: us-east-2
+      SPCOA_RUN_MODE: production
+      SPCOA_PRODUCTION_APPROVED: 'true'
+      SPCOA_LOW_DISK_STREAMING: 'true'
+      SPCOA_WORK_DIR: ${{ runner.temp }}/spcoa_mesoanalysis
+      SPCOA_S3_UPLOAD_WORKERS: '32'
+      SPCOA_ZOOM_UPLOAD_WORKERS: '24'
+      SPCOA_TILE_GENERATION_WORKERS: '6'
+      SPCOA_S3_DELETE_WORKERS: '12'
+      SPCOA_FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == true && 'true' || 'false' }}
+      MPLBACKEND: Agg
+      PYTHONUNBUFFERED: '1'
+      NUMBA_NUM_THREADS: '2'
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: scripts/requirements_spcoa.txt
+
+      - name: Install analysis dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements_spcoa.txt
+
+      - name: Validate AWS secrets and S3 access
+        run: |
+          python - <<'PY'
+          import os
+          import boto3
+          if not os.getenv('AWS_ACCESS_KEY_ID') or not os.getenv('AWS_SECRET_ACCESS_KEY'):
+              raise SystemExit('Missing GitHub Secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY')
+          s3 = boto3.client('s3', region_name='us-east-2')
+          identity = boto3.client('sts', region_name='us-east-2').get_caller_identity()
+          s3.list_objects_v2(Bucket='spcoa-mesoanalysis', Prefix='spcoa/runs/', MaxKeys=1)
+          print('Authenticated as:', identity['Arn'])
+          print('Publishing destination: s3://spcoa-mesoanalysis/spcoa/')
+          PY
+
+      - name: Generate and publish latest SPCOA analysis
+        run: |
+          if [ -f spcmesooa.py ]; then
+            python spcmesooa.py
+          elif [ -f scripts/spcmesooa.py ]; then
+            python scripts/spcmesooa.py
+          else
+            echo "ERROR: Cannot find spcmesooa.py in repository root or scripts/"
+            exit 1
+          fi
+
+      - name: Verify S3 publication and timeline
+        run: |
+          python - <<'PY'
+          import json
+          import boto3
+          s3 = boto3.client('s3', region_name='us-east-2')
+          bucket = 'spcoa-mesoanalysis'
+          def load(key):
+              return json.loads(s3.get_object(Bucket=bucket, Key='spcoa/'+key)['Body'].read())
+          latest = load('latest.json')
+          times = load('available_times.json')
+          run = latest['run']
+          if not any((r.get('run') if isinstance(r,dict) else r)==run for r in times.get('runs',[])):
+              raise SystemExit('latest run missing from available_times.json: '+run)
+          s3.head_object(Bucket=bucket, Key=f'spcoa/runs/{run}/metadata.json')
+          print('Published run:', run)
+          print('Verified latest.json, available_times.json, and per-run metadata')
+          PY
