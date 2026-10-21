@@ -14578,8 +14578,45 @@ function spcoaChooseTiledScreenHodographs(levels, spacing, width, height) {
     return {selected, visibleSources, totalCells:cols*rows, byTier};
 }
 
+
+/*
+ * V16 Regional/State native-geographic placement:
+ * Do not snap hodographs onto a camera-dependent screen lattice. Their
+ * centers are projected from actual globally phased HRRR native (i,j) points.
+ * These same points serve Regional (z~6) and State (z~8) views.
+ * A screen-pixel collision guard prevents overlapping rings WITHOUT moving
+ * the symbol away from its source grid point or synthesizing new winds.
+ */
+/* V17 FULL NATIVE DOMAIN: A fixed native HRRR model (i,j) subset is produced
+ * once by Python. We never choose a different subset as the camera zooms.
+ * Actual HRRR lat/lon anchors are projected into CSS screen pixels; rings
+ * keep the same radius. No collision-based re-selection: that would cause
+ * hidden sites to "appear" when zooming from Regional to State.
+ */
+function spcoaChooseNativeAnchoredHodographs(points, spacing, width, height) {
+    const unique = new Map();
+    for (const point of points) {
+        if (!Number.isFinite(point.lon) || !Number.isFinite(point.lat)) continue;
+        const key = Number.isInteger(point.native_i) && Number.isInteger(point.native_j)
+            ? `${point.native_i}/${point.native_j}` : `${point.lon}/${point.lat}`;
+        if (!unique.has(key)) unique.set(key, point);
+    }
+    const selected = [];
+    for (const point of unique.values()) {
+        const p = map.project([point.lon, point.lat]);
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y) ||
+            p.x < -4 || p.y < -4 || p.x > width + 4 || p.y > height + 4) continue;
+        selected.push({x:p.x, y:p.y, point});
+    }
+    // Stable order is useful for consistent overlap behavior and screenshots.
+    selected.sort((a,b) => (a.point.native_j ?? 0)-(b.point.native_j ?? 0) ||
+                            (a.point.native_i ?? 0)-(b.point.native_i ?? 0));
+    return selected;
+}
+
 function renderHodographs() {
-    // The symbols stay at fixed screen centers while the map is dragged.
+    // Tile-mode symbols are anchored at their true HRRR native coordinates;
+    // resize/zoom changes geographic scale, not hodograph ring pixels.
     if (typeof map.isMoving === "function" && map.isMoving()) return;
     const {width, height} = hodoResizeCanvas();
     hodographCtx.clearRect(0, 0, width, height);
@@ -14589,23 +14626,16 @@ function renderHodographs() {
         spcoaHodoViewStyle(map.getZoom(), width, height);
     let selected, report = "";
     if (hodoTiledMode) {
-        const activeZoom = map.getZoom();
-        const levels = [...hodoViewportPoints.entries()]
-            .filter(([z]) => z <= activeZoom + 0.001)
-            .sort((a,b) => b[0]-a[0]);
-        if (activeZoom < 5.5) {
-            // Preserve the already-approved CONUS screen placement.
-            selected = spcoaChooseScreenHodographs(
-                hodoViewportPoints.get(4) || [], radius40, spacing, width, height);
-        } else {
-            const matching = spcoaChooseTiledScreenHodographs(levels, spacing, width, height);
-            selected = matching.selected;
-            const breakdown = Object.entries(matching.byTier)
-                .sort((a,b) => Number(b[0])-Number(a[0]))
-                .map(([z,n]) => `z${z}:${n}`).join(" ");
-            report = breakdown ? ` • ${breakdown}` : "";
-        }
+        // CONUS z4: coarser SUBSET of the native z6 HRRR point grid.
+        // Regional/State/Local all draw exactly the same z6 native profiles.
+        // No z8 points and no zoom-dependent synthetic screen grid.
+        const displayedTier = map.getZoom() < 4.5 ? 4 : 6;
+        const points = hodoViewportPoints.get(displayedTier) || [];
+        selected = spcoaChooseNativeAnchoredHodographs(points, spacing, width, height);
+        report = " • fixed native HRRR grid (all zooms)";
     } else {
+        // The original non-tiled product has no global HRRR native i/j IDs;
+        // preserve its existing presentation until new tiles are published.
         const detailed = map.getZoom() >= 5.5;
         selected = detailed
             ? spcoaChooseNearbyScreenHodographs(hodoDocument.points, spacing, width, height).selected
@@ -14620,10 +14650,10 @@ function renderHodographs() {
     const detail = hodoTiledMode ? "tiled native HRRR" : "legacy HRRR";
     const loading = hodoTileLoading ? " • loading tiles..." : "";
     const errors = hodoTileErrors ? ` • ${hodoTileErrors} tile errors` : "";
-    const warning = hodoTiledMode && !hodoTileLoading && map.getZoom() >= 6 &&
-        !(report.includes("z6:") || report.includes("z8:") || report.includes("z10:"))
-        ? " • outside uploaded detail coverage" : "";
-    hodoStatus(`${mode} (${targetColumns} columns) • ${selected.length} ${detail} profiles` +
+    const warning = hodoTiledMode && !hodoTileLoading &&
+        selected.length === 0
+        ? " • no native HRRR points in view" : "";
+    hodoStatus(`${mode} • ${selected.length} ${detail} profiles` +
         ` • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z` +
         report + loading + errors + warning);
 }
@@ -14646,8 +14676,8 @@ function hodoValidateTileManifest(doc, run) {
     if (!doc || doc.schema_version !== 2 || doc.product !== "hrrr_f00_hodographs_tiled" ||
         doc.run_id !== run || doc.forecast_hour !== 0 || doc.wind_units !== "kt" ||
         !Array.isArray(doc.heights_m_agl) || doc.heights_m_agl[0] !== 0 ||
-        doc.heights_m_agl.at(-1) !== 9000 || !Array.isArray(doc.tiers) ||
-        !doc.tiers.some(t => t.zoom === 4)) {
+        doc.heights_m_agl.at(-1) !== 9000 || !Array.isArray(doc.tiers) || !doc.tiers.length ||
+        !doc.tiers.every(t => [4,6,8,10].includes(t.zoom))) {
         throw new Error(`Invalid tiled hodograph manifest for ${run}`);
     }
     const expected = Date.parse(runIdToIso(run));
@@ -14764,7 +14794,9 @@ function hodoLoadVisibleTiles() {
     const jobs = [];
     for (const tier of hodoTileManifest.tiers) {
         const z = tier.zoom;
-        if (!Number.isInteger(z) || (z !== 4 && z > zoom + .001)) continue;
+        // Only fetch ONE display tier at a time. CONUS <4.5 => z4; all
+        // higher map zooms => z6. Avoid extra data appearing on State zoom.
+        if (!Number.isInteger(z) || z !== (zoom < 4.5 ? 4 : 6)) continue;
         const index = hodoTileIndexes.get(z);
         if (!index) continue;
         const records = [];
@@ -17457,7 +17489,6 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
-
 
 
 
