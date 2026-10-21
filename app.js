@@ -730,6 +730,138 @@ function installSpcoaHodographControls() {
 }
 installSpcoaHodographControls();
 
+/* =========================================================================================
+   V14: CONTOUR CONTROLS ORGANIZED WITH THE EXISTING SITE CATEGORIES
+
+     Surface                 -> Surface 2-D Petterssen Frontogenesis / Contours
+     Upper Air / Frontogenesis -> 925–850, 850–700, 925, 850, 700 mb
+     Thermodynamics           -> Freezing Level Height (AGL), beneath WCD
+
+   Install before the multi-panel host branches away from the map-panel code.
+   Both HOST and CHILD create the SAME controls and IDs, so the existing host
+   click relay, child listeners, saved layouts, and clear operations still work.
+   Move existing elements instead of cloning, preserving input identity/state.
+   ========================================================================================= */
+function spcoaOrganizeMeteorologicalContourControls() {
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar) return;
+
+    function locateOrCreateRow(id, caption, titleText) {
+        let input = sidebar.querySelector('[id="' + id + '"]');
+        let row = input?.closest("label") || null;
+        if (!row) {
+            row = document.createElement("label");
+            row.className = "toggle-row";
+            if (!input) {
+                input = document.createElement("input");
+                input.type = "checkbox";
+                input.id = id;
+                input.checked = false;
+            }
+            row.appendChild(input);
+        }
+        row.classList.add("toggle-row");
+        let text = row.querySelector("span.barb-text") || row.querySelector("span");
+        if (!text) {
+            text = document.createElement("span");
+            text.className = "barb-text";
+            row.appendChild(text);
+        }
+        text.textContent = caption;
+        if (titleText) row.title = titleText;
+        return row;
+    }
+
+    // 1) Surface: place contour checkbox BESIDE the existing FGEN filled-field
+    //    button, matching temperature / theta / CIN controls on this site.
+    const surfaceContent = sidebar.querySelector("#surface-category > .cat-content");
+    if (surfaceContent) {
+        const surfaceFill = surfaceContent.querySelector('.field-choice[data-field="petterssen_fgen_surface"]');
+        const surfaceRow = locateOrCreateRow(
+            "frontogenesis-surface-toggle", "Contours",
+            "Surface 2-D Petterssen Frontogenesis contour lines"
+        );
+        if (surfaceFill) {
+            let wrapper = surfaceFill.closest(".level-row");
+            if (!wrapper || !surfaceContent.contains(wrapper)) {
+                wrapper = document.createElement("div");
+                wrapper.className = "level-row";
+                surfaceFill.insertAdjacentElement("beforebegin", wrapper);
+                wrapper.appendChild(surfaceFill);
+            }
+            wrapper.appendChild(surfaceRow);
+        } else {
+            const reference = surfaceContent.querySelector("#sfc-axes-dilatation-toggle")?.closest("label");
+            if (reference && reference.parentElement === surfaceContent) {
+                reference.insertAdjacentElement("beforebegin", surfaceRow);
+            } else {
+                surfaceContent.appendChild(surfaceRow);
+            }
+            surfaceRow.querySelector("span").textContent = "Surface Frontogenesis Contours";
+        }
+    } else {
+        console.warn("SPCOA: Surface category not found for surface frontogenesis contours");
+    }
+
+    // 2) Upper Air: use the REAL 'Frontogenesis' accordion, not the similarly
+    //    named '2-D Petterssen Frontogenesis / Frontolysis' filled-field group.
+    const upperContent = sidebar.querySelector("#upper-category > .cat-content");
+    if (upperContent) {
+        let fgenSubcat = upperContent.querySelector('#frontogenesis-925mb-toggle')?.closest(".subcat");
+        if (!fgenSubcat || !upperContent.contains(fgenSubcat)) {
+            fgenSubcat = Array.from(upperContent.querySelectorAll(".subcat")).find(el =>
+                el.querySelector(":scope > .sub-head")?.textContent.trim().toLowerCase() === "frontogenesis"
+            );
+        }
+        if (!fgenSubcat) {
+            fgenSubcat = document.createElement("details");
+            fgenSubcat.className = "subcat";
+            const heading = document.createElement("summary");
+            heading.className = "sub-head";
+            heading.textContent = "Frontogenesis";
+            const content = document.createElement("div");
+            content.className = "sub-content";
+            fgenSubcat.append(heading, content);
+            upperContent.appendChild(fgenSubcat);
+        }
+        const fgenContent = fgenSubcat.querySelector(":scope > .sub-content") || fgenSubcat;
+        for (const [id, caption] of [
+            ["frontogenesis-925-850mb-toggle", "925–850 mb Frontogenesis"],
+            ["frontogenesis-850-700mb-toggle", "850–700 mb Frontogenesis"],
+            ["frontogenesis-925mb-toggle", "925 mb Frontogenesis"],
+            ["frontogenesis-850mb-toggle", "850 mb Frontogenesis"],
+            ["frontogenesis-700mb-toggle", "700 mb Frontogenesis"]
+        ]) {
+            // Existing pressure-level checkboxes are moved intact if a prior
+            // build placed them in the generic contour section.
+            fgenContent.appendChild(locateOrCreateRow(id, caption));
+        }
+    } else {
+        console.warn("SPCOA: Upper Air category not found for frontogenesis contours");
+    }
+
+    // 3) Thermodynamics: place Freezing Level immediately after Warm Cloud
+    //    Depth, above the Lapse Rates accordion. Keep their existing IDs.
+    const thermoContent = sidebar.querySelector("#thermo-category > .cat-content");
+    if (thermoContent) {
+        const freezingRow = locateOrCreateRow(
+            "freezing-level-toggle", "Freezing Level Height (AGL)",
+            "Freezing level height above ground, 250-m contours"
+        );
+        const wcdRow = thermoContent.querySelector('#warm-cloud-depth-toggle')?.closest("label");
+        if (wcdRow && wcdRow.parentElement === thermoContent) {
+            wcdRow.insertAdjacentElement("afterend", freezingRow);
+        } else {
+            const lapseRates = thermoContent.querySelector(".subcat");
+            if (lapseRates) lapseRates.insertAdjacentElement("beforebegin", freezingRow);
+            else thermoContent.appendChild(freezingRow);
+        }
+    } else {
+        console.warn("SPCOA: Thermodynamics category not found for freezing level contours");
+    }
+}
+spcoaOrganizeMeteorologicalContourControls();
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -17207,6 +17339,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
