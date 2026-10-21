@@ -731,136 +731,107 @@ function installSpcoaHodographControls() {
 installSpcoaHodographControls();
 
 /* =========================================================================================
-   V14: CONTOUR CONTROLS ORGANIZED WITH THE EXISTING SITE CATEGORIES
-
-     Surface                 -> Surface 2-D Petterssen Frontogenesis / Contours
-     Upper Air / Frontogenesis -> 925–850, 850–700, 925, 850, 700 mb
-     Thermodynamics           -> Freezing Level Height (AGL), beneath WCD
-
-   Install before the multi-panel host branches away from the map-panel code.
-   Both HOST and CHILD create the SAME controls and IDs, so the existing host
-   click relay, child listeners, saved layouts, and clear operations still work.
-   Move existing elements instead of cloning, preserving input identity/state.
+   V14: POSITION SPECIAL CONTOUR CONTROLS IN THE CORRECT SIDEBAR CATEGORIES
+   Executed in both HOST and CHILD before the host returns. Reuses existing
+   checkbox IDs, preserving the multi-panel parameter relay and saved states.
+   index.html does NOT need changing.
    ========================================================================================= */
-function spcoaOrganizeMeteorologicalContourControls() {
+function spcoaInstallCategorizedContourControls() {
     const sidebar = document.getElementById("sidebar");
     if (!sidebar) return;
 
-    function locateOrCreateRow(id, caption, titleText) {
-        let input = sidebar.querySelector('[id="' + id + '"]');
-        let row = input?.closest("label") || null;
-        if (!row) {
-            row = document.createElement("label");
-            row.className = "toggle-row";
-            if (!input) {
-                input = document.createElement("input");
-                input.type = "checkbox";
-                input.id = id;
-                input.checked = false;
-            }
-            row.appendChild(input);
+    const content = categoryId => sidebar.querySelector(`#${categoryId} > .cat-content`)
+        || sidebar.querySelector(`#${categoryId} .cat-content`);
+    const surface = content("surface-category");
+    const thermo = content("thermo-category");
+    const upper = content("upper-category");
+    let fgen = null;
+    if (upper) {
+        const groups = Array.from(upper.querySelectorAll("details.subcat"));
+        const target = groups.find(group => {
+            const summary = group.querySelector(":scope > summary");
+            return summary && summary.textContent.trim().toLowerCase() === "frontogenesis";
+        });
+        fgen = target?.querySelector(":scope > .sub-content") || null;
+        if (!fgen) {
+            // Older index.html: provide a real Frontogenesis subsection instead
+            // of placing the controls in an unrelated contour or thermo group.
+            const details = document.createElement("details");
+            details.className = "subcat";
+            const summary = document.createElement("summary");
+            summary.className = "sub-head";
+            summary.textContent = "Frontogenesis";
+            fgen = document.createElement("div");
+            fgen.className = "sub-content";
+            details.append(summary, fgen);
+            upper.appendChild(details);
         }
-        row.classList.add("toggle-row");
-        let text = row.querySelector("span.barb-text") || row.querySelector("span");
-        if (!text) {
-            text = document.createElement("span");
-            text.className = "barb-text";
-            row.appendChild(text);
-        }
-        text.textContent = caption;
-        if (titleText) row.title = titleText;
-        return row;
     }
 
-    // 1) Surface: place contour checkbox BESIDE the existing FGEN filled-field
-    //    button, matching temperature / theta / CIN controls on this site.
-    const surfaceContent = sidebar.querySelector("#surface-category > .cat-content");
-    if (surfaceContent) {
-        const surfaceFill = surfaceContent.querySelector('.field-choice[data-field="petterssen_fgen_surface"]');
-        const surfaceRow = locateOrCreateRow(
-            "frontogenesis-surface-toggle", "Contours",
-            "Surface 2-D Petterssen Frontogenesis contour lines"
-        );
-        if (surfaceFill) {
-            let wrapper = surfaceFill.closest(".level-row");
-            if (!wrapper || !surfaceContent.contains(wrapper)) {
-                wrapper = document.createElement("div");
-                wrapper.className = "level-row";
-                surfaceFill.insertAdjacentElement("beforebegin", wrapper);
-                wrapper.appendChild(surfaceFill);
-            }
-            wrapper.appendChild(surfaceRow);
-        } else {
-            const reference = surfaceContent.querySelector("#sfc-axes-dilatation-toggle")?.closest("label");
-            if (reference && reference.parentElement === surfaceContent) {
-                reference.insertAdjacentElement("beforebegin", surfaceRow);
-            } else {
-                surfaceContent.appendChild(surfaceRow);
-            }
-            surfaceRow.querySelector("span").textContent = "Surface Frontogenesis Contours";
+    function ensureToggle(id, caption, parent) {
+        if (!parent) {
+            console.warn("SPCOA: missing category for " + caption);
+            return null;
         }
-    } else {
-        console.warn("SPCOA: Surface category not found for surface frontogenesis contours");
+        let toggle = document.getElementById(id);
+        let label = toggle?.closest("label");
+        if (!toggle) {
+            toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.id = id;
+            toggle.checked = false;
+        }
+        if (!label) {
+            label = document.createElement("label");
+            label.className = "toggle-row";
+            label.appendChild(toggle);
+        }
+        let title = label.querySelector("span");
+        if (!title) {
+            title = document.createElement("span");
+            title.className = "barb-text";
+            label.appendChild(title);
+        }
+        title.textContent = caption;
+        label.classList.add("toggle-row");
+        label.style.display = "flex";
+        label.style.alignItems = "center";
+        label.style.gap = "7px";
+        if (label.parentElement !== parent) parent.appendChild(label);
+        return label;
     }
 
-    // 2) Upper Air: use the REAL 'Frontogenesis' accordion, not the similarly
-    //    named '2-D Petterssen Frontogenesis / Frontolysis' filled-field group.
-    const upperContent = sidebar.querySelector("#upper-category > .cat-content");
-    if (upperContent) {
-        let fgenSubcat = upperContent.querySelector('#frontogenesis-925mb-toggle')?.closest(".subcat");
-        if (!fgenSubcat || !upperContent.contains(fgenSubcat)) {
-            fgenSubcat = Array.from(upperContent.querySelectorAll(".subcat")).find(el =>
-                el.querySelector(":scope > .sub-head")?.textContent.trim().toLowerCase() === "frontogenesis"
-            );
-        }
-        if (!fgenSubcat) {
-            fgenSubcat = document.createElement("details");
-            fgenSubcat.className = "subcat";
-            const heading = document.createElement("summary");
-            heading.className = "sub-head";
-            heading.textContent = "Frontogenesis";
-            const content = document.createElement("div");
-            content.className = "sub-content";
-            fgenSubcat.append(heading, content);
-            upperContent.appendChild(fgenSubcat);
-        }
-        const fgenContent = fgenSubcat.querySelector(":scope > .sub-content") || fgenSubcat;
-        for (const [id, caption] of [
-            ["frontogenesis-925-850mb-toggle", "925–850 mb Frontogenesis"],
-            ["frontogenesis-850-700mb-toggle", "850–700 mb Frontogenesis"],
-            ["frontogenesis-925mb-toggle", "925 mb Frontogenesis"],
-            ["frontogenesis-850mb-toggle", "850 mb Frontogenesis"],
-            ["frontogenesis-700mb-toggle", "700 mb Frontogenesis"]
-        ]) {
-            // Existing pressure-level checkboxes are moved intact if a prior
-            // build placed them in the generic contour section.
-            fgenContent.appendChild(locateOrCreateRow(id, caption));
-        }
-    } else {
-        console.warn("SPCOA: Upper Air category not found for frontogenesis contours");
+    // Thermodynamics: Freezing Level directly after Warm Cloud Depth.
+    const freezing = ensureToggle("freezing-level-toggle", "Freezing Level Height (AGL)", thermo);
+    const warmCloud = document.getElementById("warm-cloud-depth-toggle")?.closest("label");
+    if (freezing && warmCloud?.parentElement === thermo) {
+        warmCloud.insertAdjacentElement("afterend", freezing);
     }
 
-    // 3) Thermodynamics: place Freezing Level immediately after Warm Cloud
-    //    Depth, above the Lapse Rates accordion. Keep their existing IDs.
-    const thermoContent = sidebar.querySelector("#thermo-category > .cat-content");
-    if (thermoContent) {
-        const freezingRow = locateOrCreateRow(
-            "freezing-level-toggle", "Freezing Level Height (AGL)",
-            "Freezing level height above ground, 250-m contours"
-        );
-        const wcdRow = thermoContent.querySelector('#warm-cloud-depth-toggle')?.closest("label");
-        if (wcdRow && wcdRow.parentElement === thermoContent) {
-            wcdRow.insertAdjacentElement("afterend", freezingRow);
-        } else {
-            const lapseRates = thermoContent.querySelector(".subcat");
-            if (lapseRates) lapseRates.insertAdjacentElement("beforebegin", freezingRow);
-            else thermoContent.appendChild(freezingRow);
-        }
-    } else {
-        console.warn("SPCOA: Thermodynamics category not found for freezing level contours");
+    // Surface: contours next to the existing filled surface Petterssen field.
+    const surfaceFgen = ensureToggle("frontogenesis-surface-toggle", "Surface Frontogenesis", surface);
+    const surfaceFill = surface?.querySelector('.field-choice[data-field="petterssen_fgen_surface"]');
+    const surfaceAnchor = surfaceFill?.closest(".level-row") || surfaceFill;
+    if (surfaceFgen && surfaceAnchor?.parentElement === surface) {
+        surfaceAnchor.insertAdjacentElement("afterend", surfaceFgen);
+    }
+
+    // Upper Air > Frontogenesis: layer means + existing fixed-pressure levels.
+    const upperEntries = [
+        ["frontogenesis-925-850mb-toggle", "925–850 mb Frontogenesis"],
+        ["frontogenesis-850-700mb-toggle", "850–700 mb Frontogenesis"],
+        ["frontogenesis-925mb-toggle", "925 mb Frontogenesis"],
+        ["frontogenesis-850mb-toggle", "850 mb Frontogenesis"],
+        ["frontogenesis-700mb-toggle", "700 mb Frontogenesis"]
+    ];
+    // appendChild also moves an existing row into the correct order, without
+    // replacing its input or event listeners.
+    for (const [id, caption] of upperEntries) {
+        const label = ensureToggle(id, caption, fgen);
+        if (label && fgen) fgen.appendChild(label);
     }
 }
-spcoaOrganizeMeteorologicalContourControls();
+spcoaInstallCategorizedContourControls();
 
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
@@ -3422,7 +3393,7 @@ const CONTOUR_FIELDS = {
         units: "m AGL",
         interval: 250,
         minimum: 250,
-        colorScheme: "wcd",
+        colorScheme: "wcd_reverse",
         color: null
     },
 
@@ -4689,7 +4660,7 @@ if (!warmCloudDepthToggle) {
 
 
 /* =========================================================================================
-   FREEZING LEVEL HEIGHT (AGL) TOGGLE — 250 m contours, WCD colors
+   FREEZING LEVEL HEIGHT (AGL) TOGGLE — 250 m contours, reversed WCD colors
    ========================================================================================= */
 
 let freezingLevelToggle = document.getElementById("freezing-level-toggle");
@@ -4708,7 +4679,7 @@ if (!freezingLevelToggle) {
         freezingLevelToggle.checked = false;
         label.appendChild(freezingLevelToggle);
         label.appendChild(document.createTextNode(" Freezing Level Height (AGL)"));
-        // Place directly after Warm Cloud Depth, in the existing contour category.
+        // Place directly after Warm Cloud Depth under Thermodynamics.
         if (anchor.nextSibling) parent.insertBefore(label, anchor.nextSibling);
         else parent.appendChild(label);
     }
@@ -10564,6 +10535,21 @@ function getWcdColor(value) {
     return WCD_COLORS[index];
 }
 
+// The same 250-m height categories as Warm Cloud Depth, with their
+// color order reversed. Only the rendering palette changes, not data.
+function getReversedWcdColor(value) {
+    if (!Number.isFinite(value)) return WCD_COLORS[WCD_COLORS.length - 1];
+    let index = WCD_BOUNDS.length - 2;
+    for (let i = 0; i < WCD_BOUNDS.length - 1; i++) {
+        if (value >= WCD_BOUNDS[i] && value < WCD_BOUNDS[i + 1]) {
+            index = i;
+            break;
+        }
+    }
+    if (value < WCD_BOUNDS[0]) index = 0;
+    index = Math.max(0, Math.min(WCD_COLORS.length - 1, index));
+    return WCD_COLORS[WCD_COLORS.length - 1 - index];
+}
 
 const SPC_NEW_COMPOSITE_COLORS = ["#f78e3c", "#eb661c", "#f34714", "#e72e17", "#d9201d", "#c9151c", "#ad0d1c", "#870a13", "#bf00e2", "#e100dc", "#d000c4", "#a13ce1", "#9460db", "#8d59d6", "#834bc6", "#743aa9", "#662b96", "#5b208a", "#51187e", "#461473", "#3f106a", "#3a0f61", "#351056", "#300d4f", "#290945"];
 
@@ -10996,9 +10982,11 @@ async function renderContourField(
             : field === "dcape"
             ? "dcape"
             : (
-                (field === "warm_cloud_depth" || field === "freezing_level_height")
-                    ? "wcd"
-                    : (
+                field === "freezing_level_height"
+                    ? "wcd_reverse"
+                    : field === "warm_cloud_depth"
+                        ? "wcd"
+                        : (
                         metadataColorScheme ||
                         definition.colorScheme ||
                         "fixed"
@@ -11057,6 +11045,7 @@ async function renderContourField(
     for (const level of levelsToRender) {
 
         const contourColor =
+            colorScheme === "wcd_reverse" ? getReversedWcdColor(level) :
             colorScheme === "scp_spc" ? getScpContourColorMatchingSrh(level) :
             colorScheme === "srh_spc" ? getSrhContourColor(level) :
             colorScheme === "spc_composite" ? getSpcCompositeContourColor(level) :
