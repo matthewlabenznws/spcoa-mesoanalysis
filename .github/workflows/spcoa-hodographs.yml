@@ -69,4 +69,4 @@ jobs:
           test -n "$AWS_ACCESS_KEY_ID" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
           test -n "$AWS_SECRET_ACCESS_KEY" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
       - name: Generate and publish native HRRR hodograph tiles
-        run: python scripts/spcoa_hodographs_site_test.py
+        run: python scripts/spcoa_hodographs.py
