@@ -1,0 +1,72 @@
+name: SPCOA - HRRR Hodographs (CONUS + Shared Grid)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Optional site analysis YYYYMMDD_HH; blank = newest available"
+        required: false
+        type: string
+        default: ""
+      force_rebuild:
+        description: "Overwrite completed hodograph tiles for this hour"
+        required: false
+        type: boolean
+        default: false
+      effective_layer:
+        description: "Enable slower approximate effective inflow calculations"
+        required: false
+        type: boolean
+        default: false
+
+  # Automatically start only AFTER the main SPCOA workflow finishes.
+  # The workflow NAME must match your committed main YAML exactly.
+  workflow_run:
+    workflows: ["SPCOA - Main Analysis to S3"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spcoa-hodographs-site-test
+  cancel-in-progress: false
+
+jobs:
+  upload-hodographs:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && vars.SPCOA_HODO_AUTOMATION_ENABLED == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      AWS_REGION: us-east-2
+      SPCOA_AWS_BUCKET: spcoa-mesoanalysis
+      SPCOA_AWS_PREFIX: spcoa
+      SPCOA_HODO_PUBLISH: "true"
+      SPCOA_HODO_WORK_DIR: ${{ github.workspace }}/hodo_work
+      SPCOA_HODO_RUN_ID: ${{ inputs.run_id || '' }}
+      SPCOA_HODO_RUN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id != '' && 'manual' || 'site_latest' }}
+      SPCOA_HODO_EFFECTIVE: ${{ inputs.effective_layer && 'true' || 'false' }}
+      SPCOA_HODO_FORCE_REBUILD: ${{ inputs.force_rebuild && 'true' || 'false' }}
+      SPCOA_HODO_NATIVE_WAIT_SECONDS: '180'
+      SPCOA_HODO_NATIVE_CHECKS: '7'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install native HRRR processing dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy xarray scipy metpy herbie-data cfgrib eccodes boto3
+      - name: Validate AWS environment
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
+          test -n "$AWS_SECRET_ACCESS_KEY" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
+      - name: Generate and publish native HRRR hodograph tiles
+        run: python scripts/spcoa_hodographs_site_test.py
