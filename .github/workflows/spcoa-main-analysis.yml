@@ -34,7 +34,7 @@ jobs:
       SPCOA_RUN_MODE: production
       SPCOA_PRODUCTION_APPROVED: 'true'
       SPCOA_LOW_DISK_STREAMING: 'true'
-      SPCOA_WORK_DIR: ${{ runner.temp }}/spcoa_mesoanalysis
+      SPCOA_WORK_DIR: ${{ github.workspace }}/spcoa_mesoanalysis
       SPCOA_S3_UPLOAD_WORKERS: '32'
       SPCOA_ZOOM_UPLOAD_WORKERS: '24'
       SPCOA_TILE_GENERATION_WORKERS: '6'
@@ -54,13 +54,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: scripts/requirements_spcoa.txt
 
       - name: Install analysis dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r scripts/requirements_spcoa.txt
+          python -m pip install xarray netCDF4 requests numpy scipy pyproj boto3 matplotlib metpy numba
 
       - name: Validate AWS secrets and S3 access
         run: |
