@@ -3,8 +3,8 @@
 Native HRRR 3-km profiles; z4 CONUS + shared z6 detail; per-tile JSON with optional
 sampled effective-inflow CAPE/CIN proxy. No changes to existing SPCOA tiles.
 
-The TEST config generates nationwide coarse tiles but only local fine tiles.
-It does not claim native-resolution nationwide coverage yet.
+The native-detail format preserves native 3-km winds. Optional parcel-based
+effective inflow is a sampled spatial proxy; it is NOT diagnosed every 3 km.
 """
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ TILE_TIERS = [
 ]
 # Rendering/layout test only; the effective-layer CAPE/CIN proxy is expensive.
 # Enable after confirming actual displayed wind profiles and locations.
-CALCULATE_EFFECTIVE_INFLOW = (os.getenv('SPCOA_HODO_EFFECTIVE','false').lower() == 'true')
+CALCULATE_EFFECTIVE_INFLOW = (os.getenv('SPCOA_HODO_EFFECTIVE','true').lower() == 'true')
 
 
 ROOT = Path(os.getenv('SPCOA_HODO_WORK_DIR', '/content' if Path('/content').is_dir() else str(Path.cwd())))
@@ -588,6 +588,11 @@ NATIVE3KM_QUANT_KT = 0.5  # signed int16 units, preserves 0.5 kt precision
 NATIVE3KM_STRIPE_ROWS = int(os.getenv('SPCOA_HODO_STRIPE_ROWS', '32'))
 NATIVE3KM_MAX_GRID_CELLS = int(os.getenv('SPCOA_HODO_MAX_NATIVE_CELLS', '2600000'))
 NATIVE3KM_TEST_BOUNDS_TEXT = os.getenv('SPCOA_HODO_NATIVE_TEST_BOUNDS','').strip()
+# Optional sampled parcel-based inflow diagnosis for native wind profiles.
+# Wind vectors remain native 3-km; effective layer is diagnosed on a coarser
+# globally aligned lattice and associated with nearby points (NOT exact 3-km EIL).
+NATIVE_EIL_STRIDE = int(os.getenv('SPCOA_HODO_NATIVE_EIL_STRIDE','20'))
+NATIVE_EIL_MAX_SAMPLES = int(os.getenv('SPCOA_HODO_NATIVE_EIL_MAX_SAMPLES','8000'))
 
 
 
@@ -667,6 +672,8 @@ def build_native3km_tiles(reader, out_dir, min_valid_profiles=100000):
         return None
     if NATIVE3KM_STRIPE_ROWS < 4 or NATIVE3KM_STRIPE_ROWS > 256:
         raise ValueError('SPCOA_HODO_STRIPE_ROWS must be between 4 and 256')
+    if CALCULATE_EFFECTIVE_INFLOW and not (10 <= NATIVE_EIL_STRIDE <= 100):
+        raise ValueError('SPCOA_HODO_NATIVE_EIL_STRIDE must be 10 to 100')
     from collections import defaultdict
     import shutil
     test_bounds = None
@@ -687,6 +694,23 @@ def build_native3km_tiles(reader, out_dir, min_valid_profiles=100000):
     staging.mkdir(parents=True)
     tile_counts = Counter()
     valid_total = 0
+    sampled_eil = {}
+    eil_checked = 0
+    eil_found = 0
+    eil_errors = 0
+    if CALCULATE_EFFECTIVE_INFLOW:
+        for key in ('pres','t','q'):
+            if key not in reader.fields:
+                raise RuntimeError('Native EIL requested but missing thermodynamic '+key)
+        # Count candidate native-grid diagnostic points BEFORE starting the run.
+        sites = ((ny+NATIVE_EIL_STRIDE-1)//NATIVE_EIL_STRIDE) * \
+                ((nx+NATIVE_EIL_STRIDE-1)//NATIVE_EIL_STRIDE)
+        if sites > NATIVE_EIL_MAX_SAMPLES:
+            raise RuntimeError(f'Native EIL sampling would require {sites:,} parcels; '
+                               f'cap is {NATIVE_EIL_MAX_SAMPLES:,}. Increase stride.')
+        print(f'Native EIL enabled: one parcel diagnosis per {NATIVE_EIL_STRIDE}x'
+              f'{NATIVE_EIL_STRIDE} model grid cells; ~{sites:,} candidate samples. '
+              'Near-neighbor estimate, NOT native 3-km effective inflow.',flush=True)
     print(f'Native 3-km detail: full HRRR {nx}x{ny} grid; {len(NATIVE3KM_HEIGHTS)} '
           'heights; z9 XYZ click/viewport tiles', flush=True)
     started = time.perf_counter()
@@ -717,6 +741,47 @@ def build_native3km_tiles(reader, out_dir, min_valid_profiles=100000):
         gh,u,v=components
         if not (gh.shape==u.shape==v.shape):
             raise RuntimeError('Native 3-km GRIB wind/height slab shape mismatch')
+        # Diagnose effective inflow at a globally stable, deliberately coarser
+        # thermodynamic lattice. Reuse the validated MetPy parcel-profile
+        # calculation already used for the z4/z6 preview profiles.
+        if CALCULATE_EFFECTIVE_INFLOW:
+            sample_rows = [j for j in range(row0,row1) if j % NATIVE_EIL_STRIDE == 0]
+            sample_cols = [i for i in range(col0,col1) if i % NATIVE_EIL_STRIDE == 0]
+            if sample_rows and sample_cols:
+                sample_fields = {}
+                for key in ('pres','t','q'):
+                    da=reader.fields[key]
+                    zdim=next(d for d in da.dims if d not in ('y','x'))
+                    sample_fields[key] = np.asarray(
+                        da.isel(y=sample_rows,x=sample_cols).transpose(zdim,'y','x').values,
+                        dtype=np.float64)
+                pmedian=np.nanmedian(sample_fields['pres'])
+                if 2000 < pmedian < 110000:
+                    sample_fields['pres'] /= 100.0
+                sample_fields['gh']=gh[:,np.asarray(sample_rows)-row0][:,:,np.asarray(sample_cols)-col0].astype(np.float64)
+                sample_fields['u']=u[:,np.asarray(sample_rows)-row0][:,:,np.asarray(sample_cols)-col0].astype(np.float64) * 1.9438444924
+                sample_fields['v']=v[:,np.asarray(sample_rows)-row0][:,:,np.asarray(sample_cols)-col0].astype(np.float64) * 1.9438444924
+                for sj,j in enumerate(sample_rows):
+                    for si,i in enumerate(sample_cols):
+                        # Only diagnose inside the requested geographical extent.
+                        if test_bounds and not (west<=reader.lon2d[j,i]<=east and
+                                                south<=reader.lat2d[j,i]<=north):
+                            continue
+                        cell=(j//NATIVE_EIL_STRIDE,i//NATIVE_EIL_STRIDE)
+                        sampled_eil[cell] = None
+                        try:
+                            p=clean_column(sample_fields,sj,si)
+                            if p is None: continue
+                            eil_checked+=1
+                            if mucape_only(p)>=MUCAPE_MIN_JKG:
+                                result=effective_inflow_layer(p)
+                                if result:
+                                    sampled_eil[cell]=(int(round(result[0])),int(round(result[1])))
+                                    eil_found+=1
+                        except (ValueError, IndexError, RuntimeError, FloatingPointError) as exc:
+                            eil_errors+=1
+                            if eil_errors<=3: print('EIL sample failure:',str(exc)[:150])
+                del sample_fields
         u_q,v_q=interpolate_native_columns(gh,u,v,NATIVE3KM_HEIGHTS)
         del gh,u,v,components
         lats=reader.lat2d[row0:row1,col0:col1].reshape(-1)
@@ -740,6 +805,13 @@ def build_native3km_tiles(reader, out_dir, min_valid_profiles=100000):
             pt={'lat':round(float(lats[pos]),4),'lon':round(float(lons[pos]),4),
                 'native_i':i,'native_j':j,
                 'u_q':u_q[pos].tolist(),'v_q':v_q[pos].tolist()}
+            if CALCULATE_EFFECTIVE_INFLOW:
+                # Each native profile retains its OWN 3-km wind vector, but
+                # effective-layer bounds are inherited from a nearby *sampled*
+                # (not native 3-km) thermodynamic column.
+                sampled=sampled_eil.get((j//NATIVE_EIL_STRIDE,i//NATIVE_EIL_STRIDE))
+                if sampled is not None:
+                    pt['eil'] = list(sampled)
             groups[(x,y)].append(json.dumps(pt,separators=(',',':')))
             valid_total += 1
         for (x,y),lines in groups.items():
@@ -788,12 +860,22 @@ def build_native3km_tiles(reader, out_dir, min_valid_profiles=100000):
         'wind_scale_kt':NATIVE3KM_QUANT_KT,
         'tile_path_template':f'native_z{NATIVE3KM_ZOOM}/{{x}}/{{y}}.json',
         'index':f'index_native_z{NATIVE3KM_ZOOM}.json',
-        'effective_inflow_available':False,
-        'note':'Native ~3 km HRRR profiles on every valid full-domain native cell. '
-               'Wind heights relative to lowest hybrid level. Detail parcels/EIL not calculated.'
+        'effective_inflow_available':bool(CALCULATE_EFFECTIVE_INFLOW),
+        'effective_inflow_resolution':'sampled_cape_cin_proxy_not_native_3km' if CALCULATE_EFFECTIVE_INFLOW else 'none',
+        'effective_inflow_sample_stride':NATIVE_EIL_STRIDE if CALCULATE_EFFECTIVE_INFLOW else None,
+        'effective_inflow_sample_count':eil_checked,
+        'effective_inflow_positive_sample_count':eil_found,
+        'effective_inflow_sample_errors':eil_errors,
+        'note':'Native ~3 km HRRR winds on every valid model cell. '
+               'Wind heights relative to lowest hybrid level. '
+               'When enabled, EIL bounds are extrapolated from globally sampled CAPE/CIN parcels, '
+               'not measured at each 3-km grid point.'
     }
     print(f'NATIVE 3-KM COMPLETE: {valid_total:,} profiles, {len(tile_counts)} tiles, '
           f'{(time.perf_counter()-started)/60:.1f} minutes',flush=True)
+    if CALCULATE_EFFECTIVE_INFLOW:
+        print(f'Native EIL sampled proxy: {eil_checked:,} qualifying profiles checked; '
+              f'{eil_found:,} diagnosed layers; {eil_errors:,} calculation errors',flush=True)
     return result
 
 def build_tiles(reader):
@@ -1049,12 +1131,27 @@ def main():
             obj = client.get_object(Bucket=AWS_BUCKET, Key=target)
             prior = json.loads(obj['Body'].read())
             saved_zooms = {t.get('zoom') for t in prior.get('tiers',[])}
+            native_prior = prior.get('native_detail') or {}
+            # A run published before sampled effective-layer processing was enabled
+            # is NOT considered complete. Upgrade it once, then skip repeat triggers.
+            has_requested_effective = (
+                not CALCULATE_EFFECTIVE_INFLOW
+                or (bool((prior.get('effective_inflow_method') or {}).get('enabled'))
+                    and bool(native_prior.get('effective_inflow_available'))
+                    and native_prior.get('effective_inflow_resolution')
+                        == 'sampled_cape_cin_proxy_not_native_3km')
+            )
+            has_requested_native = (
+                not NATIVE3KM_ENABLED
+                or (bool(native_prior.get('complete'))
+                    and (bool(native_prior.get('coverage_full_domain'))
+                         or bool(NATIVE3KM_TEST_BOUNDS_TEXT)))
+            )
             if (prior.get('run_id') == RUN_ID and {4,6}.issubset(saved_zooms)
-                    and (not NATIVE3KM_ENABLED or ((prior.get('native_detail') or {}).get('complete')
-                         and ((prior.get('native_detail') or {}).get('coverage_full_domain')
-                              or bool(NATIVE3KM_TEST_BOUNDS_TEXT))))):
-                print(f'Hodograph z4+z6 and required native detail already complete for {RUN_ID}; skipping.')
+                    and has_requested_native and has_requested_effective):
+                print(f'Hodograph z4+z6, native 3-km detail, and requested sampled effective layer already complete for {RUN_ID}; skipping.')
                 return None
+            print(f'Existing {RUN_ID} hodographs need an update; processing without manual force_rebuild.')
         except ClientError as exc:
             if exc.response.get('Error', {}).get('Code') not in ('404','NoSuchKey','NotFound'):
                 raise
