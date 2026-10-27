@@ -5654,6 +5654,7 @@ map.addControl(
             padding: 0 !important;
             margin: 0 4px 3px 0 !important;
             font: 10px/1.25 Arial, sans-serif !important;
+            opacity: 0.75 !important;
             text-shadow: 0 1px 1px rgba(255,255,255,.85);
         }
         .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib-inner,
@@ -5675,6 +5676,11 @@ map.addControl(
         .spcoa-satellite-active .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib {
             color: #fff !important;
             text-shadow: 0 1px 2px rgba(0,0,0,.95), 0 0 3px rgba(0,0,0,.75) !important;
+        }
+        /* Show the full attribution contrast when the user points to or focuses it. */
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib:hover,
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib:focus-within {
+            opacity: 1 !important;
         }
     `;
     document.head.appendChild(style);
@@ -17831,6 +17837,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
