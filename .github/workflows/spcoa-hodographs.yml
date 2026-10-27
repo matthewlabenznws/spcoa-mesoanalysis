@@ -2,6 +2,8 @@ name: SPCOA - HRRR Hodographs to S3
 
 # cronjob.org calls workflow_dispatch separately from the main SPCOA workflow.
 # NO built-in schedule and NO workflow_run trigger (avoids double dispatches).
+# Native 3-km profiles and sampled effective inflow are ON by default.
+# A plain cronjob.org POST with {"ref":"main" uses S3 latest run, full HRRR domain.
 on:
   workflow_dispatch:
     inputs:
@@ -15,21 +17,11 @@ on:
         required: false
         type: boolean
         default: false
-      native_3km:
-        description: 'Full-domain native 3-km wind profile generation (resource intensive)'
-        required: false
-        type: boolean
-        default: false
       native_test_bounds:
         description: 'Optional small test area west,east,south,north (e.g. -104,-97,40,43.4); blank means entire HRRR grid'
         required: false
         type: string
         default: ''
-      effective_layer:
-        description: 'Slow sampled approximate effective-inflow shading for z4/z6 preview only'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -53,13 +45,13 @@ jobs:
       SPCOA_HODO_PUBLISH: 'true'
       SPCOA_HODO_RUN_ID: ${{ inputs.run_id || '' }}
       SPCOA_HODO_RUN_MODE: ${{ inputs.run_id != '' && 'manual' || 'site_latest' }}
-      SPCOA_HODO_EFFECTIVE: ${{ inputs.effective_layer && 'true' || 'false' }}
+      SPCOA_HODO_EFFECTIVE: 'true'
       SPCOA_HODO_FORCE_REBUILD: ${{ inputs.force_rebuild && 'true' || 'false' }}
-      # Stays OFF for normal cronjob.org requests until you set repository
-      # variable SPCOA_HODO_NATIVE_3KM_ENABLED=true following live testing.
-      # Manual Actions input native_3km=true enables a one-time test.
-      SPCOA_HODO_NATIVE_3KM: ${{ inputs.native_3km && 'true' || vars.SPCOA_HODO_NATIVE_3KM_ENABLED || 'false' }}
+      # Always process native 3-km winds for manual and cronjob.org dispatches.
+      SPCOA_HODO_NATIVE_3KM: 'true'
       SPCOA_HODO_NATIVE_TEST_BOUNDS: ${{ inputs.native_test_bounds || '' }}
+      SPCOA_HODO_NATIVE_EIL_STRIDE: '20'
+      SPCOA_HODO_NATIVE_EIL_MAX_SAMPLES: '8000'
       SPCOA_HODO_STRIPE_ROWS: '24'
       SPCOA_HODO_NATIVE_WAIT_SECONDS: '180'
       SPCOA_HODO_NATIVE_CHECKS: '7'
@@ -91,6 +83,13 @@ jobs:
           test -n "$AWS_ACCESS_KEY_ID" || { echo 'Missing AWS_ACCESS_KEY_ID'; exit 1; }
           test -n "$AWS_SECRET_ACCESS_KEY" || { echo 'Missing AWS_SECRET_ACCESS_KEY'; exit 1; }
           python -m py_compile spcoa_hodographs.py
+
+      - name: Confirm automatic hodograph settings
+        run: |
+          echo 'Native 3-km profiles: ON'
+          echo 'Sampled effective inflow: ON'
+          echo 'Bounds: ${SPCOA_HODO_NATIVE_TEST_BOUNDS:-FULL HRRR DOMAIN}'
+          echo 'Skip existing complete datasets unless an upgrade is required'
 
       - name: Generate native HRRR F00 hodographs and publish matching S3 run
         run: python spcoa_hodographs.py
