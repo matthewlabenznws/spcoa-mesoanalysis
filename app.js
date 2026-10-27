@@ -5654,7 +5654,7 @@ map.addControl(
             padding: 0 !important;
             margin: 0 4px 3px 0 !important;
             font: 10px/1.25 Arial, sans-serif !important;
-            opacity: 0.40 !important;
+            opacity: 0.75 !important;
             text-shadow: 0 1px 1px rgba(255,255,255,.85);
         }
         .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib-inner,
@@ -9059,7 +9059,7 @@ async function renderWeather() {
     const fastEncoding = getEncoding(fieldMetadata[activeField]);
 
     // Only the true #FFFFFF weather-fill bins become transparent over the
-    // Satellite Streets basemap. Pale grays/colors are left untouched.
+    // Satellite imagery basemap. Pale grays/colors are left untouched.
     // Read the selection once per render, not once per pixel.
     const hideWhiteWeatherFill =
         spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
@@ -16751,6 +16751,190 @@ function eraseAt(event) {
 
 
 /* =========================================================================================
+   SATELLITE-AWARE PNG / GIF EXPORT (V28)
+
+   The on-screen MapLibre raster layer is a WebGL rendering. Copying the map
+   framebuffer alone can produce an empty/white satellite basemap in exported
+   canvases. For exports ONLY, reconstruct the same visible Mapbox Satellite
+   XYZ tiles in a normal 2D canvas, before weather and geography overlays.
+
+   This does not alter the interactive basemap, any meteorological products,
+   map zoom, legend, weather-fill opacity, or numerical data. All three export
+   paths (single PNG, timeline GIF, multi-panel PNG/GIF) call this helper.
+   ========================================================================================= */
+const spcoaExportSatelliteTileCache = new Map();
+
+function spcoaExportTileX(lng, z) {
+    return ((lng + 180) / 360) * (2 ** z);
+}
+
+function spcoaExportTileY(lat, z) {
+    const phi = Math.max(-85.05112878, Math.min(85.05112878, lat)) * Math.PI / 180;
+    return ((1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2) * (2 ** z);
+}
+
+function spcoaExportTileLng(x, z) {
+    return x / (2 ** z) * 360 - 180;
+}
+
+function spcoaExportTileLat(y, z) {
+    const n = Math.PI * (1 - 2 * y / (2 ** z));
+    return Math.atan(Math.sinh(n)) * 180 / Math.PI;
+}
+
+function spcoaGetSatelliteExportTile(z, x, y) {
+    const n = 2 ** z;
+    const wrappedX = ((x % n) + n) % n;
+    const key = `${z}/${wrappedX}/${y}`;
+    if (spcoaExportSatelliteTileCache.has(key)) {
+        return spcoaExportSatelliteTileCache.get(key);
+    }
+    const url = `https://api.mapbox.com/v4/${SPCOA_SATELLITE_TILESET}/` +
+        `${z}/${wrappedX}/${y}@2x.jpg90?access_token=` +
+        encodeURIComponent(SPCOA_MAPBOX_PUBLIC_TOKEN);
+    const loaded = new Promise((resolve, reject) => {
+        const image = new Image();
+        image.crossOrigin = "anonymous"; // Required for drawing a raster into an export canvas.
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            image.onload = null;
+            image.onerror = null;
+            reject(new Error(`Satellite export tile timed out: ${key}`));
+        }, 20000);
+        image.onload = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(image);
+        };
+        image.onerror = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error(`Satellite export tile failed (${key}). Check Mapbox token/CORS access.`));
+        };
+        image.src = url;
+    });
+    spcoaExportSatelliteTileCache.set(key, loaded);
+    // Don't indefinitely cache rejected requests; the user can retry export.
+    loaded.catch(() => spcoaExportSatelliteTileCache.delete(key));
+    // Keep memory bounded when the map is moved to many different areas.
+    if (spcoaExportSatelliteTileCache.size > 160) {
+        const oldest = spcoaExportSatelliteTileCache.keys().next().value;
+        if (oldest !== undefined) spcoaExportSatelliteTileCache.delete(oldest);
+    }
+    return loaded;
+}
+
+async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
+    if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE) {
+        const sourceCanvas = map.getCanvas();
+        ctx.drawImage(sourceCanvas, 0, 0, sourceCanvas.width, sourceCanvas.height,
+            0, mapY, outW, mapH);
+        return;
+    }
+    if (!/^pk\./.test(SPCOA_MAPBOX_PUBLIC_TOKEN)) {
+        throw new Error("Cannot export satellite basemap: Mapbox public token is missing.");
+    }
+
+    // MapLibre uses Web Mercator. Select the image tiles covering the visible
+    // viewport at integer zoom, then project their exact geographic corners
+    // into the current map camera. No guessed offset or hard-coded Nebraska area.
+    const viewport = map.getCanvas();
+    const viewW = viewport.clientWidth;
+    const viewH = viewport.clientHeight;
+    if (!viewW || !viewH) throw new Error("Map viewport is not ready for satellite export.");
+    const z = Math.max(0, Math.min(16, Math.floor(map.getZoom())));
+    const n = 2 ** z;
+    const corners = [
+        map.unproject([0, 0]), map.unproject([viewW, 0]),
+        map.unproject([viewW, viewH]), map.unproject([0, viewH])
+    ];
+    const xs = corners.map(p => spcoaExportTileX(p.lng, z));
+    const ys = corners.map(p => spcoaExportTileY(p.lat, z));
+    const xMin = Math.floor(Math.min(...xs)) - 1;
+    const xMax = Math.floor(Math.max(...xs)) + 1;
+    const yMin = Math.max(0, Math.floor(Math.min(...ys)) - 1);
+    const yMax = Math.min(n - 1, Math.floor(Math.max(...ys)) + 1);
+    const tiles = [];
+    for (let y = yMin; y <= yMax; y++) {
+        for (let x = xMin; x <= xMax; x++) tiles.push({ z, x, y });
+    }
+    if (!tiles.length || tiles.length > 200) {
+        throw new Error(`Satellite export tile coverage invalid (${tiles.length} tiles).`);
+    }
+
+    const scaleX = outW / viewW;
+    const scaleY = mapH / viewH;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, mapY, outW, mapH);
+    ctx.clip();
+    try {
+        // Moderate concurrency: avoids hundreds of simultaneous Mapbox requests.
+        for (let start = 0; start < tiles.length; start += 8) {
+            const batch = await Promise.all(tiles.slice(start, start + 8).map(async tile => ({
+                ...tile,
+                image: await spcoaGetSatelliteExportTile(tile.z, tile.x, tile.y)
+            })));
+            for (const tile of batch) {
+                const lonW = spcoaExportTileLng(tile.x, z);
+                const lonE = spcoaExportTileLng(tile.x + 1, z);
+                const latN = spcoaExportTileLat(tile.y, z);
+                const latS = spcoaExportTileLat(tile.y + 1, z);
+                const nw = map.project([lonW, latN]);
+                const ne = map.project([lonE, latN]);
+                const sw = map.project([lonW, latS]);
+                // Affine transform also handles nonzero bearing. In the regular
+                // zero-pitch SPCOA view, it is an exact map-to-tile transform.
+                ctx.setTransform(
+                    (ne.x - nw.x) * scaleX / tile.image.width,
+                    (ne.y - nw.y) * scaleY / tile.image.width,
+                    (sw.x - nw.x) * scaleX / tile.image.height,
+                    (sw.y - nw.y) * scaleY / tile.image.height,
+                    nw.x * scaleX,
+                    mapY + nw.y * scaleY
+                );
+                ctx.drawImage(tile.image, 0, 0);
+            }
+        }
+    } finally {
+        ctx.restore();
+    }
+}
+
+function spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY = 0) {
+    if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE) return;
+    ctx.save();
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = "#fff";
+    ctx.shadowColor = "rgba(0,0,0,0.95)";
+    ctx.shadowBlur = 3;
+    ctx.shadowOffsetY = 1;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    ctx.font = `500 ${Math.max(11, Math.round(outW * 0.0052))}px Arial, sans-serif`;
+    ctx.fillText("© Mapbox  © OpenStreetMap", outW - 10, mapY + mapH - 8);
+    ctx.restore();
+}
+
+async function spcoaDrawExportMapLayers(ctx, outW, mapH, mapY = 0) {
+    await spcoaDrawExportMapBase(ctx, outW, mapH, mapY);
+    const layers = [
+        weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas,
+        cityLabelCanvas, hodographCanvas, stationObsCanvas,
+        annotationCanvas, contourLabelCanvas
+    ].filter(Boolean);
+    for (const layer of layers) {
+        ctx.drawImage(layer, 0, 0, layer.width, layer.height,
+            0, mapY, outW, mapH);
+    }
+    spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY);
+}
+
+/* =========================================================================================
    4K PNG EXPORT
    ========================================================================================= */
 
@@ -16829,22 +17013,7 @@ async function saveCurrentMapPng4k() {
         ctx.textAlign = "left";
 
         const mapY = headerH;
-        const layers = [
-            map.getCanvas(),
-            weatherCanvas,
-            contourCanvas,
-            geographyCanvas,
-            vectorCanvas,
-            cityLabelCanvas,
-            hodographCanvas,
-            stationObsCanvas,
-            annotationCanvas,
-            contourLabelCanvas
-        ].filter(Boolean);
-
-        for (const layer of layers) {
-            ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, mapY, outW, mapH);
-        }
+        await spcoaDrawExportMapLayers(ctx, outW, mapH, mapY);
 
         /*
          * Export the legend with the SAME proportions and placement it has in
@@ -16989,7 +17158,7 @@ async function saveCurrentMapPng4k() {
         if (statusElement) statusElement.textContent = "PNG saved";
     } catch (error) {
         console.error("4K PNG export failed:", error);
-        if (statusElement) statusElement.textContent = "PNG export failed";
+        if (statusElement) statusElement.textContent = `PNG export failed: ${error.message || error}`;
     } finally {
         if (savePngButton) {
             savePngButton.disabled = false;
@@ -17052,22 +17221,7 @@ async function buildGifFrameCanvas(outW = SPCOA_GIF_PANEL_WIDTH) {
     ctx.textAlign = "left";
 
     const mapY = headerH;
-    const layers = [
-        map.getCanvas(),
-        weatherCanvas,
-        contourCanvas,
-        geographyCanvas,
-        vectorCanvas,
-        cityLabelCanvas,
-        hodographCanvas,
-        stationObsCanvas,
-        annotationCanvas,
-        contourLabelCanvas
-    ].filter(Boolean);
-
-    for (const layer of layers) {
-        ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, mapY, outW, mapH);
-    }
+    await spcoaDrawExportMapLayers(ctx, outW, mapH, mapY);
 
     /*
      * Export the legend with the SAME proportions and placement it has in
@@ -17731,8 +17885,7 @@ document.addEventListener("visibilitychange", () => {
         const ctx = out.getContext("2d", { alpha: false });
         ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, outW, outH);
         const mapH = outH - footerH;
-        const layers = [map.getCanvas(), weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas, cityLabelCanvas, hodographCanvas, stationObsCanvas, annotationCanvas, contourLabelCanvas].filter(Boolean);
-        for (const layer of layers) ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, outW, mapH);
+        await spcoaDrawExportMapLayers(ctx, outW, mapH, 0);
 
         if (legend && legend.style.display !== "none") {
             /*
