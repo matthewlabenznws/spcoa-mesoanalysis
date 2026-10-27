@@ -921,14 +921,14 @@ function spcoaInstallCategorizedContourControls() {
 spcoaInstallCategorizedContourControls();
 
 /* =========================================================================================
-   OPTIONAL MAP BACKGROUND (V24)
-   Plain (Original) and Mapbox Satellite Streets v12 only.
+   OPTIONAL MAP BACKGROUND (V25)
+   Plain (Original) and Mapbox Satellite imagery only.
    One control works for the multi-panel host and each iframe. Switching never
    resets the MapLibre style or existing weather data.
    ========================================================================================= */
 const SPCOA_BASEMAP_STORAGE_KEY = "spcoa_map_background_v1";
 const SPCOA_BASEMAP_PLAIN = "plain";
-const SPCOA_BASEMAP_SATELLITE_STREETS = "satellite-streets";
+const SPCOA_BASEMAP_SATELLITE = "satellite";
 // Defined in the shared scope: the parent dropdown and child maps both need it.
 const SPCOA_MAPBOX_PUBLIC_TOKEN = String(
     window.SPCOA_MAPBOX_PUBLIC_TOKEN || "pk.eyJ1IjoibWF0dGhld2xhYmVuejciLCJhIjoiY21zbjhxZ3ZkMXBoNDJ3cHl5eG5uNzlpZCJ9.UBy4k84SejJzzu2VF0TtcA"
@@ -937,8 +937,9 @@ const SPCOA_MAPBOX_PUBLIC_TOKEN = String(
 function spcoaReadMapBackground() {
     try {
         const choice = localStorage.getItem(SPCOA_BASEMAP_STORAGE_KEY);
-        return [SPCOA_BASEMAP_PLAIN,
-                SPCOA_BASEMAP_SATELLITE_STREETS].includes(choice)
+        // Preserve the previous satellite selection when upgrading from V24.
+        if (choice === "satellite-streets") return SPCOA_BASEMAP_SATELLITE;
+        return [SPCOA_BASEMAP_PLAIN, SPCOA_BASEMAP_SATELLITE].includes(choice)
             ? choice : SPCOA_BASEMAP_PLAIN;
     } catch (_) {
         return SPCOA_BASEMAP_PLAIN;
@@ -970,13 +971,13 @@ function spcoaInstallMapBackgroundSelector() {
     const select = document.createElement("select");
     select.id = "spcoa-map-background-select";
     select.setAttribute("aria-label", "Map background");
-    select.title = "Choose the original Plain background or Mapbox Satellite Streets v12";
+    select.title = "Choose the original Plain background or satellite imagery without Mapbox roads or labels";
     select.style.cssText =
         "width:100%;min-width:0;padding:6px;border-radius:4px;" +
         "background:#173348;color:#fff;border:1px solid #47677b;font:12px Inter,Arial,sans-serif;";
     for (const [value, caption] of [
         [SPCOA_BASEMAP_PLAIN, "Plain (Original)"],
-        [SPCOA_BASEMAP_SATELLITE_STREETS, "Satellite Streets"]
+        [SPCOA_BASEMAP_SATELLITE, "Satellite (Imagery Only)"]
     ]) {
         const option = document.createElement("option");
         option.value = value;
@@ -995,11 +996,11 @@ function spcoaInstallMapBackgroundSelector() {
         const token = String(window.SPCOA_MAPBOX_PUBLIC_TOKEN || SPCOA_MAPBOX_PUBLIC_TOKEN || "").trim();
         if (choice !== SPCOA_BASEMAP_PLAIN && !/^pk\./.test(token)) {
             select.value = SPCOA_BASEMAP_PLAIN;
-            help.textContent = "Satellite Streets needs a Mapbox public (pk.) token.";
+            help.textContent = "Satellite imagery needs a Mapbox public (pk.) token.";
             return;
         }
-        help.textContent = choice === SPCOA_BASEMAP_SATELLITE_STREETS
-            ? "Loading Satellite Streets imagery..."
+        help.textContent = choice === SPCOA_BASEMAP_SATELLITE
+            ? "Loading satellite imagery..."
             : "Original white background selected.";
         try {
             localStorage.setItem(SPCOA_BASEMAP_STORAGE_KEY, choice);
@@ -5432,12 +5433,11 @@ const map = new maplibregl.Map({
 
 
 /* =========================================================================================
-   OPTIONAL MAPBOX SATELLITE STREETS BACKGROUND (V24)
+   OPTIONAL MAPBOX SATELLITE IMAGERY BACKGROUND (V25)
 
-   The uploaded Weather Graphics viewer uses:
-       mapbox://styles/mapbox/satellite-streets-v12
-   Use raster tiles from that style below the existing MapLibre weather layers.
-   Available backgrounds: Plain (default) or Satellite Streets.
+   Use Mapbox's mapbox.satellite imagery-only raster tiles. Roads and city
+   labels are not baked in. Existing SPCOA geography toggles remain independent.
+   Available backgrounds: Plain (default) or Satellite (Imagery Only).
 
    The public Mapbox token from the uploaded viewer is used as a fallback.
    To override it, set window.SPCOA_MAPBOX_PUBLIC_TOKEN in index.html before
@@ -5445,8 +5445,8 @@ const map = new maplibregl.Map({
    Static raster tile requests may incur Mapbox charges.
    ========================================================================================= */
 // Token declared near the shared Map Background controls (outside the child-only branch).
-const SPCOA_SATELLITE_STREETS_STYLE = "satellite-streets-v12";
-const SPCOA_SATELLITE_STREETS_RASTER_OPACITY = 1.0;
+const SPCOA_SATELLITE_TILESET = "mapbox.satellite";
+const SPCOA_SATELLITE_RASTER_OPACITY = 1.0;
 // Default to original plain white background until Satellite Streets is selected.
 // Saved choices are shared between the main sidebar and child map panels.
 // Legacy V20 Terrain preference is treated as Plain by spcoaReadMapBackground().
@@ -5463,9 +5463,9 @@ function spcoaMapBackgroundMessage(message) {
     }
 }
 
-function spcoaAddMapboxRasterBasemap(sourceId, styleId, opacity) {
+function spcoaAddMapboxRasterBasemap(sourceId, tilesetId, opacity) {
     if (!/^pk\./.test(SPCOA_MAPBOX_PUBLIC_TOKEN)) {
-        spcoaMapBackgroundMessage("Satellite Streets unavailable: missing Mapbox public token.");
+        spcoaMapBackgroundMessage("Satellite imagery unavailable: missing Mapbox public token.");
         return false;
     }
     try {
@@ -5473,8 +5473,8 @@ function spcoaAddMapboxRasterBasemap(sourceId, styleId, opacity) {
             map.addSource(sourceId, {
                 type: "raster",
                 tiles: [
-                    // Official Mapbox Styles API: raster rendering of Satellite Streets v12.
-                    `https://api.mapbox.com/styles/v1/mapbox/${styleId}/tiles/512/{z}/{x}/{y}@2x?access_token=${encodeURIComponent(SPCOA_MAPBOX_PUBLIC_TOKEN)}`
+                    // Mapbox Raster Tiles API: satellite/aerial images, NO labels or roads.
+                    `https://api.mapbox.com/v4/${tilesetId}/{z}/{x}/{y}@2x.jpg90?access_token=${encodeURIComponent(SPCOA_MAPBOX_PUBLIC_TOKEN)}`
                 ],
                 tileSize: 512,
                 maxzoom: 16,
@@ -5507,8 +5507,8 @@ function spcoaAddMapboxRasterBasemap(sourceId, styleId, opacity) {
         }
         return true;
     } catch (error) {
-        console.warn(`Could not install basemap ${styleId}:`, error);
-        spcoaMapBackgroundMessage("Could not initialize Satellite Streets; check browser console.");
+        console.warn(`Could not install basemap ${tilesetId}:`, error);
+        spcoaMapBackgroundMessage("Could not initialize satellite imagery; check browser console.");
         return false;
     }
 }
@@ -5516,7 +5516,7 @@ function spcoaAddMapboxRasterBasemap(sourceId, styleId, opacity) {
 // Keep the map fill's white-bin opacity synchronized with the basemap.
 // This variable only prevents an unnecessary duplicate numerical render at load.
 let spcoaLastWhiteFillMode =
-    spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE_STREETS;
+    spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
 
 let spcoaBasemapApplyPending = false;
 function spcoaApplyMapBackground() {
@@ -5535,28 +5535,33 @@ function spcoaApplyMapBackground() {
     }
 
     const choice = spcoaReadMapBackground();
-    const satelliteId = "spcoa-mapbox-satellite-streets-basemap";
+    // Keep attribution clearly legible against white or satellite imagery.
+    // It is plain text placed on the map, with no opaque credit box.
+    map.getContainer().classList.toggle(
+        "spcoa-satellite-active", choice === SPCOA_BASEMAP_SATELLITE
+    );
+    const satelliteId = "spcoa-mapbox-satellite-basemap";
     let installed = true;
-    if (choice === SPCOA_BASEMAP_SATELLITE_STREETS) {
+    if (choice === SPCOA_BASEMAP_SATELLITE) {
         installed = spcoaAddMapboxRasterBasemap(
-            satelliteId, SPCOA_SATELLITE_STREETS_STYLE,
-            SPCOA_SATELLITE_STREETS_RASTER_OPACITY
+            satelliteId, SPCOA_SATELLITE_TILESET,
+            SPCOA_SATELLITE_RASTER_OPACITY
         );
     }
     if (map.getLayer(satelliteId)) {
         map.setLayoutProperty(satelliteId, "visibility",
-            choice === SPCOA_BASEMAP_SATELLITE_STREETS && installed
+            choice === SPCOA_BASEMAP_SATELLITE && installed
                 ? "visible" : "none");
     }
     spcoaSyncMapBackgroundSelector();
     if (choice === SPCOA_BASEMAP_PLAIN) {
         spcoaMapBackgroundMessage("Original white background selected.");
     } else if (installed) {
-        spcoaMapBackgroundMessage("Loading Satellite Streets imagery...");
+        spcoaMapBackgroundMessage("Loading satellite imagery...");
     }
 
     // Only change white-fill pixels when the background choice changes.
-    const hideWhiteFill = choice === SPCOA_BASEMAP_SATELLITE_STREETS;
+    const hideWhiteFill = choice === SPCOA_BASEMAP_SATELLITE;
     if (hideWhiteFill !== spcoaLastWhiteFillMode) {
         spcoaLastWhiteFillMode = hideWhiteFill;
         if (activeField && activeField !== "none") {
@@ -5573,7 +5578,7 @@ map.on("error", event => {
     const err = event?.error;
     const msg = String(err?.message || err || "");
     const sourceId = String(event?.sourceId || "");
-    if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE_STREETS ||
+    if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE ||
         (!msg.includes("mapbox.com") && !sourceId.includes("spcoa-mapbox-satellite"))) {
         return;
     }
@@ -5583,14 +5588,14 @@ map.on("error", event => {
                    code === 404 ? "Mapbox style/tile was not found" :
                    code === 429 ? "Mapbox request limit reached" :
                    "Mapbox tile request failed; inspect Network tab";
-    console.warn("Satellite Streets tile loading failed:", code || "unknown", detail);
-    spcoaMapBackgroundMessage(`Satellite Streets unavailable: ${detail}.`);
+    console.warn("Satellite imagery tile loading failed:", code || "unknown", detail);
+    spcoaMapBackgroundMessage(`Satellite imagery unavailable: ${detail}.`);
 });
 map.on("sourcedata", event => {
-    if (event.sourceId === "spcoa-mapbox-satellite-streets-basemap" &&
+    if (event.sourceId === "spcoa-mapbox-satellite-basemap" &&
         event.isSourceLoaded &&
-        spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE_STREETS) {
-        spcoaMapBackgroundMessage("Satellite Streets imagery loaded.");
+        spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE) {
+        spcoaMapBackgroundMessage("Satellite imagery loaded.");
     }
 });
 map.on("load", spcoaApplyMapBackground);
@@ -5627,19 +5632,60 @@ map.addControl(
 );
 
 
-map.addControl(
+// Keep copyright and data attribution visible without a background panel.
+// Plain view uses dark lettering; satellite view uses white lettering with
+// a subtle dark text-shadow for legibility over aerial imagery.
+(function spcoaStyleMapAttribution() {
+    if (document.getElementById("spcoa-attribution-style")) return;
+    const style = document.createElement("style");
+    style.id = "spcoa-attribution-style";
+    style.textContent = `
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib,
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib:hover,
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib:focus-within {
+            background: none !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            color: #303030 !important;
+            border: 0 !important;
+            outline: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            margin: 0 4px 3px 0 !important;
+            font: 10px/1.25 Arial, sans-serif !important;
+            text-shadow: 0 1px 1px rgba(255,255,255,.85);
+        }
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib-inner,
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib a {
+            font: 10px/1.25 Arial, sans-serif !important;
+            color: inherit !important;
+            background: none !important;
+            border: 0 !important;
+            padding: 0 !important;
+            box-shadow: none !important;
+        }
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib a {
+            text-decoration: none !important;
+        }
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib a:hover,
+        .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib a:focus {
+            text-decoration: underline !important;
+        }
+        .spcoa-satellite-active .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib {
+            color: #fff !important;
+            text-shadow: 0 1px 2px rgba(0,0,0,.95), 0 0 3px rgba(0,0,0,.75) !important;
+        }
+    `;
+    document.head.appendChild(style);
+})();
 
-    new maplibregl.AttributionControl({
-
-        compact: true,
-
-        customAttribution:
-            "Geography: U.S. Census Bureau / us-atlas"
-
-    })
-
-);
-
+map.addControl(new maplibregl.AttributionControl({
+    compact: false,
+    customAttribution:
+        'Geography: <a href="https://www.census.gov/geographies/mapping-files.html" ' +
+        'target="_blank" rel="noopener noreferrer">U.S. Census Bureau</a> / us-atlas'
+}), "bottom-right");
 
 /* =========================================================================================
    GEOGRAPHY DATA
@@ -9010,7 +9056,7 @@ async function renderWeather() {
     // Satellite Streets basemap. Pale grays/colors are left untouched.
     // Read the selection once per render, not once per pixel.
     const hideWhiteWeatherFill =
-        spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE_STREETS;
+        spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
 
     let pixelIndex =
         0;
@@ -9085,7 +9131,7 @@ async function renderWeather() {
 
 
                 /*
-                 * With Satellite Streets selected, let pure-white shaded bins
+                 * With Satellite selected, let pure-white shaded bins
                  * show the imagery completely. Plain uses original alpha 235.
                  * No changes to the numerical data, other palette colors or legend.
                  */
@@ -17785,6 +17831,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
