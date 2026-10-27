@@ -1,6 +1,6 @@
 """SPCOA-HRRR tiled hodograph backend, Colab test v1.
 
-Native HRRR 3-km profiles; four zoom tiers; per-tile JSON with optional
+Native HRRR 3-km profiles; z4 CONUS + shared z6 detail; per-tile JSON with optional
 sampled effective-inflow CAPE/CIN proxy. No changes to existing SPCOA tiles.
 
 The TEST config generates nationwide coarse tiles but only local fine tiles.
@@ -72,7 +72,13 @@ HEIGHT_STEP_M = 100
 # Reducing this stride increases the point count at EVERY zoom, not only State.
 SHARED_NATIVE_GRID_STRIDE = 60
 FULL_NATIVE_HRRR_BOUNDS = (-179.999, 179.999, -84.999, 84.999)
+# CONUS is a subset of the EXACT SAME native i/j lattice used by Regional.
+# z4: 120th native point; z6: 60th native point. State reuses z6.
+# Every z4 native point is also contained in z6 (both are globally aligned).
+CONUS_NATIVE_GRID_STRIDE = SHARED_NATIVE_GRID_STRIDE * 2
 TILE_TIERS = [
+    {"name": "conus", "zoom": 4,
+     "stride": CONUS_NATIVE_GRID_STRIDE, "bounds": FULL_NATIVE_HRRR_BOUNDS},
     {"name": "full_hrrr_regional_state_shared", "zoom": 6,
      "stride": SHARED_NATIVE_GRID_STRIDE, "bounds": FULL_NATIVE_HRRR_BOUNDS},
 ]
@@ -196,24 +202,30 @@ def native_cycle_available(when):
         return False
 
 
-def get_live_site_runs():
-    import urllib.request
-    url = SITE_S3_BASE_URL + '/available_times.json?t=' + str(int(time.time()))
+def get_published_spcoa_run():
+    """Read the latest *committed* SPCOA analysis hour directly from S3.
+
+    The GitHub workflow uses the existing AWS repository secrets.  Reading
+    S3 directly avoids reliance on public bucket permissions or CDN caches.
+    It never guesses a nearby hour and it does not modify the main archive.
+    """
+    import boto3
+    client = boto3.client('s3', region_name=AWS_REGION)
     try:
-        with urllib.request.urlopen(url, timeout=25) as result:
-            manifest = json.load(result)
+        response = client.get_object(Bucket=AWS_BUCKET, Key=f'{AWS_PREFIX}/latest.json')
+        pointer = json.loads(response['Body'].read())
     except Exception as exc:
-        raise RuntimeError(f'Cannot read site available_times.json: {exc}') from exc
-    rows = manifest.get('runs', []) if isinstance(manifest, dict) else []
-    ids = set()
-    for row in rows:
-        rid = (str(row.get('run', '')).strip() if isinstance(row, dict)
-               else str(row).strip())
-        if re.fullmatch(r'\d{8}_\d{2}', rid):
-            ids.add(rid)
-    if not ids:
-        raise RuntimeError('No YYYYMMDD_HH runs in site available_times.json')
-    return sorted(ids, reverse=True)
+        raise RuntimeError(f'Could not read committed SPCOA latest.json from S3: {exc}') from exc
+    rid = str(pointer.get('run', '')).strip() if isinstance(pointer, dict) else ''
+    if not re.fullmatch(r'\d{8}_\d{2}', rid):
+        raise RuntimeError(f'Invalid SPCOA latest.json run: {rid!r}')
+    # Metadata belongs to the selected hour; fail if main analysis did not
+    # publish it. The hodograph job uses the identical YYYYMMDD_HH key.
+    try:
+        client.head_object(Bucket=AWS_BUCKET, Key=f'{AWS_PREFIX}/runs/{rid}/metadata.json')
+    except Exception as exc:
+        raise RuntimeError(f'Published SPCOA analysis metadata missing for {rid}: {exc}') from exc
+    return parse_cycle_time(rid)
 
 
 def choose_run():
@@ -224,20 +236,32 @@ def choose_run():
             raise ValueError('Set MANUAL_RUN_TIME for manual mode.')
         chosen = parse_cycle_time(MANUAL_RUN_TIME)
         if not native_cycle_available(chosen):
-            raise RuntimeError('Manual HRRR F00 cycle unavailable.')
+            raise RuntimeError('Manual HRRR F00 cycle unavailable for ' + chosen.isoformat())
         return chosen
     if mode == 'site_latest':
-        print('Checking selectable website hours (no recency cutoff).')
-        dates = [parse_cycle_time(r) for r in get_live_site_runs()]
-    elif mode == 'hrrr_latest':
-        dates = [now - timedelta(hours=k) for k in
-                 range(MIN_RUN_AGE_HOURS, MIN_RUN_AGE_HOURS + LOOKBACK_HOURS)]
-    else:
-        raise ValueError('RUN_SELECTION_MODE must be site_latest, hrrr_latest, manual.')
-    for dt in dates:
-        if dt <= now and native_cycle_available(dt):
-            return dt
-    raise RuntimeError('No matching complete HRRR F00 native cycle; change selection mode.')
+        # The pointer is published LAST by the main workflow; don't replace a
+        # missing native HRRR cycle with a different, older website hour.
+        chosen = get_published_spcoa_run()
+        if chosen > now:
+            raise RuntimeError(f'SPCOA published future run {chosen.isoformat()}')
+        wait_seconds = int(os.getenv('SPCOA_HODO_NATIVE_WAIT_SECONDS', '180'))
+        max_checks = int(os.getenv('SPCOA_HODO_NATIVE_CHECKS', '7'))
+        for attempt in range(1, max_checks + 1):
+            print(f'Matching published SPCOA {chosen:%Y%m%d_%H} to native HRRR F00 '
+                  f'(check {attempt}/{max_checks})', flush=True)
+            if native_cycle_available(chosen):
+                return chosen
+            if attempt < max_checks:
+                time.sleep(max(1,wait_seconds))
+        raise RuntimeError(f'HRRR F00 {chosen:%Y%m%d_%H} not yet available; '
+                           'no other analysis hour was substituted')
+    if mode == 'hrrr_latest':
+        for k in range(MIN_RUN_AGE_HOURS, MIN_RUN_AGE_HOURS + LOOKBACK_HOURS):
+            chosen = now - timedelta(hours=k)
+            if native_cycle_available(chosen):
+                return chosen
+        raise RuntimeError('No complete recent HRRR native F00 cycle')
+    raise ValueError('RUN_SELECTION_MODE must be site_latest, hrrr_latest, manual.')
 
 
 class NativeHrrrReader:
@@ -547,6 +571,231 @@ def write_tile_files(out_dir, run_id, z, grouped):
             'raw_tile_bytes': file_bytes, 'representative_path': representative}
 
 
+
+# -------------------------------------------------------------------------
+# V7: NATIVE 3-KM DETAIL FOR REGIONAL / STATE / LOCAL
+# -------------------------------------------------------------------------
+# Existing z4/z6 products remain as inexpensive CONUS/fallback previews.
+# NEW native_z9 tiles hold EVERY valid model grid column; they are downloaded
+# only for the current viewport or a click, NOT eagerly as map overlay tiles.
+# This is a substantial production job: roughly millions of profiles and
+# hundreds of MB after compression each cycle. Review Actions/S3 usage.
+NATIVE3KM_ENABLED = os.getenv('SPCOA_HODO_NATIVE_3KM', 'true').lower() == 'true'
+NATIVE3KM_ZOOM = 9
+NATIVE3KM_HEIGHT_STEP_M = 250  # profile winds every 250 m through 9 km
+NATIVE3KM_HEIGHTS = np.arange(0, 9001, NATIVE3KM_HEIGHT_STEP_M, dtype=np.int32)
+NATIVE3KM_QUANT_KT = 0.5  # signed int16 units, preserves 0.5 kt precision
+NATIVE3KM_STRIPE_ROWS = int(os.getenv('SPCOA_HODO_STRIPE_ROWS', '32'))
+NATIVE3KM_MAX_GRID_CELLS = int(os.getenv('SPCOA_HODO_MAX_NATIVE_CELLS', '2600000'))
+NATIVE3KM_TEST_BOUNDS_TEXT = os.getenv('SPCOA_HODO_NATIVE_TEST_BOUNDS','').strip()
+
+
+
+_NATIVE3KM_COMPUTE_KERNEL = None
+
+
+def interpolate_native_columns(gh, u, v, height_levels):
+    """Compiled native column interpolation, input [level, stripe-row, x].
+
+    Returns signed int16 knot values at each AGL target; nodata=-32768.
+    HGT reference is lowest finite native hybrid level, as for coarse tiles.
+    """
+    global _NATIVE3KM_COMPUTE_KERNEL
+    from numba import njit, prange
+    if _NATIVE3KM_COMPUTE_KERNEL is None:
+        _NATIVE3KM_COMPUTE_KERNEL = _create_native3km_compute_kernel()
+    return _NATIVE3KM_COMPUTE_KERNEL(
+        np.ascontiguousarray(gh, dtype=np.float32),
+        np.ascontiguousarray(u, dtype=np.float32),
+        np.ascontiguousarray(v, dtype=np.float32),
+        np.ascontiguousarray(height_levels, dtype=np.float32))
+
+
+def _create_native3km_compute_kernel():
+    from numba import njit, prange
+    @njit(parallel=True, cache=False)
+    def compute(z3, u3, v3, targets):
+        nlev, rows, nx = z3.shape
+        out_u = np.full((rows * nx, len(targets)), -32768, dtype=np.int16)
+        out_v = np.full((rows * nx, len(targets)), -32768, dtype=np.int16)
+        for pos in prange(rows*nx):
+            j, i = pos//nx, pos%nx
+            # GRIB hybrid levels can be ordered top-to-bottom or vice versa.
+            ascending = z3[0,j,i] < z3[nlev-1,j,i]
+            first = 0 if ascending else nlev-1
+            step = 1 if ascending else -1
+            bottom = z3[first,j,i]
+            top = z3[first + step*(nlev-1),j,i]
+            if not np.isfinite(bottom) or not np.isfinite(top) or top-bottom < 9000:
+                continue
+            cursor = 1
+            for it in range(len(targets)):
+                h = targets[it]
+                while cursor < nlev:
+                    k = first + step*cursor
+                    if np.isfinite(z3[k,j,i]) and z3[k,j,i] - bottom >= h:
+                        break
+                    cursor += 1
+                if cursor >= nlev:
+                    break
+                k = first + step*cursor
+                prev_k = first + step*(cursor-1)
+                z0 = z3[prev_k,j,i] - bottom
+                z1 = z3[k,j,i] - bottom
+                u0, u1 = u3[prev_k,j,i], u3[k,j,i]
+                v0, v1 = v3[prev_k,j,i], v3[k,j,i]
+                if np.isfinite(z0) and np.isfinite(z1) and z1>z0 and \
+                    np.isfinite(u0) and np.isfinite(u1) and np.isfinite(v0) and np.isfinite(v1):
+                    f = (h-z0)/(z1-z0)
+                    # input native winds m/s; quantized knot scaling below
+                    uq = int(np.rint((u0 + (u1-u0)*f)*1.94384449244/0.5))
+                    vq = int(np.rint((v0 + (v1-v0)*f)*1.94384449244/0.5))
+                    if -32767 <= uq <= 32767 and -32767 <= vq <= 32767:
+                        out_u[pos,it] = uq
+                        out_v[pos,it] = vq
+        return out_u, out_v
+    return compute
+
+
+def build_native3km_tiles(reader, out_dir, min_valid_profiles=100000):
+    """Build 3-km on-demand detail tiles without loading 2M columns in RAM.
+
+    Writes per-stripe NDJSON shards, then streams final z9 JSON tiles.
+    The index/metadata are generated only after every stripe succeeds.
+    """
+    if not NATIVE3KM_ENABLED:
+        return None
+    if NATIVE3KM_STRIPE_ROWS < 4 or NATIVE3KM_STRIPE_ROWS > 256:
+        raise ValueError('SPCOA_HODO_STRIPE_ROWS must be between 4 and 256')
+    from collections import defaultdict
+    import shutil
+    test_bounds = None
+    if NATIVE3KM_TEST_BOUNDS_TEXT:
+        fields=[float(q.strip()) for q in NATIVE3KM_TEST_BOUNDS_TEXT.split(',')]
+        if len(fields)!=4 or not (-180<=fields[0]<fields[1]<=180 and
+             -85<fields[2]<fields[3]<85):
+            raise ValueError('SPCOA_HODO_NATIVE_TEST_BOUNDS must be west,east,south,north')
+        test_bounds=tuple(fields)
+        min_valid_profiles=min(min_valid_profiles,1000)
+        print('NATIVE 3KM PILOT ONLY:', test_bounds)
+    ny, nx = reader.lat2d.shape
+    if ny*nx > NATIVE3KM_MAX_GRID_CELLS:
+        raise RuntimeError(f'Native domain has {ny*nx:,} cells, exceeds configured guard '
+                           f'{NATIVE3KM_MAX_GRID_CELLS:,}; increase only after capacity review')
+    staging = out_dir / '_native3km_stage'
+    if staging.exists(): shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    tile_counts = Counter()
+    valid_total = 0
+    print(f'Native 3-km detail: full HRRR {nx}x{ny} grid; {len(NATIVE3KM_HEIGHTS)} '
+          'heights; z9 XYZ click/viewport tiles', flush=True)
+    started = time.perf_counter()
+    keys = ('gh','u','v')
+    for key in keys:
+        if key not in reader.fields:
+            raise RuntimeError(f'Native GRIB missing {key} needed for 3-km profiles')
+    for row0 in range(0, ny, NATIVE3KM_STRIPE_ROWS):
+        row1 = min(ny, row0+NATIVE3KM_STRIPE_ROWS)
+        # Limit GRIB decoding to the test bounding box when one is supplied.
+        col0, col1 = 0, nx
+        if test_bounds:
+            west,east,south,north=test_bounds
+            lat_chunk=reader.lat2d[row0:row1]
+            lon_chunk=reader.lon2d[row0:row1]
+            region=((lat_chunk>=south)&(lat_chunk<=north)&
+                    (lon_chunk>=west)&(lon_chunk<=east))
+            eligible_cols=np.where(region)[1]
+            if eligible_cols.size==0:
+                continue
+            col0, col1=int(eligible_cols.min()),int(eligible_cols.max())+1
+        components=[]
+        for key in keys:
+            da=reader.fields[key]
+            zdim=next(d for d in da.dims if d not in ('y','x'))
+            slab=da.isel(y=slice(row0,row1),x=slice(col0,col1)).transpose(zdim,'y','x')
+            components.append(np.asarray(slab.values, dtype=np.float32))
+        gh,u,v=components
+        if not (gh.shape==u.shape==v.shape):
+            raise RuntimeError('Native 3-km GRIB wind/height slab shape mismatch')
+        u_q,v_q=interpolate_native_columns(gh,u,v,NATIVE3KM_HEIGHTS)
+        del gh,u,v,components
+        lats=reader.lat2d[row0:row1,col0:col1].reshape(-1)
+        lons=reader.lon2d[row0:row1,col0:col1].reshape(-1)
+        width=col1-col0
+        x_tiles=np.floor((lons+180)/360*(1<<NATIVE3KM_ZOOM)).astype(np.int32)
+        latrad=np.radians(np.clip(lats,-85.051128,85.051128))
+        y_tiles=np.floor((1-np.arcsinh(np.tan(latrad))/np.pi)/2*(1<<NATIVE3KM_ZOOM)).astype(np.int32)
+        groups=defaultdict(list)
+        for pos in range(len(lats)):
+            if not (np.isfinite(lats[pos]) and np.isfinite(lons[pos])):
+                continue
+            if test_bounds and not (west<=lons[pos]<=east and south<=lats[pos]<=north):
+                continue
+            if np.any(u_q[pos]==-32768) or np.any(v_q[pos]==-32768):
+                continue
+            j=row0+pos//width; i=col0+pos%width
+            x,y=int(x_tiles[pos]),int(y_tiles[pos])
+            if not (0<=x<2**NATIVE3KM_ZOOM and 0<=y<2**NATIVE3KM_ZOOM):
+                continue
+            pt={'lat':round(float(lats[pos]),4),'lon':round(float(lons[pos]),4),
+                'native_i':i,'native_j':j,
+                'u_q':u_q[pos].tolist(),'v_q':v_q[pos].tolist()}
+            groups[(x,y)].append(json.dumps(pt,separators=(',',':')))
+            valid_total += 1
+        for (x,y),lines in groups.items():
+            target=staging / str(x) / f'{y}.ndjson'
+            target.parent.mkdir(parents=True,exist_ok=True)
+            with target.open('a',encoding='utf-8') as f:
+                f.write('\n'.join(lines)+'\n')
+            tile_counts[(x,y)]+=len(lines)
+        if row1%max(NATIVE3KM_STRIPE_ROWS,8* NATIVE3KM_STRIPE_ROWS)==0 or row1==ny:
+            print(f'  Native columns: {row1:,}/{ny:,} rows; valid {valid_total:,}; '
+                  f'{time.perf_counter()-started:.0f}s',flush=True)
+        del u_q,v_q
+    if valid_total < min_valid_profiles:
+        raise RuntimeError(f'Only {valid_total:,} valid native profiles, refusing publish')
+    for (x,y),count in sorted(tile_counts.items()):
+        source=staging / str(x) / f'{y}.ndjson'
+        final=out_dir / f'native_z{NATIVE3KM_ZOOM}' / str(x) / f'{y}.json'
+        final.parent.mkdir(parents=True, exist_ok=True)
+        with final.open('w',encoding='utf-8') as dst:
+            header={'schema_version':3,'product':'hrrr_native_3km_hodographs',
+                    'run_id':RUN_ID,'z':NATIVE3KM_ZOOM,'x':x,'y':y,
+                    'height_step_m':NATIVE3KM_HEIGHT_STEP_M,
+                    'wind_scale_kt':NATIVE3KM_QUANT_KT}
+            dst.write(json.dumps(header,separators=(',',':'))[:-1]+',"points":[')
+            with source.open('r',encoding='utf-8') as src:
+                first=True
+                for line in src:
+                    line=line.strip()
+                    if not line: continue
+                    if not first: dst.write(',')
+                    dst.write(line)
+                    first=False
+            dst.write(']}')
+        if final.stat().st_size<128:
+            raise RuntimeError(f'Native detail tile empty: {final}')
+    shutil.rmtree(staging)
+    dump_json(out_dir/f'index_native_z{NATIVE3KM_ZOOM}.json',{
+        'schema_version':3,'run_id':RUN_ID,'z':NATIVE3KM_ZOOM,
+        'tile_coordinates':[[x,y] for x,y in sorted(tile_counts)]})
+    result={
+        'complete':True,'coverage_full_domain':test_bounds is None,
+        'test_bounds':test_bounds,
+        'profile_count':valid_total,'tile_count':len(tile_counts),
+        'tile_zoom':NATIVE3KM_ZOOM,'native_grid_stride':1,
+        'heights_m_agl':NATIVE3KM_HEIGHTS.tolist(),
+        'wind_scale_kt':NATIVE3KM_QUANT_KT,
+        'tile_path_template':f'native_z{NATIVE3KM_ZOOM}/{{x}}/{{y}}.json',
+        'index':f'index_native_z{NATIVE3KM_ZOOM}.json',
+        'effective_inflow_available':False,
+        'note':'Native ~3 km HRRR profiles on every valid full-domain native cell. '
+               'Wind heights relative to lowest hybrid level. Detail parcels/EIL not calculated.'
+    }
+    print(f'NATIVE 3-KM COMPLETE: {valid_total:,} profiles, {len(tile_counts)} tiles, '
+          f'{(time.perf_counter()-started)/60:.1f} minutes',flush=True)
+    return result
+
 def build_tiles(reader):
     import metpy.calc as mpcalc_module
     from metpy.units import units as metpy_units
@@ -674,7 +923,9 @@ def build_tiles(reader):
         print('First sample:', samples[0])
         del grouped
 
+    native_detail = build_native3km_tiles(reader, out_dir)
     manifest = {
+        'native_detail': native_detail,
         'schema_version': 2,
         'product': 'hrrr_f00_hodographs_tiled',
         'run_id': RUN_ID,
@@ -686,9 +937,9 @@ def build_tiles(reader):
         'heights_m_agl': HEIGHTS_M.tolist(),
         'tile_coordinate_system': 'WebMercator_XYZ_EPSG3857',
         'tile_size': 256,
-        'zoom_selection': 'same z6 native i/j points for all map zooms >= 4.5, with fixed CSS-pixel rings',
+        'zoom_selection': 'z4 subset of globally fixed z6 native points; Regional/State reuse z6 with fixed CSS-pixel rings',
         'tile_path_template': 'z{z}/{x}/{y}.json',
-        'data_coverage_note': 'V4: one fixed z6 tier with native HRRR stride-60 sampled across the ENTIRE native model grid; no extra profiles at State zoom',
+        'data_coverage_note': 'V5: CONUS z4 stride-120 subset of full-domain HRRR z6 stride-60; State uses identical z6 points, no extra profiles',
         'effective_inflow_method': {
             'enabled': CALCULATE_EFFECTIVE_INFLOW,
             'kind': 'sampled_native_levels_metpy_parcel_cape_cin_proxy',
@@ -711,7 +962,7 @@ def build_tiles(reader):
     print('RUN:', RUN_ID, '| Total profile records across tiers:', total_profiles)
     print('Elapsed:', round((time.perf_counter()-start)/60,1), 'min')
     print('Manifest:', metadata_path)
-    print('NOTE: V4 site frontend uses the same full-domain z6 source grid for all zooms >= 4.5.')
+    print('NOTE: V5 z4 CONUS subset; identical z6 source profiles for Regional/State.')
     print('='*65)
     return out_dir
 
@@ -741,6 +992,15 @@ def publish_hodographs_to_s3(tile_dir: Path):
                         and p not in index_files)
     if not data_files or len(index_files) != len(TILE_TIERS):
         raise RuntimeError('Incomplete tiles or indexes; refusing publication')
+    native = manifest.get('native_detail')
+    if NATIVE3KM_ENABLED:
+        if not isinstance(native, dict) or not native.get('complete'):
+            raise RuntimeError('Native 3-km detail missing; refusing production publication')
+        detail_tiles = list((tile_dir/f'native_z{NATIVE3KM_ZOOM}').rglob('*.json'))
+        if len(detail_tiles) != native.get('tile_count'):
+            raise RuntimeError('Native 3-km tile count mismatch; refusing publication')
+        if not (tile_dir/f'index_native_z{NATIVE3KM_ZOOM}.json').is_file():
+            raise RuntimeError('Native tile index absent; refusing publication')
     client = boto3.client('s3', region_name=AWS_REGION,
                           config=Config(retries={'max_attempts': 8, 'mode': 'standard'}))
     uploaded, raw_bytes, compressed_bytes = 0, 0, 0
@@ -778,6 +1038,26 @@ def main():
     selected = choose_run()
     set_run_context(selected)
     print('Using HRRR analysis:', RUN_ID)
+    # Prevent unnecessary complete-native-GRIB downloads and re-uploads when
+    # the main workflow finishes but latest.json still points to the same hour.
+    if PUBLISH_TO_S3 and os.getenv('SPCOA_HODO_FORCE_REBUILD','false').lower() != 'true':
+        import boto3
+        from botocore.exceptions import ClientError
+        target = f'{AWS_PREFIX}/runs/{RUN_ID}/overlays/hodographs/metadata.json'
+        client = boto3.client('s3', region_name=AWS_REGION)
+        try:
+            obj = client.get_object(Bucket=AWS_BUCKET, Key=target)
+            prior = json.loads(obj['Body'].read())
+            saved_zooms = {t.get('zoom') for t in prior.get('tiers',[])}
+            if (prior.get('run_id') == RUN_ID and {4,6}.issubset(saved_zooms)
+                    and (not NATIVE3KM_ENABLED or ((prior.get('native_detail') or {}).get('complete')
+                         and ((prior.get('native_detail') or {}).get('coverage_full_domain')
+                              or bool(NATIVE3KM_TEST_BOUNDS_TEXT))))):
+                print(f'Hodograph z4+z6 and required native detail already complete for {RUN_ID}; skipping.')
+                return None
+        except ClientError as exc:
+            if exc.response.get('Error', {}).get('Code') not in ('404','NoSuchKey','NotFound'):
+                raise
     reader = NativeHrrrReader()
     try:
         OUTPUT_TILE_DIR = build_tiles(reader)
@@ -830,5 +1110,34 @@ if __name__ == '__main__':
     import sys
     if '--self-test' in sys.argv:
         synthetic_self_test()
+        z = np.arange(0,12001,500,dtype=np.float32)[:,None,None]
+        gh = np.broadcast_to(z,(len(z),2,3)).copy()
+        uu = np.ones_like(gh)*10
+        vv = np.ones_like(gh)*-5
+        u_q,v_q=interpolate_native_columns(gh,uu,vv,NATIVE3KM_HEIGHTS)
+        assert u_q.shape == (6,len(NATIVE3KM_HEIGHTS))
+        assert np.all(u_q==39) and np.all(v_q==-19), (u_q[0],v_q[0])
+        print('NATIVE 3KM INTERPOLATION SELF-TEST PASSED')
+        # End-to-end synthetic grid: exercise actual tile writer, schema, index.
+        import tempfile
+        import xarray as xr
+        class FakeReader:
+            def __init__(self):
+                levels = np.arange(0,11001,500,dtype=np.float32)
+                base = np.broadcast_to(levels[:,None,None],(len(levels),4,8)).copy()
+                self.fields = {
+                    'gh':xr.DataArray(base,dims=('hybrid','y','x')),
+                    'u':xr.DataArray(np.ones_like(base)*10,dims=('hybrid','y','x')),
+                    'v':xr.DataArray(np.ones_like(base)*-5,dims=('hybrid','y','x')),
+                }
+                self.lat2d=np.tile((41.0+np.arange(4)*.03)[:,None],(1,8)).astype(np.float32)
+                self.lon2d=np.tile((-101.0+np.arange(8)*.03)[None,:],(4,1)).astype(np.float32)
+        test_dir=Path(tempfile.mkdtemp(prefix='native3km_test_'))
+        set_run_context('20991231_23')
+        result=build_native3km_tiles(FakeReader(),test_dir,min_valid_profiles=1)
+        assert result['complete'] and result['profile_count']==32
+        assert sum(len(json.loads(f.read_text())['points']) for f in test_dir.glob('native_z9/*/*.json'))==32
+        assert (test_dir/'index_native_z9.json').is_file()
+        print('NATIVE 3KM END-TO-END TILE SELF-TEST PASSED')
     else:
         main()
