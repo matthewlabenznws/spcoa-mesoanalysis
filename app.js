@@ -5654,7 +5654,7 @@ map.addControl(
             padding: 0 !important;
             margin: 0 4px 3px 0 !important;
             font: 10px/1.25 Arial, sans-serif !important;
-            opacity: 0.75 !important;
+            opacity: 0.40 !important;
             text-shadow: 0 1px 1px rgba(255,255,255,.85);
         }
         .maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib-inner,
