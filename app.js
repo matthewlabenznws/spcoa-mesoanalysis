@@ -14675,22 +14675,31 @@ function drawOneHodograph(ctx, loc, heights, sizeRadius40, showEffective, profil
 
     // SPC-like dashed gray 20/40-kt reference rings. The *spacing* is
     // Pivotal-inspired, but the wind-profile heights/colors remain SPC-style.
-    ctx.strokeStyle = "rgba(128,128,128,.82)";
-    ctx.lineWidth = Math.max(0.75, Math.min(1.05, sizeRadius40 / 31));
-    ctx.setLineDash([3, 3]);
+    // Dual-tone rings: an unobtrusive dark outline supports the bright inner
+    // dash on BOTH dark satellite imagery and the original white basemap.
+    // The ring radius is unchanged at every Regional/State/Local zoom.
+    ctx.setLineDash([3.5, 3.25]);
     for (const ring of [20, 40]) {
         ctx.beginPath();
         ctx.arc(x, y, ring * scale, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(10,18,26,0.93)";
+        ctx.lineWidth = 2.9;
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(255,255,255,0.96)";
+        ctx.lineWidth = 1.25;
         ctx.stroke();
     }
     ctx.setLineDash([]);
-    ctx.strokeStyle = "rgba(160,160,160,.62)";
-    ctx.lineWidth = 0.65;
     ctx.beginPath();
     ctx.moveTo(x - 42 * scale, y);
     ctx.lineTo(x + 42 * scale, y);
     ctx.moveTo(x, y - 42 * scale);
     ctx.lineTo(x, y + 42 * scale);
+    ctx.strokeStyle = "rgba(5,15,25,0.88)";
+    ctx.lineWidth = 1.9;
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.84)";
+    ctx.lineWidth = 0.75;
     ctx.stroke();
 
     // Effective-layer shade is thermodynamically conditional. Stable
@@ -15035,7 +15044,10 @@ function hodoGetNativeTile(run,x,y) {
                 !Number.isFinite(p.lon) || !Number.isFinite(p.lat) ||
                 !Array.isArray(p.u_q) || !Array.isArray(p.v_q) ||
                 p.u_q.length !== length || p.v_q.length !== length ||
-                !p.u_q.every(Number.isFinite) || !p.v_q.every(Number.isFinite))
+                !p.u_q.every(Number.isFinite) || !p.v_q.every(Number.isFinite) ||
+                (p.eil !== undefined && (!Array.isArray(p.eil) || p.eil.length !== 2 ||
+                    !p.eil.every(Number.isFinite) || p.eil[0] < 0 ||
+                    p.eil[1] <= p.eil[0] || p.eil[1] > 9000)))
                 throw new Error('Corrupted native 3-km wind profile');
             // Decode only when needed for display, not all millions of columns.
         }
@@ -15053,7 +15065,11 @@ function hodoDecodeNativePoint(p) {
     return {
         lon:p.lon, lat:p.lat, native_i:p.native_i, native_j:p.native_j,
         u_kt:p.u_q.map(v=>v*0.5), v_kt:p.v_q.map(v=>v*0.5),
-        effective_inflow:null,
+        effective_inflow:(Array.isArray(p.eil) && p.eil.length === 2 &&
+            Number.isFinite(p.eil[0]) && Number.isFinite(p.eil[1]) &&
+            p.eil[0] >= 0 && p.eil[1] > p.eil[0] && p.eil[1] <= 9000)
+            ? {base_m_agl:p.eil[0], top_m_agl:p.eil[1]}
+            : null,
         mucape_jkg:null
     };
 }
@@ -15188,13 +15204,14 @@ async function hodoShowNativeProfileAtClick(lon,lat) {
     wrapper.appendChild(canvas);
     const caption=document.createElement('div');
     caption.style.cssText='font-size:10px;margin-top:4px;line-height:1.5';
-    caption.textContent=`Grid (${point.native_i}, ${point.native_j}) • ${point.lat.toFixed(3)}°, ${point.lon.toFixed(3)}° • ${km.toFixed(1)} km from click • 0–9 km AGL winds`;
+    caption.textContent=`Grid (${point.native_i}, ${point.native_j}) • ${point.lat.toFixed(3)}°, ${point.lon.toFixed(3)}° • ${km.toFixed(1)} km from click • 0–9 km AGL winds` +
+        (point.effective_inflow ? ' • Blue EIL = nearby sampled CAPE/CIN diagnosis (approximate)' : '');
     wrapper.appendChild(caption);
     const popup=new maplibregl.Popup({maxWidth:'315px'}).setLngLat([lon,lat]).setDOMContent(wrapper).addTo(map);
     // Reuse exactly the same ring/wind-height colors as the overlay.
     const ctx=canvas.getContext('2d');
     drawOneHodograph(ctx,{x:140,y:140,point},hodoNativeHeights,
-                     58, false, 3.4);
+                     58, !!hodoEffectiveToggle?.checked, 3.4);
     return popup;
 }
 
@@ -15246,7 +15263,7 @@ function renderHodographs() {
             radius40, !!hodoEffectiveToggle?.checked, profileWidth);
         if (item.point.effective_inflow) effectiveShown++;
     }
-    const detail = nativeDetailActive ? "native 3-km HRRR" :
+    const detail = nativeDetailActive ? "native 3-km HRRR winds" :
         (hodoTiledMode ? "coarse preview HRRR" : "legacy HRRR");
     const loading = (hodoTileLoading || hodoNativeLoading) ? " • loading tiles..." : "";
     const errors = (hodoTileErrors || hodoNativeErrors) ?
@@ -15255,8 +15272,10 @@ function renderHodographs() {
         ? " • no published 3-km profiles here (check S3 coverage)"
         : (hodoTiledMode && !hodoTileLoading && !selected.length
             ? " • no HRRR points in view" : "");
+    const eilQualifier = nativeDetailActive && effectiveShown
+        ? " (sampled CAPE/CIN proxy, not 3-km EIL)" : "";
     hodoStatus(`${mode} • ${selected.length} ${detail} profiles` +
-        ` • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z` +
+        ` • ${effectiveShown} effective layers${eilQualifier} • ${hodoRun.slice(-2)}Z` +
         report + loading + errors + warning);
 }
 
@@ -18279,6 +18298,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
