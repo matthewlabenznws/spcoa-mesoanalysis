@@ -9058,10 +9058,10 @@ async function renderWeather() {
     const fastMapping = getFlatMapTileCoordinates(width, height, z);
     const fastEncoding = getEncoding(fieldMetadata[activeField]);
 
-    // V33: On Satellite ONLY, let terrain show through the palest low-end
-    // bins that otherwise create large white / near-white patches.
-    // This applies to the wind-speed and CAPE palettes in the examples;
-    // it does NOT modify the palettes, data values, contours, or Plain view.
+    // V34: On Satellite ONLY, let terrain show through the palest low-end
+    // bins of WIND-SPEED fields. CAPE and all other weather colormaps retain
+    // their original shading, data values, contours, and legends.
+    // Plain mode remains unchanged.
     // Important: make this decision using the numerical bin, not a general
     // RGB=white test: white can represent a valid high-value data category
     // in other products and must not be indiscriminately removed.
@@ -9073,13 +9073,10 @@ async function renderWeather() {
         (satelliteFieldType === "temperature_advection" ||
          satelliteFieldType === "petterssen_fgen");
 
-    // Upper boundary (exclusive) of the pale opening bins for Satellite.
+    // Upper boundary (exclusive) of the pale opening WIND bins for Satellite.
     // 500 mb: 20–24 kt; 250 mb: 50–54 kt; lower/midlevel: 20–22 kt.
-    // SBCAPE/MLCAPE/MUCAPE: 100–399 J/kg (0–99 is already unshaded).
-    // 0–3 km CAPE: 10–39 J/kg (0–9 is already unshaded).
+    // No CAPE thresholds: all CAPE colors, including white, remain visible.
     const satellitePaleThreshold = !satelliteFill ? null : ({
-        cape: 400,
-        cape_0_3km: 40,
         wind_midlevel: 23,
         wind_500: 25,
         wind_250: 55
@@ -9158,12 +9155,12 @@ async function renderWeather() {
 
 
                 /*
-                 * Satellite imagery should show through the low-end white/
-                 * near-white ranges in CAPE and wind-speed fields. Other
-                 * meteorological fields keep their existing opacity, except
-                 * for the previously established near-zero neutral cutouts.
-                 * This is alpha-only: the numerical values and legend bins
-                 * are not changed. Plain keeps the original 235 alpha.
+                 * Satellite imagery shows through the palest low-end WIND
+                 * bins only. CAPE colors (including white) remain unchanged.
+                 * Keep the pre-existing near-zero neutral cutouts for
+                 * temperature advection and frontogenesis. This is alpha-only:
+                 * underlying values, other colors and legends are unchanged.
+                 * Plain mode retains the original 235 alpha everywhere.
                  */
                 const satellitePaleBin =
                     satellitePaleThreshold != null &&
@@ -18329,6 +18326,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
