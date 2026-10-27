@@ -14962,6 +14962,236 @@ function spcoaChooseNativeAnchoredHodographs(points, spacing, width, height) {
     return selected;
 }
 
+
+/* ====================================================================================
+   V29 — ON-DEMAND NATIVE ~3-KM HRRR HODOGRAPH PROFILES
+
+   A 3-km HRRR profile exists at every valid native i/j in native_z9 tiles.
+   We ONLY download tiles around the ~95-pixel screen slots in the viewport.
+   CONUS continues using sparse z4 samples; all detailed zooms share the
+   same native 3-km SOURCE GRID and the same screen size / symbol count.
+   Clicking the map fetches the nearest actual 3-km profile (no interpolation
+   between horizontal grid points). No new SPCOA analysis data are modified.
+   ==================================================================================== */
+let hodoNativeIndex = null;
+let hodoNativeDisplayed = [];
+let hodoNativeHeights = null;
+let hodoNativeLoading = false;
+let hodoNativeErrors = 0;
+const hodoNativeCache = new Map();
+const HODO_NATIVE_CACHE_SIZE = 90;
+const HODO_NATIVE_MAX_VIEW_TILES = 90;
+const HODO_NATIVE_CONCURRENT_FETCHES = 7;
+const HODO_NATIVE_MIN_ZOOM = 4.5;
+
+async function hodoLoadNativeIndex(run, detail) {
+    hodoNativeIndex = null;
+    hodoNativeDisplayed = [];
+    hodoNativeHeights = null;
+    if (!detail?.complete) return;
+    if (detail.native_grid_stride !== 1 || detail.tile_zoom !== 9 ||
+        !Array.isArray(detail.heights_m_agl) || detail.heights_m_agl[0] !== 0 ||
+        detail.heights_m_agl.at(-1) !== 9000 ||
+        !Number.isFinite(detail.wind_scale_kt)) {
+        throw new Error('Unsupported native 3-km tile metadata');
+    }
+    const r = await fetch(`${hodoRoot(run)}/index_native_z9.json`, {cache:'no-store'});
+    if (!r.ok) throw new Error(`Native 3-km index HTTP ${r.status}`);
+    const doc = await r.json();
+    if (doc.run_id !== run || doc.schema_version !== 3 || doc.z !== 9 ||
+        !Array.isArray(doc.tile_coordinates)) throw new Error('Invalid native 3-km index');
+    if (run !== currentRun) return;
+    hodoNativeIndex = new Set(doc.tile_coordinates.map(xy => `${xy[0]}/${xy[1]}`));
+    hodoNativeHeights = detail.heights_m_agl;
+}
+
+function hodoNativeXYZ(lon, lat) {
+    const z = 9, n = 2**z;
+    const x = ((Math.floor(lonToTileX(lon,z)) % n) + n) % n;
+    const y = Math.min(n-1, Math.max(0,Math.floor(latToTileY(lat,z))));
+    return {x,y};
+}
+
+function hodoGetNativeTile(run,x,y) {
+    const key = `${run}/native/9/${x}/${y}`;
+    if (hodoNativeCache.has(key)) {
+        const old = hodoNativeCache.get(key);
+        hodoNativeCache.delete(key);
+        hodoNativeCache.set(key,old);
+        return old;
+    }
+    const promise = (async () => {
+        const url = `${hodoRoot(run)}/native_z9/${x}/${y}.json`;
+        const response = await fetch(url, {cache:'no-store'});
+        if (!response.ok) throw new Error(`Native 3-km tile HTTP ${response.status}`);
+        const data = await response.json();
+        if (data.schema_version !== 3 || data.product !== 'hrrr_native_3km_hodographs' ||
+            data.run_id !== run || data.z !== 9 || data.x !== x || data.y !== y ||
+            data.wind_scale_kt !== 0.5 ||
+            !Array.isArray(data.points)) throw new Error('Invalid native 3-km tile schema');
+        const length = hodoNativeHeights?.length || 37;
+        for (const p of data.points) {
+            if (!Number.isInteger(p.native_i) || !Number.isInteger(p.native_j) ||
+                !Number.isFinite(p.lon) || !Number.isFinite(p.lat) ||
+                !Array.isArray(p.u_q) || !Array.isArray(p.v_q) ||
+                p.u_q.length !== length || p.v_q.length !== length ||
+                !p.u_q.every(Number.isFinite) || !p.v_q.every(Number.isFinite))
+                throw new Error('Corrupted native 3-km wind profile');
+            // Decode only when needed for display, not all millions of columns.
+        }
+        return data.points;
+    })();
+    hodoNativeCache.set(key, promise);
+    while (hodoNativeCache.size > HODO_NATIVE_CACHE_SIZE) {
+        hodoNativeCache.delete(hodoNativeCache.keys().next().value);
+    }
+    promise.catch(() => {if (hodoNativeCache.get(key)===promise) hodoNativeCache.delete(key);});
+    return promise;
+}
+
+function hodoDecodeNativePoint(p) {
+    return {
+        lon:p.lon, lat:p.lat, native_i:p.native_i, native_j:p.native_j,
+        u_kt:p.u_q.map(v=>v*0.5), v_kt:p.v_q.map(v=>v*0.5),
+        effective_inflow:null,
+        mucape_jkg:null
+    };
+}
+
+function hodoNativeDistanceSq(lon1,lat1,lon2,lat2) {
+    const c = Math.cos((lat1+lat2)*Math.PI/360);
+    return ((lon1-lon2)*c)**2 + (lat1-lat2)**2;
+}
+
+function hodoNearestPointInNativeTile(points, lon, lat) {
+    let best=null, bestDistance=Infinity;
+    for (const p of points) {
+        const d2=hodoNativeDistanceSq(lon,lat,p.lon,p.lat);
+        if (d2 < bestDistance) {best=p;bestDistance=d2;}
+    }
+    return best ? {point:best, distanceSq:bestDistance} : null;
+}
+
+async function hodoLoadNativeVisible(serial, run) {
+    hodoNativeDisplayed = [];
+    if (!hodoNativeIndex || !hodoNativeHeights || map.getZoom() < HODO_NATIVE_MIN_ZOOM)
+        return;
+    const {width,height}=hodoResizeCanvas();
+    const style=spcoaHodoViewStyle(map.getZoom(),width,height);
+    const cols=Math.max(1,Math.floor(width/style.spacing));
+    const rows=Math.max(1,Math.floor(height/style.spacing));
+    const byTile=new Map();
+    for (let row=0;row<rows;row++) for (let col=0;col<cols;col++) {
+        const px=(col+.5)*width/cols, py=(row+.5)*height/rows;
+        const center=map.unproject([px,py]);
+        if (!Number.isFinite(center.lng) || !Number.isFinite(center.lat)) continue;
+        const {x,y}=hodoNativeXYZ(center.lng, center.lat);
+        const key=`${x}/${y}`;
+        if (!hodoNativeIndex.has(key)) continue;
+        if (!byTile.has(key)) byTile.set(key,{x,y,slots:[],distance:Infinity});
+        const rec=byTile.get(key);
+        rec.slots.push({lon:center.lng,lat:center.lat,px,py});
+        const d=(px-width/2)**2+(py-height/2)**2;
+        rec.distance=Math.min(rec.distance,d);
+    }
+    const tasks=[...byTile.values()].sort((a,b)=>a.distance-b.distance)
+        .slice(0,HODO_NATIVE_MAX_VIEW_TILES);
+    hodoNativeLoading=true;
+    hodoNativeErrors=0;
+    const selections=[];
+    let next=0;
+    const worker=async()=>{
+        while (next < tasks.length) {
+            const task=tasks[next++];
+            try {
+                const pts=await hodoGetNativeTile(run,task.x,task.y);
+                if (serial!==hodoViewportSerial || run!==currentRun || !hodoTiledMode) return;
+                for (const slot of task.slots) {
+                    const best=hodoNearestPointInNativeTile(pts,slot.lon,slot.lat);
+                    if (!best) continue;
+                    // A ~3-km native point should be within about 4.5 km.
+                    // Reject a distant point rather than misrepresent its position.
+                    const km=Math.sqrt(best.distanceSq)*111.2;
+                    if (km>5.0) continue;
+                    const point=hodoDecodeNativePoint(best.point);
+                    const p=map.project([point.lon,point.lat]);
+                    selections.push({x:p.x,y:p.y,point,slotX:slot.px,slotY:slot.py});
+                }
+                // Show progressive results instead of waiting for all tiles.
+                if (serial===hodoViewportSerial) {
+                    hodoNativeDisplayed=selections.slice();
+                    requestHodographDraw();
+                }
+            } catch(e) {
+                if (serial===hodoViewportSerial) {
+                    ++hodoNativeErrors;
+                    console.warn('Native HRRR 3-km tile load:',e);
+                }
+            }
+        }
+    };
+    try {
+        await Promise.all(Array.from({length:Math.min(tasks.length,HODO_NATIVE_CONCURRENT_FETCHES)},worker));
+    } finally {
+        if (serial===hodoViewportSerial) {
+            hodoNativeLoading=false;
+            requestHodographDraw();
+        }
+    }
+}
+
+// Click any map location with hodographs enabled for the nearest native
+// 3-km profile, even when there is no small hodograph symbol directly there.
+async function hodoShowNativeProfileAtClick(lon,lat) {
+    if (!hodoNativeIndex || !hodoNativeHeights || !hodoTiledMode || !hodoRun) return;
+    const run=hodoRun, {x,y}=hodoNativeXYZ(lon,lat);
+    const z=9,n=2**z;
+    // Search the adjacent tiles as well to handle exact XYZ tile boundaries.
+    const candidates=[];
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++) {
+        const tx=(x+dx+n)%n,ty=y+dy;
+        if(ty>=0&&ty<n&&hodoNativeIndex.has(`${tx}/${ty}`)) candidates.push([tx,ty]);
+    }
+    const results=await Promise.allSettled(candidates.map(([tx,ty])=>hodoGetNativeTile(run,tx,ty)));
+    if(run!==currentRun || !hodoToggle?.checked) return;
+    let best=null;
+    for(const entry of results) {
+        if(entry.status!=='fulfilled') continue;
+        const found=hodoNearestPointInNativeTile(entry.value,lon,lat);
+        if(found && (!best || found.distanceSq<best.distanceSq)) best=found;
+    }
+    if(!best) {hodoStatus('Native 3-km HRRR profile unavailable at clicked location');return;}
+    const km=Math.sqrt(best.distanceSq)*111.2;
+    if(km>10) {hodoStatus('Clicked location is outside the available native HRRR domain');return;}
+    const point=hodoDecodeNativePoint(best.point);
+    const wrapper=document.createElement('div');
+    wrapper.style.cssText='width:285px;font:12px Arial,sans-serif;color:#17212e';
+    const heading=document.createElement('div');
+    heading.style.cssText='font-weight:700;margin:1px 0 5px;font-size:12px';
+    heading.textContent=`HRRR F00 • ${run.slice(-2)}Z • Native ~3 km`;
+    wrapper.appendChild(heading);
+    const canvas=document.createElement('canvas');
+    canvas.width=canvas.height=280;
+    canvas.style.cssText='display:block;width:280px;height:280px;background:#fff';
+    wrapper.appendChild(canvas);
+    const caption=document.createElement('div');
+    caption.style.cssText='font-size:10px;margin-top:4px;line-height:1.5';
+    caption.textContent=`Grid (${point.native_i}, ${point.native_j}) • ${point.lat.toFixed(3)}°, ${point.lon.toFixed(3)}° • ${km.toFixed(1)} km from click • 0–9 km AGL winds`;
+    wrapper.appendChild(caption);
+    const popup=new maplibregl.Popup({maxWidth:'315px'}).setLngLat([lon,lat]).setDOMContent(wrapper).addTo(map);
+    // Reuse exactly the same ring/wind-height colors as the overlay.
+    const ctx=canvas.getContext('2d');
+    drawOneHodograph(ctx,{x:140,y:140,point},hodoNativeHeights,
+                     58, false, 3.4);
+    return popup;
+}
+
+map.on('click',(event)=>{
+    if (!hodoToggle?.checked || !hodoNativeIndex || map.getZoom()<HODO_NATIVE_MIN_ZOOM) return;
+    void hodoShowNativeProfileAtClick(event.lngLat.lng,event.lngLat.lat)
+        .catch(err=>{console.warn('Native HRRR click:',err);hodoStatus(err.message);});
+});
+
 function renderHodographs() {
     // Tile-mode symbols are anchored at their true HRRR native coordinates;
     // resize/zoom changes geographic scale, not hodograph ring pixels.
@@ -14973,7 +15203,13 @@ function renderHodographs() {
     const {radius40, spacing, profileWidth, mode, targetColumns} =
         spcoaHodoViewStyle(map.getZoom(), width, height);
     let selected, report = "";
-    if (hodoTiledMode) {
+    let displayedHeights = hodoDocument.heights_m_agl;
+    if (hodoTiledMode && map.getZoom() >= HODO_NATIVE_MIN_ZOOM &&
+        hodoNativeDisplayed.length && hodoNativeHeights) {
+        selected = hodoNativeDisplayed;
+        displayedHeights = hodoNativeHeights;
+        report = ' • nearest native 3-km HRRR locations';
+    } else if (hodoTiledMode) {
         // CONUS z4: coarser SUBSET of the native z6 HRRR point grid.
         // Regional/State/Local all draw exactly the same z6 native profiles.
         // No z8 points and no zoom-dependent synthetic screen grid.
@@ -14991,13 +15227,15 @@ function renderHodographs() {
     }
     let effectiveShown = 0;
     for (const item of selected) {
-        drawOneHodograph(hodographCtx, item, hodoDocument.heights_m_agl,
+        drawOneHodograph(hodographCtx, item, displayedHeights,
             radius40, !!hodoEffectiveToggle?.checked, profileWidth);
         if (item.point.effective_inflow) effectiveShown++;
     }
-    const detail = hodoTiledMode ? "tiled native HRRR" : "legacy HRRR";
-    const loading = hodoTileLoading ? " • loading tiles..." : "";
-    const errors = hodoTileErrors ? ` • ${hodoTileErrors} tile errors` : "";
+    const detail = hodoNativeDisplayed.length ? "native 3-km HRRR" :
+        (hodoTiledMode ? "coarse preview HRRR" : "legacy HRRR");
+    const loading = (hodoTileLoading || hodoNativeLoading) ? " • loading tiles..." : "";
+    const errors = (hodoTileErrors || hodoNativeErrors) ?
+        ` • ${hodoTileErrors+hodoNativeErrors} tile errors` : "";
     const warning = hodoTiledMode && !hodoTileLoading &&
         selected.length === 0
         ? " • no native HRRR points in view" : "";
@@ -15139,6 +15377,8 @@ function hodoLoadVisibleTiles() {
     hodoTileErrors = 0;
     const viewportPoints = new Map();
     hodoViewportPoints = viewportPoints;
+    hodoNativeDisplayed = [];
+    hodoNativeLoading = false;
     const jobs = [];
     for (const tier of hodoTileManifest.tiers) {
         const z = tier.zoom;
@@ -15169,6 +15409,8 @@ function hodoLoadVisibleTiles() {
         if (serial === hodoViewportSerial && run === currentRun) {
             hodoTileLoading = false;
             requestHodographDraw();
+            if (hodoNativeIndex && map.getZoom()>=HODO_NATIVE_MIN_ZOOM)
+                return hodoLoadNativeVisible(serial,run);
         }
     });
     hodoPendingPromise = done;
@@ -15183,6 +15425,10 @@ function refreshHodographsForRun() {
     hodoDocument = null;
     hodoTiledMode = false;
     hodoTileManifest = null;
+    hodoNativeIndex = null;
+    hodoNativeHeights = null;
+    hodoNativeDisplayed = [];
+    hodoNativeLoading = false;
     hodoTileIndexes = new Map();
     hodoViewportPoints = new Map();
     hodoTileLoading = false;
@@ -15208,6 +15454,11 @@ function refreshHodographsForRun() {
                 hodoDocument = {heights_m_agl: manifest.heights_m_agl, points: []};
                 hodoRun = run;
                 hodoTiledMode = true;
+                if (manifest.native_detail?.complete) {
+                    try {await hodoLoadNativeIndex(run,manifest.native_detail);}
+                    catch(err) {console.warn('3-km index:',err);hodoNativeIndex=null;}
+                }
+                if (serial !== hodoSerial || run !== currentRun) return;
                 await hodoLoadVisibleTiles();
                 return;
             }
@@ -15244,6 +15495,9 @@ hodoToggle?.addEventListener("change", () => {
         // the user disables/re-enables the overlay, without a full reload.
         for (const key of [...hodoTileCache.keys()]) {
             if (key.startsWith(`${currentRun}/`)) hodoTileCache.delete(key);
+        }
+        for (const key of [...hodoNativeCache.keys()]) {
+            if (key.startsWith(`${currentRun}/`)) hodoNativeCache.delete(key);
         }
     }
     void refreshHodographsForRun();
