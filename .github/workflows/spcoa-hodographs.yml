@@ -1,43 +1,47 @@
-name: SPCOA - HRRR Hodographs (CONUS + Shared Grid)
+name: SPCOA - HRRR Hodographs to S3
 
+# cronjob.org calls workflow_dispatch separately from the main SPCOA workflow.
+# NO built-in schedule and NO workflow_run trigger (avoids double dispatches).
 on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Optional site analysis YYYYMMDD_HH; blank = newest available"
+        description: 'Optional SPCOA analysis hour YYYYMMDD_HH; blank uses S3 latest.json'
         required: false
         type: string
-        default: ""
+        default: ''
       force_rebuild:
-        description: "Overwrite completed hodograph tiles for this hour"
+        description: 'Reprocess even if this run has already been published'
         required: false
         type: boolean
         default: false
+      native_3km:
+        description: 'Full-domain native 3-km wind profile generation (resource intensive)'
+        required: false
+        type: boolean
+        default: false
+      native_test_bounds:
+        description: 'Optional small test area west,east,south,north (e.g. -104,-97,40,43.4); blank means entire HRRR grid'
+        required: false
+        type: string
+        default: ''
       effective_layer:
-        description: "Enable slower approximate effective inflow calculations"
+        description: 'Slow sampled approximate effective-inflow shading for z4/z6 preview only'
         required: false
         type: boolean
         default: false
-
-  # Automatically start only AFTER the main SPCOA workflow finishes.
-  # The workflow NAME must match your committed main YAML exactly.
-  workflow_run:
-    workflows: ["SPCOA - Main Analysis to S3"]
-    types: [completed]
-    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: spcoa-hodographs-site-test
+  group: spcoa-hodographs-s3
   cancel-in-progress: false
 
 jobs:
-  upload-hodographs:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && vars.SPCOA_HODO_AUTOMATION_ENABLED == 'true') }}
+  build-and-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 330
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -46,27 +50,45 @@ jobs:
       AWS_REGION: us-east-2
       SPCOA_AWS_BUCKET: spcoa-mesoanalysis
       SPCOA_AWS_PREFIX: spcoa
-      SPCOA_HODO_PUBLISH: "true"
-      SPCOA_HODO_WORK_DIR: ${{ github.workspace }}/hodo_work
+      SPCOA_HODO_PUBLISH: 'true'
       SPCOA_HODO_RUN_ID: ${{ inputs.run_id || '' }}
-      SPCOA_HODO_RUN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id != '' && 'manual' || 'site_latest' }}
+      SPCOA_HODO_RUN_MODE: ${{ inputs.run_id != '' && 'manual' || 'site_latest' }}
       SPCOA_HODO_EFFECTIVE: ${{ inputs.effective_layer && 'true' || 'false' }}
       SPCOA_HODO_FORCE_REBUILD: ${{ inputs.force_rebuild && 'true' || 'false' }}
+      # Stays OFF for normal cronjob.org requests until you set repository
+      # variable SPCOA_HODO_NATIVE_3KM_ENABLED=true following live testing.
+      # Manual Actions input native_3km=true enables a one-time test.
+      SPCOA_HODO_NATIVE_3KM: ${{ inputs.native_3km && 'true' || vars.SPCOA_HODO_NATIVE_3KM_ENABLED || 'false' }}
+      SPCOA_HODO_NATIVE_TEST_BOUNDS: ${{ inputs.native_test_bounds || '' }}
+      SPCOA_HODO_STRIPE_ROWS: '24'
       SPCOA_HODO_NATIVE_WAIT_SECONDS: '180'
       SPCOA_HODO_NATIVE_CHECKS: '7'
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '2'
+      NUMBA_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      MPLBACKEND: Agg
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Install native HRRR processing dependencies
+          python-version: '3.11'
+
+      - name: Install HRRR backend dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy xarray scipy metpy herbie-data cfgrib eccodes boto3
-      - name: Validate AWS environment
+          python -m pip install numpy numba xarray scipy metpy herbie-data cfgrib eccodes boto3
+
+      - name: Confirm Python script and AWS credentials
         run: |
-          test -n "$AWS_ACCESS_KEY_ID" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
-          test -n "$AWS_SECRET_ACCESS_KEY" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
-      - name: Generate and publish native HRRR hodograph tiles
+          test -f spcoa_hodographs.py || { echo 'Missing scripts/spcoa_hodographs.py'; exit 1; }
+          test -n "$AWS_ACCESS_KEY_ID" || { echo 'Missing AWS_ACCESS_KEY_ID'; exit 1; }
+          test -n "$AWS_SECRET_ACCESS_KEY" || { echo 'Missing AWS_SECRET_ACCESS_KEY'; exit 1; }
+          python -m py_compile scripts/spcoa_hodographs.py
+
+      - name: Generate native HRRR F00 hodographs and publish matching S3 run
         run: python spcoa_hodographs.py
