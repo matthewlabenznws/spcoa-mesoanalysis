@@ -5513,7 +5513,7 @@ function spcoaAddMapboxRasterBasemap(sourceId, tilesetId, opacity) {
     }
 }
 
-// Keep the map fill's white-bin opacity synchronized with the basemap.
+// Keep the map fill's intentionally neutral-value transparency synchronized with the basemap.
 // This variable only prevents an unnecessary duplicate numerical render at load.
 let spcoaLastWhiteFillMode =
     spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
@@ -5560,13 +5560,13 @@ function spcoaApplyMapBackground() {
         spcoaMapBackgroundMessage("Loading satellite imagery...");
     }
 
-    // Only change white-fill pixels when the background choice changes.
+    // Re-render intentional neutral-value transparency when the background changes.
     const hideWhiteFill = choice === SPCOA_BASEMAP_SATELLITE;
     if (hideWhiteFill !== spcoaLastWhiteFillMode) {
         spcoaLastWhiteFillMode = hideWhiteFill;
         if (activeField && activeField !== "none") {
             void renderWeather().catch(error =>
-                console.warn("Could not refresh white-fill transparency:", error)
+                console.warn("Could not refresh neutral-fill transparency:", error)
             );
         }
     }
@@ -9058,11 +9058,32 @@ async function renderWeather() {
     const fastMapping = getFlatMapTileCoordinates(width, height, z);
     const fastEncoding = getEncoding(fieldMetadata[activeField]);
 
-    // Only the true #FFFFFF weather-fill bins become transparent over the
-    // Satellite imagery basemap. Pale grays/colors are left untouched.
-    // Read the selection once per render, not once per pixel.
-    const hideWhiteWeatherFill =
+    // V33: On Satellite ONLY, let terrain show through the palest low-end
+    // bins that otherwise create large white / near-white patches.
+    // This applies to the wind-speed and CAPE palettes in the examples;
+    // it does NOT modify the palettes, data values, contours, or Plain view.
+    // Important: make this decision using the numerical bin, not a general
+    // RGB=white test: white can represent a valid high-value data category
+    // in other products and must not be indiscriminately removed.
+    const satelliteFill =
         spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
+    const satelliteFieldType = WEATHER_FIELDS[activeField]?.type;
+    const useSatelliteNeutralTransparency =
+        satelliteFill &&
+        (satelliteFieldType === "temperature_advection" ||
+         satelliteFieldType === "petterssen_fgen");
+
+    // Upper boundary (exclusive) of the pale opening bins for Satellite.
+    // 500 mb: 20–24 kt; 250 mb: 50–54 kt; lower/midlevel: 20–22 kt.
+    // SBCAPE/MLCAPE/MUCAPE: 100–399 J/kg (0–99 is already unshaded).
+    // 0–3 km CAPE: 10–39 J/kg (0–9 is already unshaded).
+    const satellitePaleThreshold = !satelliteFill ? null : ({
+        cape: 400,
+        cape_0_3km: 40,
+        wind_midlevel: 23,
+        wind_500: 25,
+        wind_250: 55
+    })[satelliteFieldType];
 
     let pixelIndex =
         0;
@@ -9137,16 +9158,26 @@ async function renderWeather() {
 
 
                 /*
-                 * With Satellite selected, let pure-white shaded bins
-                 * show the imagery completely. Plain uses original alpha 235.
-                 * No changes to the numerical data, other palette colors or legend.
+                 * Satellite imagery should show through the low-end white/
+                 * near-white ranges in CAPE and wind-speed fields. Other
+                 * meteorological fields keep their existing opacity, except
+                 * for the previously established near-zero neutral cutouts.
+                 * This is alpha-only: the numerical values and legend bins
+                 * are not changed. Plain keeps the original 235 alpha.
                  */
+                const satellitePaleBin =
+                    satellitePaleThreshold != null &&
+                    Number.isFinite(value) &&
+                    value < satellitePaleThreshold;
+                const satelliteNeutralBin =
+                    useSatelliteNeutralTransparency &&
+                    Number.isFinite(value) &&
+                    value >= -0.5 && value <= 0.5 &&
+                    color.r === 255 && color.g === 255 && color.b === 255;
+
                 pixels[
                     pixelIndex + 3
-                ] =
-                    (hideWhiteWeatherFill &&
-                     color.r === 255 && color.g === 255 && color.b === 255)
-                        ? 0 : 235;
+                ] = (satellitePaleBin || satelliteNeutralBin) ? 0 : 235;
 
             }
             else {
