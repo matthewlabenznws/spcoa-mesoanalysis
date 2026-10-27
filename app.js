@@ -14743,12 +14743,10 @@ function spcoaHodoViewStyle(zoom, width, height) {
     const density = hodoDensitySelect?.value || "standard";
     const userSize = Math.max(0.75, Math.min(1.50, Number(hodoSizeInput?.value || 115) / 100));
 
-    // V12: preserve the smaller 25 px rings and 76 px center spacing ONLY
-    // in the CONUS overview (zoom below 4.5). As soon as the map enters the
-    // regional view (zoom 4.5+), keep 32 px rings and 95 px lattice spacing
-    // regardless of further zooming, including extreme close-up views.
-    // These are SCREEN PIXELS, not ground-relative distances. The user-facing
-    // size slider is still honored, and tiled/native HRRR data are unchanged.
+    // V30: fixed SCREEN-PIXEL size/spacing for EVERY detailed zoom.
+    // No separate size/density step at the Regional/State/Local boundaries.
+    // CONUS overview retains its smaller rings and looser coarse profiles.
+    // The size slider and density options still work deliberately.
     const detailView = zoom >= 4.5;
     const baseSpacing = detailView ? 95 : 76;
     const densityFactor = density === "dense" ? 0.91 : density === "sparse" ? 1.18 : 1.0;
@@ -14964,14 +14962,16 @@ function spcoaChooseNativeAnchoredHodographs(points, spacing, width, height) {
 
 
 /* ====================================================================================
-   V29 — ON-DEMAND NATIVE ~3-KM HRRR HODOGRAPH PROFILES
+   V30 — FIXED-SIZE/SCREEN-SPACING HODOGRAPHS AT ALL DETAIL ZOOMS
 
-   A 3-km HRRR profile exists at every valid native i/j in native_z9 tiles.
-   We ONLY download tiles around the ~95-pixel screen slots in the viewport.
-   CONUS continues using sparse z4 samples; all detailed zooms share the
-   same native 3-km SOURCE GRID and the same screen size / symbol count.
-   Clicking the map fetches the nearest actual 3-km profile (no interpolation
-   between horizontal grid points). No new SPCOA analysis data are modified.
+   CONUS (<4.5): sparse z4 overview. Regional / State / Local (4.5+):
+   one fixed ~95 CSS-pixel display lattice with 32px 40-kt rings, even at
+   very close zoom levels. Each occupied screen cell displays the closest
+   *actual* native ~3-km HRRR i/j profile from S3. Screen-center placement
+   does NOT mean the meteorological source is interpolated: native_i/j,
+   profile winds, and true source lon/lat are all retained.
+   No denser symbols are introduced when crossing Regional/State/Local.
+   Native coverage elsewhere in CONUS requires full-domain V7 tiles in S3.
    ==================================================================================== */
 let hodoNativeIndex = null;
 let hodoNativeDisplayed = [];
@@ -14979,8 +14979,8 @@ let hodoNativeHeights = null;
 let hodoNativeLoading = false;
 let hodoNativeErrors = 0;
 const hodoNativeCache = new Map();
-const HODO_NATIVE_CACHE_SIZE = 90;
-const HODO_NATIVE_MAX_VIEW_TILES = 90;
+const HODO_NATIVE_CACHE_SIZE = 250;
+const HODO_NATIVE_MAX_VIEW_TILES = 240;
 const HODO_NATIVE_CONCURRENT_FETCHES = 7;
 const HODO_NATIVE_MIN_ZOOM = 4.5;
 
@@ -15098,7 +15098,7 @@ async function hodoLoadNativeVisible(serial, run) {
         .slice(0,HODO_NATIVE_MAX_VIEW_TILES);
     hodoNativeLoading=true;
     hodoNativeErrors=0;
-    const selections=[];
+    const selectionsByNative = new Map();
     let next=0;
     const worker=async()=>{
         while (next < tasks.length) {
@@ -15109,17 +15109,29 @@ async function hodoLoadNativeVisible(serial, run) {
                 for (const slot of task.slots) {
                     const best=hodoNearestPointInNativeTile(pts,slot.lon,slot.lat);
                     if (!best) continue;
-                    // A ~3-km native point should be within about 4.5 km.
-                    // Reject a distant point rather than misrepresent its position.
+                    // Reject distant native samples (including outside HRRR coverage).
                     const km=Math.sqrt(best.distanceSq)*111.2;
                     if (km>5.0) continue;
                     const point=hodoDecodeNativePoint(best.point);
-                    const p=map.project([point.lon,point.lat]);
-                    selections.push({x:p.x,y:p.y,point,slotX:slot.px,slotY:slot.py});
+                    // Draw AT THE SCREEN LATTICE SLOT, not at the projected
+                    // source location. This locks the display spacing and ring
+                    // size across Regional, State, and Local zoom levels.
+                    // The wind data remain the actual nearest native HRRR i/j.
+                    const key=`${point.native_i}/${point.native_j}`;
+                    const previous=selectionsByNative.get(key);
+                    // Do not draw the same native HRRR sounding twice at
+                    // very close zoom levels (smaller than model grid spacing).
+                    if (!previous || km < previous.distanceKm)
+                        selectionsByNative.set(key, {
+                            x:slot.px, y:slot.py, point,
+                            slotX:slot.px, slotY:slot.py,
+                            distanceKm:km
+                        });
                 }
-                // Show progressive results instead of waiting for all tiles.
+                // Show progressive results, one per distinct native profile.
                 if (serial===hodoViewportSerial) {
-                    hodoNativeDisplayed=selections.slice();
+                    hodoNativeDisplayed=[...selectionsByNative.values()]
+                        .sort((a,b)=>a.y-b.y || a.x-b.x);
                     requestHodographDraw();
                 }
             } catch(e) {
@@ -15193,8 +15205,8 @@ map.on('click',(event)=>{
 });
 
 function renderHodographs() {
-    // Tile-mode symbols are anchored at their true HRRR native coordinates;
-    // resize/zoom changes geographic scale, not hodograph ring pixels.
+    // Native-detail symbols use fixed screen positions. The nearest real HRRR
+    // i/j profiles supply the winds; zoom does not enlarge/densify symbols.
     if (typeof map.isMoving === "function" && map.isMoving()) return;
     const {width, height} = hodoResizeCanvas();
     hodographCtx.clearRect(0, 0, width, height);
@@ -15204,15 +15216,18 @@ function renderHodographs() {
         spcoaHodoViewStyle(map.getZoom(), width, height);
     let selected, report = "";
     let displayedHeights = hodoDocument.heights_m_agl;
-    if (hodoTiledMode && map.getZoom() >= HODO_NATIVE_MIN_ZOOM &&
-        hodoNativeDisplayed.length && hodoNativeHeights) {
+    const nativeDetailActive = hodoTiledMode && map.getZoom() >= HODO_NATIVE_MIN_ZOOM &&
+        !!hodoNativeIndex && !!hodoNativeHeights;
+    if (nativeDetailActive) {
+        // The browser does not substitute the 180-km z6 preview while a
+        // native 3-km detail viewport is loading. Each symbol is drawn at its
+        // screen-cell center, with its nearest actual native HRRR sounding.
         selected = hodoNativeDisplayed;
         displayedHeights = hodoNativeHeights;
-        report = ' • nearest native 3-km HRRR locations';
+        report = ` • fixed ${spacing}px display lattice`;
     } else if (hodoTiledMode) {
-        // CONUS z4: coarser SUBSET of the native z6 HRRR point grid.
-        // Regional/State/Local all draw exactly the same z6 native profiles.
-        // No z8 points and no zoom-dependent synthetic screen grid.
+        // Coarse fallback for an hour without published native-3km coverage.
+        // The CONUS view continues to use sparse z4 sampled profiles.
         const displayedTier = map.getZoom() < 4.5 ? 4 : 6;
         const points = hodoViewportPoints.get(displayedTier) || [];
         selected = spcoaChooseNativeAnchoredHodographs(points, spacing, width, height);
@@ -15231,14 +15246,15 @@ function renderHodographs() {
             radius40, !!hodoEffectiveToggle?.checked, profileWidth);
         if (item.point.effective_inflow) effectiveShown++;
     }
-    const detail = hodoNativeDisplayed.length ? "native 3-km HRRR" :
+    const detail = nativeDetailActive ? "native 3-km HRRR" :
         (hodoTiledMode ? "coarse preview HRRR" : "legacy HRRR");
     const loading = (hodoTileLoading || hodoNativeLoading) ? " • loading tiles..." : "";
     const errors = (hodoTileErrors || hodoNativeErrors) ?
         ` • ${hodoTileErrors+hodoNativeErrors} tile errors` : "";
-    const warning = hodoTiledMode && !hodoTileLoading &&
-        selected.length === 0
-        ? " • no native HRRR points in view" : "";
+    const warning = nativeDetailActive && !hodoNativeLoading && !selected.length
+        ? " • no published 3-km profiles here (check S3 coverage)"
+        : (hodoTiledMode && !hodoTileLoading && !selected.length
+            ? " • no HRRR points in view" : "");
     hodoStatus(`${mode} • ${selected.length} ${detail} profiles` +
         ` • ${effectiveShown} effective layers • ${hodoRun.slice(-2)}Z` +
         report + loading + errors + warning);
@@ -15379,6 +15395,18 @@ function hodoLoadVisibleTiles() {
     hodoViewportPoints = viewportPoints;
     hodoNativeDisplayed = [];
     hodoNativeLoading = false;
+
+    // Regional/State/Local use native 3-km data DIRECTLY whenever published.
+    // No interim 180-km coarse-grid display or unnecessary z6 network fetch.
+    // This keeps a consistent screen-space lattice as the map zoom changes.
+    if (zoom >= HODO_NATIVE_MIN_ZOOM && hodoNativeIndex && hodoNativeHeights) {
+        hodoTileLoading = false;
+        requestHodographDraw();
+        const nativeDone = hodoLoadNativeVisible(serial, run);
+        hodoPendingPromise = nativeDone;
+        return nativeDone;
+    }
+
     const jobs = [];
     for (const tier of hodoTileManifest.tiers) {
         const z = tier.zoom;
@@ -15503,7 +15531,14 @@ hodoToggle?.addEventListener("change", () => {
     void refreshHodographsForRun();
 });
 hodoEffectiveToggle?.addEventListener("change", requestHodographDraw);
-hodoDensitySelect?.addEventListener("change", requestHodographDraw);
+hodoDensitySelect?.addEventListener("change", () => {
+    // Native sample locations depend on the display lattice. A redraw alone
+    // cannot change the cell centers; rebuild them at the new density.
+    if (hodoTiledMode && hodoToggle?.checked && hodoRun === currentRun &&
+        hodoNativeIndex && map.getZoom() >= HODO_NATIVE_MIN_ZOOM)
+        void hodoLoadVisibleTiles();
+    else requestHodographDraw();
+});
 hodoSizeInput?.addEventListener("input", () => {
     if (hodoSizeLabel) hodoSizeLabel.textContent = `${hodoSizeInput.value}%`;
     requestHodographDraw();
@@ -18244,6 +18279,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
