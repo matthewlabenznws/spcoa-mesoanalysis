@@ -20,6 +20,29 @@ from pathlib import Path
 import numpy as np
 
 KTS_PER_MS = 1.94384449244
+MAX_SELECTION_DISTANCE_KM = 30.0  # Reject unrelated map clicks / wrong lookup
+
+
+def longitude_difference(lons, reference_lon):
+    """Signed shortest longitude difference in degrees, in [-180, 180)."""
+    return ((np.asarray(lons, dtype=float) - float(reference_lon) + 180.0) % 360.0) - 180.0
+
+
+def first_freezing_level_m_agl(heights_agl, temperatures_c):
+    """Lowest upward 0 C crossing (not interpolation across a nonmonotonic T array)."""
+    z = np.asarray(heights_agl, dtype=float)
+    t = np.asarray(temperatures_c, dtype=float)
+    if len(z) != len(t) or len(z) < 2 or not np.isfinite(t[0]):
+        return None
+    if t[0] <= 0:
+        return 0.0
+    for k in range(1, len(t)):
+        if (np.isfinite(t[k-1]) and np.isfinite(t[k]) and
+                np.isfinite(z[k-1]) and np.isfinite(z[k]) and
+                t[k-1] > 0 >= t[k] and z[k] > z[k-1]):
+            f = t[k-1] / (t[k-1] - t[k])
+            return number(z[k-1] + f * (z[k] - z[k-1]))
+    return None
 
 def json_safe(value):
     """Convert NumPy values to strict JSON-compatible Python values."""
@@ -89,7 +112,7 @@ def prepare(raw):
     chosen = [surf]
     lastp = arr['pressure_hpa'][surf]
     for i in others:
-        if arr['pressure_hpa'][i] < lastp-0.15 and arr['height_m_msl'][i] > arr['height_m_msl'][chosen[-1]]-20:
+        if arr['pressure_hpa'][i] < lastp-0.15 and arr['height_m_msl'][i] > arr['height_m_msl'][chosen[-1]]+0.01:
             chosen.append(int(i)); lastp=arr['pressure_hpa'][i]
     a = {k:v[chosen] for k,v in arr.items()}
     if len(chosen) < 20: raise ValueError('Not enough usable monotonic pressure levels')
@@ -169,12 +192,14 @@ def ecape_value(a):
     try:
         from metpy.units import units
         from ecape.calc import calc_ecape
-        # Published package expects bottom-up height, pressure, temperature, q, wind with pint units.
-        result=calc_ecape(a['height_m_agl']*units.meter,
+        # Explicit SB ECAPE: package default is MOST UNSTABLE, not surface based.
+        # The package documents height_msl, not height_agl.
+        result=calc_ecape(a['height_m_msl']*units.meter,
                           a['pressure_hpa']*units.hectopascal,
                           a['temperature_k']*units.kelvin,
                           a['specific_humidity_kgkg']*units.dimensionless,
-                          a['u_ms']*units('m/s'),a['v_ms']*units('m/s'))
+                          a['u_ms']*units('m/s'),a['v_ms']*units('m/s'),
+                          cape_type='surface_based')
         val=scalar(result.to('J/kg').magnitude if hasattr(result,'to') else result)
         return val, None if val is not None else 'ECAPE returned nonfinite value'
     except Exception as exc:
@@ -215,9 +240,15 @@ def diagnostics(raw, ecape=True):
     # RH averaged uniformly in pressure between SB LCL and first LFC.
     rh_layer=None
     sb=parcels['sb']
-    if sb and sb['lcl_hpa'] is not None and sb['lfc_hpa'] is not None and sb['lcl_hpa']>sb['lfc_hpa']:
-        rh_layer=number(pressure_mean(p,rh,sb['lfc_hpa'],sb['lcl_hpa']))
-    # Zeros/thin layers/nonexistent LFC are intentionally null and explicitly flagged.
+    rh_status='missing_lcl_or_lfc'
+    if sb and sb['lcl_hpa'] is not None and sb['lfc_hpa'] is not None:
+        if sb['lcl_hpa'] > sb['lfc_hpa'] + 0.01:
+            rh_layer=number(pressure_mean(p,rh,sb['lfc_hpa'],sb['lcl_hpa']))
+            rh_status='valid' if rh_layer is not None else 'insufficient_layer_data'
+        else:
+            rh_status='zero_depth_or_inverted_layer'
+    # No invented RH average for an undefined/zero-depth LCL-LFC layer.
+
     shear={}; meanwinds={}
     surface=np.asarray([a['u_ms'][0],a['v_ms'][0]])
     for depth in (500,1000,3000,6000,9000):
@@ -226,19 +257,27 @@ def diagnostics(raw, ecape=True):
             shear[f'0_{depth}m_kt']=number(np.linalg.norm(upper-surface)*KTS_PER_MS)
             avg=layer_uv(a,0,depth)
             meanwinds[f'0_{depth}m']={'u_kt':number(avg[0]*KTS_PER_MS),'v_kt':number(avg[1]*KTS_PER_MS)} if avg is not None else None
-    # SHARPpy kinematics use the same profile. Effective inflow layer criteria: CAPE>=100 CIN>=-250.
+    # Parcel-based Bunkers can be masked when the effective inflow layer fails
+    # the standard 100 J/kg CAPE and -250 J/kg CIN thresholds. Compute a
+    # labeled non-parcel Bunkers motion instead of silently blanking the hodo.
     motions={};srh={}
     try:
+        from sharppy.sharptab import winds
         bm=params.bunkers_storm_motion(prof)
+        motion_method='effective_inflow_parcel_based'
+        if len(bm)<4 or any(scalar(x) is None for x in bm[:4]):
+            bm=winds.non_parcel_bunkers_motion(prof)
+            motion_method='standard_nonparcel_bunkers_fallback'
         mr,ml=bm[:2],bm[2:4]
-        motions={'right':{'u_kt':scalar(mr[0]),'v_kt':scalar(mr[1])},
+        motions={'method':motion_method,
+                 'right':{'u_kt':scalar(mr[0]),'v_kt':scalar(mr[1])},
                  'left':{'u_kt':scalar(ml[0]),'v_kt':scalar(ml[1])}}
-        for depth in (1000,3000):
-            val=params.helicity(prof,0,depth,stu=mr[0],stv=mr[1]) if hasattr(params,'helicity') else None
-            if val is None:
-                from sharppy.sharptab import winds
+        if all(scalar(x) is not None for x in mr):
+            for depth in (1000,3000):
                 val=winds.helicity(prof,0,depth,stu=mr[0],stv=mr[1])
-            srh[f'0_{depth}m_right_m2s2']=scalar(val[0])
+                srh[f'0_{depth}m_right_m2s2']=scalar(val[0])
+        else:
+            errors['kinematics']='Both parcel-based and standard Bunkers motions were unavailable'
     except Exception as exc: errors['kinematics']=str(exc)
     try:
         eff=params.effective_inflow_layer(prof,ecape=100,ecinh=-250)
@@ -257,19 +296,21 @@ def diagnostics(raw, ecape=True):
     try:
         pwat=scalar(params.precip_water(prof)) # inches SHARPpy convention
     except Exception as exc: pwat=None;errors['pwat']=str(exc)
-    try:
-        freezing_h=number(np.interp(0,tc[::-1],z[::-1])) if np.min(tc)<=0<=np.max(tc) else None
-    except Exception: freezing_h=None
+    freezing_h=first_freezing_level_m_agl(z,tc)
     return {
       'schema':'spcoa.hrrr_f00_sounding_diagnostics.v1','source':'native HRRR F00 profile',
       'location':{k:raw.get(k) for k in ('lat','lon','i','j')},
+      'run_id':raw.get('run_id'),
+      'requested_location':{'lat':raw.get('requested_lat'),'lon':raw.get('requested_lon')},
+      'selection_distance_km':raw.get('selection_distance_km'),
       'methods':{'ml':'Method B: 100-hPa pressure-integrated theta/mixing ratio; lifted from surface pressure',
-                 'ecape':'Peters et al. 2023 via ecape.calc.calc_ecape',
+                 'ecape':'Peters et al. 2023, explicitly surface_based via ecape.calc.calc_ecape',
                  'lcl_lfc_rh':'pressure-weighted environmental RH, surface-based LCL to LFC',
                  'advection':'SHARPpy inferred geostrophic thermal-wind advection (not actual horizontal advection)',
                  'barbs':'native U/V pressure-interpolated to every 50 hPa'},
       'ml_initial':ml_initial,'parcels':parcels,
       'peters_surface_ecape_jkg':ec_value,'sb_lcl_lfc_rh_percent':rh_layer,
+      'sb_lcl_lfc_rh_status':rh_status,
       'wind_barbs_50hpa':wind_barbs(a),'inferred_advection_100hpa':adv,
       'bulk_shear':shear,'mean_winds':meanwinds,'storm_motions':motions,
       'storm_relative_helicity':srh,'effective_inflow':effective,
@@ -290,7 +331,7 @@ def get_s3_profile(run,lat,lon):
     manifest=json.loads(obj('manifest.json'))
     if not manifest.get('complete'):raise ValueError('Run not published')
     geo=json.loads(obj('geo_index.json'));anchors=np.asarray(geo['anchors'],float)
-    dx=((anchors[:,3]-lon+180)%360)*np.cos(np.radians(lat))
+    dx=longitude_difference(anchors[:,3],lon)*np.cos(np.radians(lat))
     d=(anchors[:,2]-lat)**2+dx**2
     blocks=set()
     for idx in np.argsort(d)[:6]:
@@ -302,12 +343,22 @@ def get_s3_profile(run,lat,lon):
     best=None
     for j,i in blocks:
         tile=archive.decode_tile(gzip.decompress(obj(f'tiles/j{j:04d}/i{i:04d}.bin')))
-        la=tile['lat_i1e5'];lo=tile['lon_i1e5'];dist=(la/1e5-lat)**2 + (((lo/1e5-lon+180)%360)-180)**2*np.cos(np.radians(lat))**2
+        la=tile['lat_i1e5'];lo=tile['lon_i1e5'];dist=(la/1e5-lat)**2 + longitude_difference(lo/1e5,lon)**2*np.cos(np.radians(lat))**2
         dist[la==archive.LATLON_FILL]=np.inf
         k=np.unravel_index(int(np.argmin(dist)),dist.shape)
         if np.isfinite(dist[k]) and (best is None or dist[k]<best[0]):best=(float(dist[k]),archive.decode_profile(tile,*k))
     if best is None:raise ValueError('No valid profile near requested location')
-    return best[1]
+    dist_km=math.sqrt(best[0])*111.2  # equirectangular km; accurate for nearby cells
+    if dist_km>MAX_SELECTION_DISTANCE_KM:
+        raise ValueError(f'Nearest HRRR cell is {dist_km:.1f} km from requested '
+                         f'{lat:.4f}, {lon:.4f}; refusing wrong-location sounding')
+    selected=best[1]
+    selected.update({'requested_lat':float(lat),'requested_lon':float(lon),
+                     'selection_distance_km':number(dist_km),'run_id':run})
+    print(f'Selected HRRR native cell j={selected["j"]} i={selected["i"]}: '
+          f'{selected["lat"]:.5f}, {selected["lon"]:.5f} '
+          f'({dist_km:.2f} km from request)')
+    return selected
 
 def selftest():
     p=np.asarray([1000,950,900,850,800],float)
@@ -322,11 +373,18 @@ def selftest():
         fake['u_ms'].append(2+i*.6)
         fake['v_ms'].append(3+i*.2)
     a=prepare(fake); assert len(wind_barbs(a))>10
+    # Regression: old longitude lookup picked the Pacific instead of Nebraska.
+    anchor_lons=np.array([-129.97058,-100.70,-99.90])
+    diffs=longitude_difference(anchor_lons,-100.69)
+    assert np.argmin(abs(diffs))==1
+    assert abs(diffs[0]+29.28058)<1e-5
+    assert abs(float(longitude_difference(179.0,-179.0))+2.0)<1e-8
+    assert first_freezing_level_m_agl([0,1000,2000],[5,-5,-10])==500.0
     encoded=json.dumps(json_safe({'i':np.int64(12),'value':np.float32(1.5),
                                    'missing':np.float64(np.nan),
                                    'barbs':np.array([950,900],dtype=np.int64)}),allow_nan=False)
     assert json.loads(encoded)=={'i':12,'value':1.5,'missing':None,'barbs':[950,900]}
-    print('SELFTEST PASS: profile validation, Method B pressure integration, 50-hPa barbs, JSON serialization')
+    print('SELFTEST PASS: profiles, Method B integration, wind barbs, longitude wrapping, freezing crossing, JSON')
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__)
