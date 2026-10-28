@@ -1,0 +1,203 @@
+name: SPCOA - HRRR F00 Full-CONUS Native 3km Soundings
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Optional SPCOA analysis (YYYYMMDD_HH); blank uses latest published hour'
+        required: false
+        type: string
+        default: ''
+      force_rebuild:
+        description: 'Rebuild and republish an existing sounding archive?'
+        required: false
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: [spcoa_soundings_hourly_update]
+
+permissions:
+  contents: read
+
+# Do not process two full-CONUS archives at once.
+concurrency:
+  group: spcoa-soundings-full-conus
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Select a single HRRR F00 analysis hour
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.detect.outputs.run_id }}
+      skip: ${{ steps.detect.outputs.skip }}
+      force: ${{ steps.detect.outputs.force }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      REQUESTED_RUN: ${{ inputs.run_id || github.event.client_payload.run_id || '' }}
+      FORCE_REBUILD: ${{ (inputs.force_rebuild == true || github.event.client_payload.force_rebuild == true) && 'true' || 'false' }}
+    steps:
+      - name: Resolve analysis time and check for completed sounding archive
+        id: detect
+        shell: bash
+        run: |
+          python -m pip install --quiet boto3
+          python - <<'PY'
+          import datetime
+          import json
+          import os
+          import re
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          bucket = 'spcoa-mesoanalysis'
+          prefix = 'spcoa'
+          s3 = boto3.client('s3', region_name='us-east-2')
+          run = os.environ.get('REQUESTED_RUN', '').strip()
+          if not run:
+              obj = s3.get_object(Bucket=bucket, Key=f'{prefix}/latest.json')
+              run = str(json.load(obj['Body'])['run'])
+          if not re.fullmatch(r'\d{8}_\d{2}', run):
+              raise ValueError(f'Unexpected analysis run ID: {run!r}')
+          datetime.datetime.strptime(run, '%Y%m%d_%H')
+          s3.head_object(Bucket=bucket, Key=f'{prefix}/runs/{run}/metadata.json')
+          manifest_key = f'{prefix}/runs/{run}/soundings/v1/manifest.json'
+          try:
+              s3.head_object(Bucket=bucket, Key=manifest_key)
+              published = True
+          except ClientError as exc:
+              code = exc.response.get('Error', {}).get('Code', '')
+              if code not in ('404', 'NoSuchKey', 'NotFound'):
+                  raise
+              published = False
+          force = os.environ.get('FORCE_REBUILD', 'false').lower() == 'true'
+          skip = published and not force
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'run_id={run}\n')
+              out.write(f'skip={str(skip).lower()}\n')
+              out.write(f'force={str(force).lower()}\n')
+          print(f'SPCOA sounding run: {run}; published={published}; force={force}; skip={skip}')
+          PY
+
+  compute-native-soundings:
+    name: Native HRRR sounding shard ${{ matrix.shard }} of 12
+    needs: resolve
+    if: needs.resolve.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_SOUNDINGS_BUCKET: spcoa-mesoanalysis
+      SPCOA_SOUNDINGS_PREFIX: spcoa
+      SPCOA_SOUNDINGS_WORKDIR: spcoa_soundings_work
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install native HRRR GRIB dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libeccodes0 libeccodes-dev
+          python -m pip install --upgrade pip
+          test -f requirements_spcoa_soundings.txt || { echo '::error::requirements_spcoa_soundings.txt must be in the repository root'; exit 1; }
+          python -m pip install -r requirements_spcoa_soundings.txt
+
+      - name: Check sounding archive encoding (first shard only)
+        if: matrix.shard == 0
+        run: |
+          python spcoa_soundings.py selftest
+
+      - name: Download HRRR F00 and publish native 3-km sounding blocks
+        shell: bash
+        env:
+          TARGET_RUN: ${{ needs.resolve.outputs.run_id }}
+          TARGET_SHARD: ${{ matrix.shard }}
+          FORCE: ${{ needs.resolve.outputs.force }}
+        run: |
+          test -f spcoa_soundings.py || { echo '::error::spcoa_soundings.py must be in the repository root'; exit 1; }
+          extra=()
+          if [[ "$FORCE" == "true" ]]; then extra+=(--force); fi
+          python spcoa_soundings.py compute \
+            --run "$TARGET_RUN" \
+            --shard "$TARGET_SHARD" \
+            --shards 12 \
+            --upload-workers 5 \
+            "${extra[@]}"
+
+  publish-sounding-archive:
+    name: Verify 1,905,141 profiles and publish sounding manifest
+    needs: [resolve, compute-native-soundings]
+    if: needs.resolve.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_SOUNDINGS_BUCKET: spcoa-mesoanalysis
+      SPCOA_SOUNDINGS_PREFIX: spcoa
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install sounding publishing dependencies
+        run: |
+          python -m pip install --upgrade pip
+          test -f requirements_spcoa_soundings.txt || { echo '::error::Missing requirements_spcoa_soundings.txt in repository root'; exit 1; }
+          python -m pip install -r requirements_spcoa_soundings.txt
+
+      - name: Check all shards and publish final sounding archive manifest
+        shell: bash
+        env:
+          TARGET_RUN: ${{ needs.resolve.outputs.run_id }}
+          FORCE: ${{ needs.resolve.outputs.force }}
+        run: |
+          extra=()
+          if [[ "$FORCE" == "true" ]]; then extra+=(--force); fi
+          python spcoa_soundings.py publish \
+            --run "$TARGET_RUN" \
+            --shards 12 \
+            "${extra[@]}"
+
+      - name: Verify published metadata in AWS S3
+        env:
+          TARGET_RUN: ${{ needs.resolve.outputs.run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import boto3
+          run = os.environ['TARGET_RUN']
+          s3 = boto3.client('s3', region_name='us-east-2')
+          k = f'spcoa/runs/{run}/soundings/v1/manifest.json'
+          m = json.load(s3.get_object(Bucket='spcoa-mesoanalysis', Key=k)['Body'])
+          assert m['complete'] is True
+          assert m['run_id'] == run
+          assert m['grid_shape'] == [1059, 1799]
+          assert m['native_horizontal_stride'] == 1
+          assert m['grid_cells'] == 1905141
+          assert m['tile_count'] == 1938
+          assert m['shards'] == 12
+          print(f'Verified complete native CONUS sounding archive: {run} ({m["tile_count"]} tiles)')
+          PY
