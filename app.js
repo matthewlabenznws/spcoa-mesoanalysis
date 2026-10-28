@@ -2459,7 +2459,8 @@ if (!__MP_CHILD) {
             notice.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);max-width:95%;background:#122536ed;color:#e8f5ff;border:1px solid #558aab;border-radius:6px;padding:6px 11px;box-shadow:0 2px 12px #0007;font:12px/1.4 Arial,sans-serif;pointer-events:none;white-space:nowrap;';
             notice.textContent = 'Sounding: press and hold on the map for 0.7 seconds · Drag to pan';
             surface.appendChild(notice);
-            panelGrid.style.position = 'relative';
+            // Keep #panel-grid's original position:absolute from index.html.
+            // Overriding it with relative breaks the map grid's fill-area layout.
             panelGrid.appendChild(surface);
             let press = null;
             function setNotice(value) { notice.textContent = value; }
@@ -19326,7 +19327,6 @@ window.addEventListener('message', event => {
 });
 spcoaSndBuildPanel();
 spcoaSndInstallCursorSelector();
-
 
 
 
