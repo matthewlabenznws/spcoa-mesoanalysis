@@ -117,8 +117,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libeccodes0 libeccodes-dev
           python -m pip install --upgrade pip
-          test -f requirements_spcoa_soundings.txt || { echo '::error::requirements_spcoa_soundings.txt must be in the repository root'; exit 1; }
-          python -m pip install -r requirements_spcoa_soundings.txt
+          if [[ -f requirements_spcoa_soundings.txt ]]; then
+            REQUIREMENTS=requirements_spcoa_soundings.txt
+          elif [[ -f scripts/requirements_spcoa_soundings.txt ]]; then
+            REQUIREMENTS=scripts/requirements_spcoa_soundings.txt
+          else
+            echo '::error::Add requirements_spcoa_soundings.txt to the repository root or scripts/ directory, then commit it.'
+            echo 'Repository files:'
+            ls -la
+            exit 1
+          fi
+          echo "Installing dependencies from $REQUIREMENTS"
+          python -m pip install -r "$REQUIREMENTS"
 
       - name: Check sounding archive encoding (first shard only)
         if: matrix.shard == 0
@@ -164,8 +174,18 @@ jobs:
       - name: Install sounding publishing dependencies
         run: |
           python -m pip install --upgrade pip
-          test -f requirements_spcoa_soundings.txt || { echo '::error::Missing requirements_spcoa_soundings.txt in repository root'; exit 1; }
-          python -m pip install -r requirements_spcoa_soundings.txt
+          if [[ -f requirements_spcoa_soundings.txt ]]; then
+            REQUIREMENTS=requirements_spcoa_soundings.txt
+          elif [[ -f scripts/requirements_spcoa_soundings.txt ]]; then
+            REQUIREMENTS=scripts/requirements_spcoa_soundings.txt
+          else
+            echo '::error::Add requirements_spcoa_soundings.txt to the repository root or scripts/ directory, then commit it.'
+            echo 'Repository files:'
+            ls -la
+            exit 1
+          fi
+          echo "Installing dependencies from $REQUIREMENTS"
+          python -m pip install -r "$REQUIREMENTS"
 
       - name: Check all shards and publish final sounding archive manifest
         shell: bash
