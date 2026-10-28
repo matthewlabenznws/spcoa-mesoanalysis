@@ -33,7 +33,7 @@ Optional --upload writes diagnostics into a NEW S3 prefix:
 It does not overwrite the sounding v1 manifest or any existing ECAPE fields.
 
 Scientific methods:
-* SHARPpy parcelx: undiluted CAPE/CIN, virtual T, LCL/LFC/EL; SB/ML/MU.
+* SHARPpy DefineParcel + parcelx: undiluted CAPE/CIN, virtual T, LCL/LFC/EL; SB/ML/MU. Mixing/search depth is never passed as a parcel origin pressure.
 * SHARPpy inferred_temp_adv: 100-hPa layers, geostrophic assumption (C/hr).
 * Peters/Urquhart ecape-parcel ecape_calc.calc_ecape: SB/ML/MU ECAPE (J/kg).
   This is not necessarily numerically identical to the existing standalone
@@ -347,33 +347,71 @@ def make_dewpoint(pr: dict) -> np.ndarray:
     return np.asarray(dewpoint_from_specific_humidity(p,t,q).to('degC').magnitude,dtype=float)
 
 
-def parcel_diagnostics(sprof: Any) -> tuple[dict, list[str]]:
+def sharppy_lift_parcel(sprof: Any, flag: int, depth_hpa: int | None):
+    """Lift a SHARPpy parcel without confusing mixing depth with origin pressure.
+
+    IMPORTANT: ``DefineParcel(flag=3/4, pres=...)`` interprets ``pres`` as
+    the MU search depth or ML mixing depth; ``parcelx(..., pres=...)`` instead
+    overrides the actual parcel origin pressure.  Never pass the depth directly
+    to parcelx. See SHARPpy params.DefineParcel and params.parcelx.
+    """
     from sharppy.sharptab import params
-    warn=[];out={}
-    for kind,flag,depth in (('SB',1,None),('ML',4,100),('MU',3,300)):
+    if flag == 1:
+        lpl = params.DefineParcel(sprof, flag=1)
+    elif flag in (3, 4):
+        if depth_hpa is None or depth_hpa <= 0:
+            raise ValueError('MU/ML requires positive pressure-depth in hPa')
+        lpl = params.DefineParcel(sprof, flag=flag, pres=depth_hpa)
+    else:
+        raise ValueError(f'Unsupported SHARPpy parcel flag {flag}')
+    # Explicitly use lplvals: do NOT send 'pres' to parcelx, since that would
+    # misinterpret 100/300 hPa depth as the parcel starting pressure.
+    return params.parcelx(sprof, lplvals=lpl)
+
+
+def parcel_diagnostics(sprof: Any) -> tuple[dict, list[str]]:
+    warn = []
+    out = {}
+    surface_p = finite(sprof.pres[sprof.sfc], 5)
+    if surface_p is None or surface_p < 500:
+        raise ValueError('Invalid surface pressure for SHARPpy parcels')
+    fields = ('cape_jkg', 'cin_jkg', 'lcl_m_agl',
+              'lfc_m_agl', 'el_m_agl', 'starting_pressure_hpa',
+              'starting_temp_c', 'starting_dewpoint_c')
+    for kind, flag, depth in (('SB', 1, None), ('ML', 4, 100), ('MU', 3, 300)):
         try:
-            kwargs={'flag':flag}
-            if depth is not None: kwargs['pres']=depth
-            parcel=params.parcelx(sprof,**kwargs)
-            out[kind]={
-                'cape_jkg':finite(parcel.bplus,1),
-                'cin_jkg':finite(parcel.bminus,1),
-                'lcl_m_agl':finite(parcel.lclhght,1),
-                'lfc_m_agl':finite(parcel.lfchght,1),
-                'el_m_agl':finite(parcel.elhght,1),
-                'starting_pressure_hpa':finite(parcel.pres,1),
-                'starting_temp_c':finite(parcel.tmpc,2),
-                'starting_dewpoint_c':finite(parcel.dwpc,2),
+            parcel = sharppy_lift_parcel(sprof, flag, depth)
+            values = {
+                'cape_jkg': finite(parcel.bplus, 1),
+                'cin_jkg': finite(parcel.bminus, 1),
+                'lcl_m_agl': finite(parcel.lclhght, 1),
+                'lfc_m_agl': finite(parcel.lfchght, 1),
+                'el_m_agl': finite(parcel.elhght, 1),
+                'starting_pressure_hpa': finite(parcel.pres, 1),
+                'starting_temp_c': finite(parcel.tmpc, 2),
+                'starting_dewpoint_c': finite(parcel.dwpc, 2),
             }
-            # A non-buoyant parcel has no meaningful LFC/EL.
-            if out[kind]['cape_jkg'] is not None and out[kind]['cape_jkg']<=0:
-                out[kind]['lfc_m_agl']=None;out[kind]['el_m_agl']=None
+            origin_p = values['starting_pressure_hpa']
+            if origin_p is None:
+                raise ValueError(f'{kind}: parcel starting pressure missing')
+            # SB and ML originate at surface. The MU parcel must originate in
+            # the lowest 300 hPa; anything else means parcel definition failed.
+            if kind in ('SB', 'ML') and abs(origin_p - surface_p) > 5.0:
+                raise ValueError(f'{kind}: parcel origin {origin_p:.1f} hPa '
+                                 f'is not near surface {surface_p:.1f} hPa')
+            if kind == 'MU' and not (surface_p-305 <= origin_p <= surface_p+3):
+                raise ValueError(f'MU parcel origin {origin_p:.1f} hPa is outside '
+                                 f'lowest 300 hPa below {surface_p:.1f} hPa')
+            if values['cape_jkg'] is None or values['cape_jkg'] < 0:
+                raise ValueError(f'{kind}: invalid SHARPpy CAPE')
+            if values['cape_jkg'] == 0:
+                values['lfc_m_agl'] = None
+                values['el_m_agl'] = None
+            out[kind] = values
         except Exception as exc:
-            warn.append(f'{kind} SHARPpy parcel calculation failed: {exc}')
-            out[kind]={x:None for x in ('cape_jkg','cin_jkg','lcl_m_agl',
-                          'lfc_m_agl','el_m_agl','starting_pressure_hpa',
-                          'starting_temp_c','starting_dewpoint_c')}
-    return out,warn
+            warn.append(f'{kind} SHARPpy parcel calculation failed: {type(exc).__name__}: {exc}')
+            out[kind] = {field: None for field in fields}
+    return out, warn
 
 
 def ecape_diagnostics(pr: dict, parcels: dict, enabled: bool) -> tuple[dict,list[str]]:
@@ -470,7 +508,7 @@ def diagnose(raw: dict, run: str|None=None, include_ecape: bool=True) -> dict:
             'units':'C/hr', 'layers':waa},
         'wind_barbs_50hpa':pressure_wind_table(pr),
         'methodology':{
-            'undiluted_parcels':'SHARPpy parcelx (virtual-temperature-corrected)',
+            'undiluted_parcels':'SHARPpy DefineParcel + parcelx (virtual-temperature-corrected, checked origin pressure)',
             'parcel_definitions':'SB=surface; ML=lowest 100 hPa; MU=most unstable in lowest 300 hPa (SHARPpy)',
             'ecape':'Peters-based analytic ECAPE via ecape-parcel/ecape_calc, 0-1 km Bunkers RM inflow',
             'ecape_note':'ECAPE may differ from existing SPCOA gridded ECAPE because of algorithm and parcel details',
@@ -512,6 +550,41 @@ def publish_point(client,run: str,doc:dict,force:bool):
     print(f'Published s3://{BUCKET}/{path}',file=sys.stderr)
 
 
+def _selftest_parcel_depth_handling():
+    """Dependency-free mock test that depths NEVER enter parcelx as origin."""
+    from types import ModuleType, SimpleNamespace
+    registered = []
+    fake_mod = ModuleType('sharppy.sharptab.params')
+    def define(profile, flag, **kw):
+        registered.append(('define', flag, kw.copy()))
+        origin = profile.pres[0] if flag in (1, 4) else profile.pres[0]-100
+        return SimpleNamespace(pres=origin, tmpc=20.0, dwpc=12.0)
+    def parcelx(profile, **kw):
+        registered.append(('parcelx', None, kw.copy()))
+        assert set(kw) == {'lplvals'}, 'parcelx must only receive lplvals'
+        return kw['lplvals']
+    fake_mod.DefineParcel=define; fake_mod.parcelx=parcelx
+    fake_sharp = ModuleType('sharppy')
+    fake_tab = ModuleType('sharppy.sharptab')
+    fake_tab.params=fake_mod
+    old={k:sys.modules.get(k) for k in ('sharppy','sharppy.sharptab','sharppy.sharptab.params')}
+    try:
+        sys.modules['sharppy']=fake_sharp
+        sys.modules['sharppy.sharptab']=fake_tab
+        sys.modules['sharppy.sharptab.params']=fake_mod
+        profile=SimpleNamespace(pres=np.array([911.9,850.,700.,500.]))
+        assert sharppy_lift_parcel(profile,1,None).pres==911.9
+        assert sharppy_lift_parcel(profile,4,100).pres==911.9
+        assert sharppy_lift_parcel(profile,3,300).pres==811.9
+        assert ('define',4,{'pres':100}) in registered
+        assert ('define',3,{'pres':300}) in registered
+        assert all(set(args)=={'lplvals'} for name,flag,args in registered if name=='parcelx')
+    finally:
+        for k,v in old.items():
+            if v is None:sys.modules.pop(k,None)
+            else:sys.modules[k]=v
+
+
 def basic_selftest():
     """No AWS, SHARPpy or MetPy required for the format and kinematic tests."""
     z=np.arange(0,16001,400,dtype=float)
@@ -536,7 +609,8 @@ def basic_selftest():
     assert finite(float('nan')) is None
     assert interp_pressure(p['pressure_hpa'],p['temperature_k'],25) is None
     assert abs(srh_layer(z,u,v,7,5,1000))<1e4
-    print('SELFTEST PASS: profile validation, 50-mb barbs, storm motion, shear, SRH, JSON-safe missing values')
+    _selftest_parcel_depth_handling()
+    print('SELFTEST PASS: profile QC, 50-mb barbs, shear/SRH, and correct SHARPpy parcel depth versus origin pressure')
 
 
 def main():
