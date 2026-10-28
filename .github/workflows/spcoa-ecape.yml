@@ -1,0 +1,142 @@
+name: SPCOA - HRRR F00 Full-CONUS Native 3km ECAPE
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Optional SPCOA analysis run (YYYYMMDD_HH); blank uses latest automatically'
+        required: false
+        type: string
+        default: ''
+      force_rebuild:
+        description: 'Recalculate and republish this ECAPE run?'
+        required: false
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: [spcoa_ecape_hourly_update]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spcoa-ecape-full-conus
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.detect.outputs.run_id }}
+      skip: ${{ steps.detect.outputs.skip }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      REQUESTED_RUN: ${{ inputs.run_id || '' }}
+      FORCE_REBUILD: ${{ inputs.force_rebuild == true && 'true' || 'false' }}
+    steps:
+      - name: Select matching SPCOA analysis F00 hour
+        id: detect
+        run: |
+          pip -q install boto3
+          python - <<'PY'
+          import os,json,datetime,boto3
+          s3=boto3.client('s3',region_name='us-east-2');bucket='spcoa-mesoanalysis'
+          run=os.getenv('REQUESTED_RUN','').strip()
+          if not run:
+              doc=json.loads(s3.get_object(Bucket=bucket,Key='spcoa/latest.json')['Body'].read())
+              run=doc['run']
+          datetime.datetime.strptime(run,'%Y%m%d_%H')
+          s3.head_object(Bucket=bucket,Key=f'spcoa/runs/{run}/metadata.json')
+          existing=False
+          try:s3.head_object(Bucket=bucket,Key=f'spcoa/runs/{run}/ecape/metadata.json');existing=True
+          except s3.exceptions.ClientError as exc:
+              if exc.response.get('ResponseMetadata',{}).get('HTTPStatusCode')!=404:raise
+          skip=existing and os.getenv('FORCE_REBUILD','false')!='true'
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f'run_id={run}\nskip={str(skip).lower()}\n')
+          print(f'ECAPE target run={run}; existing={existing}; skip={skip}')
+          PY
+
+  calculate-native-grid:
+    needs: resolve
+    if: needs.resolve.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    env:
+      HERBIE_SAVE_DIR: ${{ runner.temp }}/hrrr_ecape_grib
+      SPCOA_ECAPE_WORKDIR: ecape_work
+      PYTHONUNBUFFERED: '1'
+      NUMBA_NUM_THREADS: '2'
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '1'
+      AWS_DEFAULT_REGION: us-east-2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install HRRR GRIB and optimized ECAPE dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libeccodes0 libeccodes-dev
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements_spcoa_ecape.txt
+      - name: Compute complete native-resolution HRRR strip
+        run: |
+          python scripts/spcoa_ecape.py compute \
+            --run '${{ needs.resolve.outputs.run_id }}' \
+            --shard '${{ matrix.shard }}' \
+            --shards 12
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ecape-shard-${{ matrix.shard }}
+          path: ecape_work/ecape_shard_*.npz
+          if-no-files-found: error
+          retention-days: 2
+
+  publish-tiles:
+    needs: [resolve, calculate-native-grid]
+    if: needs.resolve.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_ECAPE_WORKDIR: ecape_work
+      SPCOA_ECAPE_UPLOAD_WORKERS: '16'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r scripts/requirements_spcoa_ecape.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ecape-shard-*
+          path: ecape_work
+          merge-multiple: true
+      - name: Assemble 1,905,141 native points and upload SPCOA-compatible binary tiles
+        run: |
+          python scripts/spcoa_ecape.py publish \
+            --run '${{ needs.resolve.outputs.run_id }}' --shards 12
+      - name: Verify ECAPE publication without modifying main SPCOA metadata
+        run: |
+          python - <<'PY'
+          import os,json,boto3
+          run='${{ needs.resolve.outputs.run_id }}'; s3=boto3.client('s3',region_name='us-east-2')
+          m=json.loads(s3.get_object(Bucket='spcoa-mesoanalysis',Key=f'spcoa/runs/{run}/ecape/metadata.json')['Body'].read())
+          assert m['native_grid_shape']==[1059,1799] and m['native_horizontal_stride']==1
+          assert m['tiles_uploaded']>100
+          print('Verified full-native-grid ECAPE:',run,'tiles:',m['tiles_uploaded'])
+          PY
