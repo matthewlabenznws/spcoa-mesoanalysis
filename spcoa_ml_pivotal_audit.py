@@ -9,7 +9,9 @@ and controlled sensitivities to mixing depth and the appended 2m surface row.
 Caution: Pivotal can interpolate to its requested coordinate. This tool can
 match its *requested* lat/lon, not prove an identical provider data sampling.
 """
-# V2 comparison adds an independent pressure-weighted 100-hPa parcel to
+# V4 adds 3x3 native-grid-neighbor sampling to quantify whether spatial
+# HRRR variance could explain Pivotal screenshot mismatch.
+# Earlier comparison adds an independent pressure-weighted 100-hPa parcel to
 # distinguish SHARPpy's exact=True native-level averaging (unweighted by dp)
 # from pressure-thickness-weighted theta/mixing ratio. It DOES NOT modify S3.
 from __future__ import annotations
@@ -276,6 +278,64 @@ def analyze(raw, include_sensitivities=True):
     return out
 
 
+
+def neighbor_spatial_audit(client, run, manifest, central, radius: int = 1):
+    """Evaluate same 100-hPa ML definitions across a small native grid stencil.
+
+    Spatial sensitivity only; not proof of how Pivotal horizontally interpolates
+    HRRR to a particular lat/lon. No changes to uploaded sounding fields.
+    """
+    from sharppy.sharptab import params
+    j0 = int(central['j']); i0 = int(central['i'])
+    rows=[]
+    for dj in range(-radius,radius+1):
+        for di in range(-radius,radius+1):
+            jj,ii=j0+dj,i0+di
+            if not (0<=jj<1059 and 0<=ii<1799): continue
+            row={'j':jj,'i':ii,'dj':dj,'di':di}
+            try:
+                raw=sd.profile_at_index(client,run,manifest,jj,ii)
+                pr=sd.prepare_profile(raw)
+                td=sd.make_dewpoint(pr)
+                td,qc,_=sd.qc_moisture_profile(pr,td)
+                shp=sd.build_sharppy_profile(pr,td)
+                row.update(lat=clean_num(pr['lat'],6),lon=clean_num(pr['lon'],6),
+                           surface_temp_c=clean_num(pr['temperature_k'][0]-273.15,3),
+                           surface_td_c=clean_num(td[0],3),
+                           native_levels_100hpa=int(np.count_nonzero((pr['pressure_hpa'][1:] >= pr['pressure_hpa'][0]-100)&(pr['pressure_hpa'][1:] < pr['pressure_hpa'][0]))),
+                           qc_levels_capped=qc.get('source_levels_with_td_above_t'))
+                ml_def=stat_parcel(sd.sharppy_lift_parcel(shp,4,100))
+                ml_inter=sharppy_interpolated_ml_parcel(shp)['diagnostics']
+                for pref,record in (('native_mean',ml_def),('interp_mean',ml_inter)):
+                    for k in ('cape_jkg','cin_jkg','lcl_m_agl','lfc_m_agl','el_m_agl'):
+                        row[f'{pref}_{k}']=record.get(k)
+            except Exception as exc:
+                row['error']=f'{type(exc).__name__}: {exc}'
+            rows.append(row)
+    return rows
+
+
+def neighbor_summary(rows, screenshot=None):
+    """Numerical ranges are observations of model-grid variability, not equivalence."""
+    out={'count_requested':len(rows),'count_succeeded':sum('error' not in r for r in rows),
+         'caveat':'Native grid stencil is not a reconstruction of Pivotal horizontal interpolation or parcel methodology.'}
+    for pref in ('native_mean','interp_mean'):
+        out[pref]={}
+        for metric in ('cape_jkg','cin_jkg','lcl_m_agl','lfc_m_agl','el_m_agl'):
+            key=f'{pref}_{metric}'
+            vals=[float(row[key]) for row in rows if row.get(key) is not None and np.isfinite(row[key])]
+            out[pref][metric]={
+                'minimum':clean_num(min(vals)) if vals else None,
+                'maximum':clean_num(max(vals)) if vals else None,
+                'count':len(vals),
+            }
+            if screenshot and metric in screenshot:
+                target=screenshot[metric]
+                out[pref][metric]['pivotal_reference']=target
+                out[pref][metric]['pivotal_within_grid_range']=(min(vals)<=target<=max(vals)) if vals else None
+    return out
+
+
 def approx_km(lat1,lon1,lat2,lon2):
     # Good for close points, just to report separation, not selecting gridpoints.
     phi1, phi2=math.radians(lat1),math.radians(lat2)
@@ -287,7 +347,7 @@ def fmt(x): return '—' if x is None else str(x)
 
 
 def summary_text(report):
-    lines=['SPCOA vs Pivotal: HRRR F00 MIXED-LAYER AUDIT V3',
+    lines=['SPCOA vs Pivotal: HRRR F00 MIXED-LAYER AUDIT V4',
            f"Run: {report['run_id']}",
            'Pivotal values were transcribed from the user-provided screenshot; no Pivotal raw profile was available.',
            'The nearest SPCOA native grid point is not necessarily identical to Pivotal interpolation.', '']
@@ -343,6 +403,19 @@ def summary_text(report):
             vv=calc.get(key);refv=ref['ML'].get(key)
             delta=round(vv-refv,2) if vv is not None and refv is not None else None
             lines.append(f'    {key}: Pivotal={fmt(refv)} weighted={fmt(vv)} difference={fmt(delta)}')
+    if report.get('neighbor_grid_summary'):
+        sm=report['neighbor_grid_summary']
+        lines.extend(['', 'NATIVE GRID 3x3 SPATIAL SENSITIVITY (Pivotal requested point)',
+                      f"  Profiles computed: {sm['count_succeeded']}/{sm['count_requested']}"])
+        for typ,name in (('native_mean','SHARPpy native-level mean'),
+                         ('interp_mean','SHARPpy interpolated 1-hPa mean')):
+            summary=sm.get(typ,{})
+            for k in ('cape_jkg','cin_jkg','lcl_m_agl'):
+                info=summary.get(k,{})
+                lines.append(f"  {name}: {k} range={fmt(info.get('minimum'))} to {fmt(info.get('maximum'))}; Pivotal={fmt(info.get('pivotal_reference'))}; within_range={fmt(info.get('pivotal_within_grid_range'))}")
+        lines.append('  Grid range can bracket a Pivotal number without proving equivalent parcel or spatial sampling.')
+    elif report.get('neighbor_grid_note'):
+        lines.extend(['', 'NEIGHBOR SPATIAL TEST: '+report['neighbor_grid_note']])
     lines.extend(['', 'DIAGNOSIS RULES:',
       '  A. If the default SHARPpy and explicit ML computations differ, the parcel call requires repair.',
       '  B. If both agree but the low-level layer/profile differs, inspect native vertical data, 2-m surface merge, QC and interpolation.',
@@ -353,6 +426,7 @@ def summary_text(report):
       '  G. A close match to Pivotal is diagnostic evidence, not proof: the underlying Pivotal raw profile and algorithms remain unavailable.',
       '  H. A near-match in LCL alone can be coincidental. Compare CAPE, CIN, LFC, EL and independent low-level T/Td as well.',
       '  I. The 2m-appended and native-only profiles are deliberately different inputs; never silently substitute either in operational outputs.',
+      '  J. Only exact equivalent source profiles and parcel definitions can prove algorithm-level agreement with Pivotal.',
     ])
     return '\n'.join(lines)+'\n'
 
@@ -365,14 +439,19 @@ def main():
     ap.add_argument('--spcoa-lat',type=float,default=41.18)
     ap.add_argument('--spcoa-lon',type=float,default=-100.69)
     ap.add_argument('--out-dir',default='ml_pivotal_audit')
+    ap.add_argument('--neighbor-radius',type=int,default=1,help='Native-grid spatial sensitivity radius (0,1,2); 1 gives a 3x3 grid')
+    ap.add_argument('--skip-neighbors',action='store_true',help='Skip native-grid spatial sensitivity test')
     ap.add_argument('--profile-pivotal-json',default='',help='Optional raw archive-format profile JSON for offline test')
     ap.add_argument('--profile-spcoa-json',default='',help='Optional raw archive-format profile JSON for offline test')
     args=ap.parse_args()
     sd.run_valid(args.run)
+    if args.neighbor_radius not in (0,1,2):
+        ap.error('--neighbor-radius must be 0, 1, or 2 (max 5x5 points)')
     outdir=Path(args.out_dir);outdir.mkdir(parents=True,exist_ok=True)
-    report={'schema':'spcoa.ml_parcel_audit.v3','run_id':args.run,
+    report={'schema':'spcoa.ml_parcel_audit.v4','run_id':args.run,
             'methods':{'ML':'2x3 factorial test of 2m-surface merge versus native-only, and SHARPpy native-level exact=True vs independent pressure-weighted vs SHARPpy 1-hPa interpolated means. All parcels lifted by same SHARPpy parcelx',
-                       'low_level_data':'SPCOA native hybrid plus 2m pseudo surface; capped supersaturation <=0.25 C'},
+                       'low_level_data':'SPCOA native hybrid plus 2m pseudo surface; capped supersaturation <=0.25 C',
+                       'spatial_sensitivity':'Nearest native grid stencil to Pivotal requested coordinate; same QC HRRR profiles lifted using SHARPpy native-level and 1-hPa interpolated ML parcels'},
             'requested_coordinates':{'pivotal':[args.pivotal_lat,args.pivotal_lon],
                                      'spcoa':[args.spcoa_lat,args.spcoa_lon]},
             'pivotal_reference': PIVOTAL_SCREENSHOT if args.run=='20261028_06' and
@@ -400,6 +479,26 @@ def main():
     a,b=(report['points'][n]['selected_native_point'] for n in ('pivotal_requested_gridpoint','spcoa_prior_gridpoint'))
     if None not in (a['lat'],a['lon'],b['lat'],b['lon']):
         report['separation_of_selected_native_gridpoints_km']=approx_km(a['lat'],a['lon'],b['lat'],b['lon'])
+    if args.skip_neighbors:
+        report['neighbor_grid_note']='Skipped by --skip-neighbors.'
+    elif args.profile_pivotal_json:
+        report['neighbor_grid_note']='Skipped because an offline JSON profile was supplied, not an S3 native grid.'
+    else:
+        if client is None:
+            client=sd.s3();manifest=sd.get_manifest(client,args.run)
+        ppoint=report['points']['pivotal_requested_gridpoint']['selected_native_point']
+        try:
+            rows=neighbor_spatial_audit(client,args.run,manifest,ppoint,args.neighbor_radius)
+            report['neighbor_grid_summary']=neighbor_summary(
+                rows,report['pivotal_reference']['ML'] if report.get('pivotal_reference') else None)
+            with (outdir/'ml_neighbor_grid.csv').open('w',newline='',encoding='utf-8') as f:
+                keys=list(dict.fromkeys(key for row in rows for key in row))
+                csvout=csv.DictWriter(f,fieldnames=keys)
+                csvout.writeheader();csvout.writerows(rows)
+            print(f"Neighbor grid: {report['neighbor_grid_summary']['count_succeeded']} successful points out of {len(rows)}",flush=True)
+        except Exception as exc:
+            report['neighbor_grid_note']=f"Neighbor-grid test failed: {type(exc).__name__}: {exc}"
+            print(report['neighbor_grid_note'],flush=True)
     (outdir/'ml_pivotal_comparison.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
     txt=summary_text(report)
     (outdir/'ML_AUDIT_SUMMARY.txt').write_text(txt,encoding='utf-8')
@@ -408,7 +507,6 @@ def main():
 
 
 if __name__=='__main__':main()
-
 
 
 if __name__=='__main__':main()
