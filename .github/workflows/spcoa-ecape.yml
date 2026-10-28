@@ -90,11 +90,19 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libeccodes0 libeccodes-dev
           python -m pip install --upgrade pip
-          python -m pip install -r scripts/requirements_spcoa_ecape.txt
+          if [ -f requirements_spcoa_ecape.txt ]; then
+            python -m pip install -r requirements_spcoa_ecape.txt
+          elif [ -f scripts/requirements_spcoa_ecape.txt ]; then
+            python -m pip install -r scripts/requirements_spcoa_ecape.txt
+          else
+            echo "::error::requirements_spcoa_ecape.txt not found in repo root or scripts/"
+            exit 1
+          fi
 
       - name: Compute complete native-resolution HRRR strip
         run: |
-          python scripts/spcoa_ecape.py compute \
+          test -f spcoa_ecape.py || { echo "::error::spcoa_ecape.py missing from repository root"; exit 1; }
+          python spcoa_ecape.py compute \
             --run '${{ needs.resolve.outputs.run_id }}' \
             --shard '${{ matrix.shard }}' \
             --shards 12
@@ -125,7 +133,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - run: python -m pip install -r scripts/requirements_spcoa_ecape.txt
+      - name: Install ECAPE dependencies
+        run: |
+          if [ -f requirements_spcoa_ecape.txt ]; then
+            python -m pip install -r requirements_spcoa_ecape.txt
+          elif [ -f scripts/requirements_spcoa_ecape.txt ]; then
+            python -m pip install -r scripts/requirements_spcoa_ecape.txt
+          else
+            echo "::error::requirements_spcoa_ecape.txt not found in repo root or scripts/"
+            exit 1
+          fi
 
       - uses: actions/download-artifact@v4
         with:
@@ -135,7 +152,8 @@ jobs:
 
       - name: Assemble 1,905,141 native points and upload SPCOA-compatible binary tiles
         run: |
-          python scripts/spcoa_ecape.py publish \
+          test -f spcoa_ecape.py || { echo "::error::spcoa_ecape.py missing from repository root"; exit 1; }
+          python spcoa_ecape.py publish \
             --run '${{ needs.resolve.outputs.run_id }}' --shards 12
 
       - name: Verify ECAPE publication without modifying main SPCOA metadata
@@ -148,3 +166,4 @@ jobs:
           assert m['tiles_uploaded']>100
           print('Verified full-native-grid ECAPE:',run,'tiles:',m['tiles_uploaded'])
           PY
+
