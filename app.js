@@ -733,6 +733,24 @@ function installSpcoaStpDisplayControls() {
 installSpcoaCompositeContourToggles();
 installSpcoaStpDisplayControls();
 
+/* V36: Peters-labeled full-CONUS HRRR F00 Surface-Based ECAPE field, no index.html edit. */
+function installSpcoaEcapeFieldButton() {
+    const target = document.querySelector('#thermo-category .cat-content');
+    if (!target || target.querySelector('.field-choice[data-field="ecape"]')) return;
+    const existing = target.querySelector('.field-choice[data-field="sbcape"]');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'field-row field-choice';
+    btn.dataset.field = 'ecape';
+    btn.title = 'Surface-Based Entraining CAPE using the Peters et al. calculation, HRRR F00, native ~3-km grid';
+    btn.appendChild(document.createTextNode('Surface-Based ECAPE (Peters)'));
+    const node = existing?.closest('.level-row') || existing;
+    if (node) node.insertAdjacentElement('afterend',btn);
+    else target.appendChild(btn);
+}
+installSpcoaEcapeFieldButton();
+
+
 
 /* SPC-style ASOS/AWOS station-model controls in both host and child sidebars. */
 function installSpcoaSurfaceObservationsControls() {
@@ -2611,6 +2629,19 @@ const CAPE_COLORS = [
     "#a57279","#ab7d83","#b2878c","#b99295"
 ];
 
+/* V35: Peters ECAPE palette supplied in the CAM viewer (0–10,500 J/kg). */
+const ECAPE_BOUNDS = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3100, 3200, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200, 4300, 4400, 4500, 4600, 4700, 4800, 4900, 5000, 5100, 5200, 5300, 5400, 5500, 5600, 5700, 5800, 5900, 6000, 6500, 7000, 7500, 8000, 8500, 9000, 9500, 10000, 10500];
+const ECAPE_COLORS = ["#ffffff", "#f0f0f0", "#e1e1e1", "#d2d2d2", "#c3c3c3", "#a5a5a5", "#969696", "#878787", "#787878", "#696969", "#3b5269", "#475f74", "#546c7f", "#60798a", "#6d8695", "#7993a1", "#86a0ac", "#92adb7", "#9fbac2", "#abc7ce", "#e6de99", "#e4d289", "#e3c679", "#e1b96a", "#dfae5a", "#dfa24b", "#dd963c", "#dc8a2f", "#da7e24", "#d9731c", "#d3491f", "#cb4323", "#c23d27", "#b9362b", "#b13131", "#a82b37", "#9f253d", "#971f44", "#8e1a4a", "#861550", "#700e89", "#7b1c93", "#872b9e", "#923aa8", "#9e4ab2", "#a95bbd", "#b56ac7", "#c07ad1", "#cc8adc", "#d79ae6", "#e6bfc3", "#dfb1b7", "#d9a4ad", "#d297a1", "#cc8a95", "#c57c8a", "#be707e", "#b86272", "#b25667", "#ac485b", "#844049", "#8a4953", "#91545c", "#985e66", "#9e6970", "#a57279", "#ab7d83", "#b2878c", "#b99295"];
+const ECAPE_RGB = ECAPE_COLORS.map(hexToRgb);
+function getEcapeColor(value) {
+    if (!Number.isFinite(value) || value < 100) return null;
+    let i = ECAPE_BOUNDS.length - 2;
+    for (let k = 0; k < ECAPE_BOUNDS.length - 1; k++) {
+        if (value < ECAPE_BOUNDS[k + 1]) { i = k; break; }
+    }
+    return ECAPE_RGB[Math.max(0, Math.min(ECAPE_RGB.length - 1, i))];
+}
+
 const CAPE_03KM_BOUNDS =
     Array.from(
         { length: 61 },
@@ -3120,6 +3151,13 @@ const WEATHER_FIELDS = {
     mlcin: { name: "Mixed-Layer CIN", shortName: "MLCIN", units: "J/kg", type: "cin" },
     mucin: { name: "Most-Unstable CIN", shortName: "MUCIN", units: "J/kg", type: "cin" },
 
+
+    ecape: {
+        name: "Surface-Based ECAPE (Peters)",
+        shortName: "SBECAPE",
+        units: "J/kg",
+        type: "ecape"
+    },
 
     sbcape: {
         name: "Surface-Based CAPE",
@@ -4328,6 +4366,7 @@ function ensureFilledWindFieldOptions() {
     }
 
     const fields = [
+        "ecape",
         "q_vector_divergence_925mb",
         "q_vector_divergence_850mb",
         "q_vector_divergence_700mb",
@@ -6403,6 +6442,19 @@ async function loadRunMetadata(runId) {
             failures.slice(0, 5).map(r => r.reason));
         if (results.length && failures.length === results.length) {
             throw new Error(`No SPCOA product metadata could be loaded for ${runId}.`);
+        }
+        // Separate ECAPE backend publishes a per-run sidecar only after ALL
+        // native CONUS tiles finish. Its absence never blocks other products.
+        try {
+            const r = await fetch(`${S3_BASE_URL}/runs/${runId}/ecape/metadata.json`, {cache: 'no-store'});
+            if (r.ok) {
+                const ecapeMeta = await r.json();
+                if (ecapeMeta?.run === runId && ecapeMeta?.native_horizontal_stride === 1) {
+                    fields.ecape = ecapeMeta;
+                }
+            }
+        } catch (error) {
+            console.debug('ECAPE not yet available for', runId, error);
         }
         return { metadata, fields, vectors, contours };
     })();
@@ -8563,6 +8615,7 @@ function getFieldColor(
 
     if (definition.type === "q_vector_divergence") return getQDivColor(value);
     if (definition.type === "cin") return getCinColor(value);
+    if (definition.type === "ecape") return getEcapeColor(value);
 
     if (
         definition.type ===
@@ -13615,8 +13668,17 @@ function updateLegend() {
         renderLegendLabels([-1050, -800, -600, -400, -200, -100, -50, 0], CIN_BOUNDS);
     }
 
+    /* Original CAM ECAPE bounds/palette; independent of traditional CAPE. */
+    if (field.type === "ecape") {
+        drawColorLegend(ECAPE_COLORS);
+        renderLegendLabels(
+            [100, 500, 1000, 2000, 3000, 4000, 5000, 6000, {value: 10000, label: '10000+'}],
+            ECAPE_BOUNDS
+        );
+    }
+
     /* CAPE family. */
-    if (field.type === "cape") {
+    else if (field.type === "cape") {
 
         drawColorLegend(CAPE_COLORS);
 
@@ -18326,6 +18388,7 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
 
 
 
