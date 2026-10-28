@@ -1,0 +1,145 @@
+name: SPCOA - HRRR F00 Sounding Diagnostics Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Completed sounding archive hour YYYYMMDD_HH (blank uses latest SPCOA hour)'
+        required: false
+        type: string
+        default: ''
+      latitude:
+        description: 'Test sounding latitude (degrees north)'
+        required: true
+        type: string
+        default: '41.18'
+      longitude:
+        description: 'Test sounding longitude (degrees east; negative in Nebraska)'
+        required: true
+        type: string
+        default: '-100.69'
+      compare_previous:
+        description: 'Calculate previous-hour comparison if that sounding archive exists'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test-sounding-diagnostics:
+    name: Validate one native HRRR F00 sounding
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_SOUNDINGS_BUCKET: spcoa-mesoanalysis
+      SPCOA_SOUNDINGS_PREFIX: spcoa
+      RUN_ID: ${{ inputs.run_id }}
+      LATITUDE: ${{ inputs.latitude }}
+      LONGITUDE: ${{ inputs.longitude }}
+      COMPARE_PREVIOUS: ${{ inputs.compare_previous }}
+      PYTHONUNBUFFERED: '1'
+      MPLBACKEND: Agg
+
+    steps:
+      - name: Check out SPCOA repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements_spcoa_sounding_diagnostics.txt
+
+      - name: Check required backend files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in spcoa_soundings.py spcoa_sounding_diagnostics.py requirements_spcoa_sounding_diagnostics.txt; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required file missing from repository root: $file"
+              exit 1
+            fi
+          done
+          python -m py_compile spcoa_soundings.py spcoa_sounding_diagnostics.py
+
+      - name: Install diagnostics dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements_spcoa_sounding_diagnostics.txt
+          # SHARPpy has old dependency pins; install its calculation code
+          # without replacing the compatible scientific stack above.
+          python -m pip install --no-deps 'SHARPpy==1.4.0a5'
+          python - <<'PY'
+          import boto3, metpy
+          from sharppy.sharptab import params, profile
+          from ecape_parcel.ecape_calc import calc_ecape
+          print('Imports OK: boto3, MetPy, SHARPpy, ecape-parcel')
+          PY
+
+      - name: Run offline sounding-data self-test
+        run: python spcoa_sounding_diagnostics.py selftest
+
+      - name: Diagnose the selected HRRR F00 grid point
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test_outputs
+          args=(point --lat "$LATITUDE" --lon "$LONGITUDE" --save test_outputs/sounding_diagnostics.json)
+          if [[ -n "$RUN_ID" ]]; then
+            args+=(--run "$RUN_ID")
+          fi
+          if [[ "$COMPARE_PREVIOUS" == 'true' ]]; then
+            args+=(--compare-previous)
+          fi
+          python spcoa_sounding_diagnostics.py "${args[@]}"
+
+      - name: Summarize parcel diagnostics and missing fields
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('test_outputs/sounding_diagnostics.json')
+          d = json.loads(p.read_text(encoding='utf-8'))
+          rows = ['## HRRR F00 sounding diagnostic test', '',
+                  f"Run: `{d.get('run_id')}`", '',
+                  f"Location: `{d.get('location')}`", '',
+                  '| Parcel | CAPE (J/kg) | CIN (J/kg) | ECAPE (Peters, J/kg) |',
+                  '|---|---:|---:|---:|']
+          parcels=d.get('parcels',{})
+          for name in ('SB','ML','MU'):
+            q=parcels.get(name,{})
+            rows.append(f"| {name} | {q.get('cape_jkg')} | {q.get('cin_jkg')} | {q.get('ecape_peters_jkg')} |")
+          advection=d.get('inferred_temp_advection',{}).get('layers',[])
+          barbs=d.get('wind_barbs_50hpa',[])
+          rows+=['', f'50-mb wind-barb levels: {len(barbs)}',
+                 f'Inferred WAA/CAA layers: {len(advection)}', '',
+                 '### Warnings']
+          warnings=d.get('warnings',[])
+          rows.extend([f'- {w}' for w in warnings] if warnings else ['- None reported'])
+          text='\n'.join(rows)+'\n'
+          print(text)
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as f:
+            f.write(text)
+          if not barbs or all(parcels.get(k,{}).get('cape_jkg') is None for k in ('SB','ML','MU')):
+            raise RuntimeError('Diagnostics incomplete: no usable wind levels or CAPE parcels')
+          PY
+
+      - name: Save JSON result for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spcoa-sounding-diagnostics-test
+          path: test_outputs/sounding_diagnostics.json
+          if-no-files-found: warn
+          retention-days: 7
