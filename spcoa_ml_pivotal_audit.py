@@ -166,6 +166,28 @@ def pressure_weighted_ml_parcel(sprof, depth_hpa=100, step_hpa=0.25):
         'diagnostics':stat_parcel(pcl),
     }
 
+def sharppy_interpolated_ml_parcel(sprof, depth_hpa=100):
+    """Diagnostic control: SHARPpy 1-hPa interpolated means (exact=False).
+
+    This is not Pivotal's proven method. It isolates whether the native-level
+    exact=True mean versus interpolated SHARPpy mean changes the parcel result.
+    """
+    from sharppy.sharptab import params, thermo
+    pbot=float(sprof.pres[sprof.sfc]); ptop=pbot-depth_hpa
+    mt=params.mean_theta(sprof,pbot=pbot,ptop=ptop,exact=False)
+    mr=params.mean_mixratio(sprof,pbot=pbot,ptop=ptop,exact=False)
+    t=float(thermo.theta(1000.,mt,pbot))
+    td=float(thermo.temp_at_mixrat(mr,pbot))
+    if not np.isfinite([t,td]).all() or td>t+.25:
+        raise ValueError('Invalid interpolated ML parcel')
+    td=min(td,t)
+    lpl=params.DefineParcel(sprof,flag=5,pres=pbot,tmpc=t,dwpc=td)
+    return {'method':'SHARPpy 1-hPa interpolated means (exact=False)',
+            'parcel_origin':{'pressure_hpa':clean_num(pbot,3),
+                             'temp_c':clean_num(t,4),'dewpoint_c':clean_num(td,4)},
+            'diagnostics':stat_parcel(params.parcelx(sprof,lplvals=lpl))}
+
+
 def analyze(raw, include_sensitivities=True):
     from metpy.calc import dewpoint_from_specific_humidity
     from metpy.units import units
@@ -203,6 +225,7 @@ def analyze(raw, include_sensitivities=True):
                                ptop=float(shp.pres[shp.sfc])-100,exact=True),4),
     }
     out['ML_100hpa_pressure_weighted_reference'] = pressure_weighted_ml_parcel(shp)
+    out['ML_100hpa_SHARPpy_interpolated_mean_reference'] = sharppy_interpolated_ml_parcel(shp)
     # Difference isolates native-level averaging versus pressure-weighted mean:
     # both lifts use the same SHARPpy parcelx on the same QC'd HRRR profile.
     std=out['SHARPpy_ML_100hpa_explicit']
@@ -243,6 +266,8 @@ def analyze(raw, include_sensitivities=True):
               'surface_pressure_hpa':clean_num(pr2['pressure_hpa'][0],2),
               'surface_temperature_c':clean_num(pr2['temperature_k'][0]-273.15,3),
               'ML':stat_parcel(sd.sharppy_lift_parcel(shp2,4,100)),
+              'ML_pressure_weighted':pressure_weighted_ml_parcel(shp2),
+              'ML_SHARPpy_interpolated':sharppy_interpolated_ml_parcel(shp2),
               'MU':stat_parcel(sd.sharppy_lift_parcel(shp2,3,300)),
             }
         except Exception as exc:
@@ -262,7 +287,7 @@ def fmt(x): return '—' if x is None else str(x)
 
 
 def summary_text(report):
-    lines=['SPCOA vs Pivotal: HRRR F00 MIXED-LAYER AUDIT V2',
+    lines=['SPCOA vs Pivotal: HRRR F00 MIXED-LAYER AUDIT V3',
            f"Run: {report['run_id']}",
            'Pivotal values were transcribed from the user-provided screenshot; no Pivotal raw profile was available.',
            'The nearest SPCOA native grid point is not necessarily identical to Pivotal interpolation.', '']
@@ -275,12 +300,30 @@ def summary_text(report):
           f"  STANDARD ML CAPE/CIN/LCL/LFC/EL = {' / '.join(fmt(x[k]) for k in ('cape_jkg','cin_jkg','lcl_m_agl','lfc_m_agl','el_m_agl'))}",
           f"  PRESSURE-WEIGHTED ML CAPE/CIN/LCL/LFC/EL = {' / '.join(fmt(a['ML_100hpa_pressure_weighted_reference']['diagnostics'][k]) for k in ('cape_jkg','cin_jkg','lcl_m_agl','lfc_m_agl','el_m_agl'))}",
           f"  Pressure-weighted ML origin = {a['ML_100hpa_pressure_weighted_reference']['parcel_origin']}",
+          f"  SHARPpy interpolated-mean ML CAPE/CIN/LCL/LFC/EL = {' / '.join(fmt(a['ML_100hpa_SHARPpy_interpolated_mean_reference']['diagnostics'][k]) for k in ('cape_jkg','cin_jkg','lcl_m_agl','lfc_m_agl','el_m_agl'))}",
           f"  MU CAPE/CIN/LCL = {' / '.join(fmt(a['SHARPpy_MU_300hpa'][k]) for k in ('cape_jkg','cin_jkg','lcl_m_agl'))}",
           f"  SHARPpy explicit and direct default same? {a['SHARPpy_default_vs_explicit_agree']}",
           f"  Lower 100 hPa native levels: {a['lowest_100_hpa_layer_check']['native_levels_in_100_hpa']}",
           f"  Mean layer theta K (independent): {a['lowest_100_hpa_layer_check']['theta_k_independent_pressure_integral']}",
           f"  Mean layer mixing ratio g/kg (independent): {a['lowest_100_hpa_layer_check']['mixing_ratio_gkg_independent_pressure_integral']}",
         ])
+        # Controlled 2x3 design: same grid cell and same SHARPpy parcelx,
+        # vary only input surface row and ML-layer averaging algorithm.
+        native = a.get('sensitivity_only_not_reference_definition',{}).get('native_hybrid_without_appended_2m_row',{})
+        if 'error' in native:
+            lines.append(f"  Native-only sensitivity unavailable: {native['error']}")
+        elif native:
+            lines.append('  CONTROLLED ML COMPARISON (CAPE / CIN / LCL):')
+            variants = [
+              ('2m appended, native-level exact=True', a['SHARPpy_ML_100hpa_explicit']),
+              ('2m appended, pressure-integrated mean', a['ML_100hpa_pressure_weighted_reference']['diagnostics']),
+              ('2m appended, SHARPpy interpolated mean', a['ML_100hpa_SHARPpy_interpolated_mean_reference']['diagnostics']),
+              ('native only, native-level exact=True', native['ML']),
+              ('native only, pressure-integrated mean', native['ML_pressure_weighted']['diagnostics']),
+              ('native only, SHARPpy interpolated mean', native['ML_SHARPpy_interpolated']['diagnostics']),
+            ]
+            for label, rec in variants:
+                lines.append(f"    {label}: {fmt(rec.get('cape_jkg'))} / {fmt(rec.get('cin_jkg'))} / {fmt(rec.get('lcl_m_agl'))}")
         for w in a['warnings']:lines.append(f'  WARNING: {w}')
         lines.append('')
     if 'pivotal_requested_gridpoint' in report['points'] and report.get('pivotal_reference'):
@@ -308,6 +351,8 @@ def summary_text(report):
       '  E. A complete same-profile confirmation requires the actual Pivotal input profile or independently extracted HRRR grib at the same native cell.',
       '  F. Zero CAPE and zero CIN from SHARPpy do not independently establish an absence of negative buoyancy.',
       '  G. A close match to Pivotal is diagnostic evidence, not proof: the underlying Pivotal raw profile and algorithms remain unavailable.',
+      '  H. A near-match in LCL alone can be coincidental. Compare CAPE, CIN, LFC, EL and independent low-level T/Td as well.',
+      '  I. The 2m-appended and native-only profiles are deliberately different inputs; never silently substitute either in operational outputs.',
     ])
     return '\n'.join(lines)+'\n'
 
@@ -325,8 +370,8 @@ def main():
     args=ap.parse_args()
     sd.run_valid(args.run)
     outdir=Path(args.out_dir);outdir.mkdir(parents=True,exist_ok=True)
-    report={'schema':'spcoa.ml_parcel_audit.v2','run_id':args.run,
-            'methods':{'ML':'Compare SHARPpy native-level exact=True ML origin against physically pressure-integrated 100-hPa theta+mixratio; both lifted by SHARPpy parcelx',
+    report={'schema':'spcoa.ml_parcel_audit.v3','run_id':args.run,
+            'methods':{'ML':'2x3 factorial test of 2m-surface merge versus native-only, and SHARPpy native-level exact=True vs independent pressure-weighted vs SHARPpy 1-hPa interpolated means. All parcels lifted by same SHARPpy parcelx',
                        'low_level_data':'SPCOA native hybrid plus 2m pseudo surface; capped supersaturation <=0.25 C'},
             'requested_coordinates':{'pivotal':[args.pivotal_lat,args.pivotal_lon],
                                      'spcoa':[args.spcoa_lat,args.spcoa_lon]},
@@ -360,6 +405,10 @@ def main():
     (outdir/'ML_AUDIT_SUMMARY.txt').write_text(txt,encoding='utf-8')
     print('\n'+txt)
     print('Files written to',outdir)
+
+
+if __name__=='__main__':main()
+
 
 
 if __name__=='__main__':main()
