@@ -18595,7 +18595,7 @@ document.addEventListener("visibilitychange", () => {
 
 
 /* ===============================================================================
-   SPCOA V42 | PRESS-AND-HOLD CLICKABLE HRRR F00 SOUNDINGS
+   SPCOA V45 | WEATHERFRONT-STYLE HRRR F00 SOUNDINGS
    Source: spcoa_soundings.py v2: 32x32 binary tiles, int16 quantization,
    manifest.json and geo_index.json, run-specific S3. No new HTML/CSS required.
    No sounding is synthesized from a different hour or interpolated between cells.
@@ -18718,7 +18718,12 @@ function spcoaSndDecodePoint(block, k, manifest) {
         for(let lev=0;lev<block.levels;lev++) {
             const index=((f*block.levels+lev)*block.cells+k);
             const raw=block.dv.getInt16(20+8*block.cells+index*2,true);
-            a.push(raw===-32768 ? NaN : raw/enc.factor+enc.offset);
+            if (raw === -32768) a.push(NaN);
+            else if (enc.transform === 'log10') {
+                // V3 archive: logarithmic specific humidity retains the upper-tropospheric
+                // water vapour that a 1e-5 kg/kg linear quantizer would round to zero.
+                a.push(raw === (enc.zero_raw ?? -32767) ? 0 : Math.pow(10, raw/enc.factor+enc.offset));
+            } else a.push(raw/enc.factor+enc.offset);
         }
         out[name]=a;
     }
@@ -18782,6 +18787,54 @@ function spcoaSndProfile(p) {
     const clean=[];
     for(const a of out) if(!clean.length || a.z>clean.at(-1).z+0.1)clean.push(a);
     return clean;
+}
+// Standard-pressure display samples from native HRRR hybrid levels.
+// Native hybrid levels remain the source for the sounding traces and diagnostics.
+function spcoaSndAtPressure(profile, pressure) {
+    if (!profile?.length || !Number.isFinite(pressure)) return null;
+    const ordered=[...profile].filter(a=>Number.isFinite(a.p)&&a.p>0)
+        .sort((a,b)=>b.p-a.p);
+    if (!ordered.length || pressure>ordered[0].p+0.1 ||
+        pressure<ordered[ordered.length-1].p-0.1) return null;
+    for (let i=0;i<ordered.length;i++) {
+        const a=ordered[i];
+        if (Math.abs(a.p-pressure)<0.01) return {...a,p:pressure};
+        if (i===ordered.length-1) break;
+        const b=ordered[i+1];
+        if (pressure<=a.p && pressure>=b.p) {
+            const denom=Math.log(a.p/b.p);
+            if(!(denom>0))continue;
+            const f=Math.max(0,Math.min(1,Math.log(a.p/pressure)/denom));
+            const linear=(k)=>Number.isFinite(a[k])&&Number.isFinite(b[k])?
+                a[k]+f*(b[k]-a[k]):NaN;
+            // Log mixing ratio prevents a spurious near-zero dewpoint cliff aloft.
+            const q=(a.q>0&&b.q>0)?
+                Math.exp(Math.log(a.q)+f*(Math.log(b.q)-Math.log(a.q))):
+                linear('q');
+            return {p:pressure,t:linear('t'),q,z:linear('z'),
+                    u:linear('u'),v:linear('v'),td:spcoaSndDewpoint(q,pressure)};
+        }
+    }
+    return null;
+}
+function spcoaSndPressureLevels(profile) {
+    const rows=[];
+    for(let hpa=1000;hpa>=100;hpa-=50)rows.push({pressure:hpa,sample:spcoaSndAtPressure(profile,hpa)});
+    return rows;
+}
+function spcoaSndLevelTable(profile) {
+    let html='<tr><th>Pressure</th><th>Temp</th><th>Dewpoint</th><th>RH</th><th>Height AGL</th><th>Wind dir</th><th>Speed</th></tr>';
+    for (const {pressure,sample:a} of spcoaSndPressureLevels(profile)) {
+        const speed=a&&Number.isFinite(a.u+a.v)?Math.hypot(a.u,a.v)*1.943844:NaN;
+        const direction=a&&Number.isFinite(a.u+a.v)&&speed>=0.5?
+            (Math.atan2(-a.u,-a.v)*180/Math.PI+360)%360:NaN;
+        const sat=(tc)=>6.112*Math.exp((17.67*tc)/(243.5+tc));
+        const rh=a&&Number.isFinite(a.td)&&Number.isFinite(a.t)?
+            Math.min(100,Math.max(0,100*sat(a.td)/sat(a.t))):NaN;
+        const value=(v,d=0)=>spcoaSndFormatted(v,d);
+        html+=`<tr><td>${pressure} mb</td><td>${value(a?.t,1)}°C</td><td>${value(a?.td,1)}°C</td><td>${value(rh)}%</td><td>${value(a?.z)} m</td><td>${value(direction)}°</td><td>${value(speed)} kt</td></tr>`;
+    }
+    return html;
 }
 function spcoaSndWindAt(profile,z) {
     if(!profile?.length||z<profile[0].z-25||z>profile.at(-1).z+5) return null;
@@ -18920,76 +18973,130 @@ function spcoaSndWindBarb(ctx,x,y,u,v) {
     if(!Number.isFinite(u+v))return;
     const kt=Math.round(Math.hypot(u,v)*1.943844/5)*5;
     ctx.save();ctx.translate(x,y);
-    // Staff points toward the direction FROM which the wind blows.
+    // Canvas +y is downward. Staff extends toward where the wind COMES FROM.
     ctx.rotate(Math.atan2(v,-u));
-    ctx.strokeStyle='#dce7f4';ctx.fillStyle='#dce7f4';ctx.lineWidth=1.1;
-    if(kt<5){ctx.beginPath();ctx.arc(0,0,2,0,Math.PI*2);ctx.stroke();ctx.restore();return;}
-    const length=20;
+    ctx.strokeStyle='#eef4fa';ctx.fillStyle='#eef4fa';ctx.lineWidth=1.3;
+    ctx.lineCap='round';ctx.lineJoin='round';
+    if(kt<5){ctx.beginPath();ctx.arc(0,0,2.5,0,Math.PI*2);ctx.stroke();ctx.restore();return;}
+    const length=24, feather=11;
     ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(length,0);ctx.stroke();
     let n50=Math.floor(kt/50),remainder=kt%50,n10=Math.floor(remainder/10),n5=(remainder%10)>=5;
     let position=length;
     for(let i=0;i<n50;i++) {
-        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-5,-8);ctx.lineTo(position-5,0);
-        ctx.closePath();ctx.fill();position-=6;
+        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-6,-feather);
+        ctx.lineTo(position-6,0);ctx.closePath();ctx.fill();position-=7;
     }
     for(let i=0;i<n10;i++) {
-        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-5,-8);ctx.stroke();position-=4;
+        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-6,-feather);ctx.stroke();position-=5;
     }
-    if(n5){ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-3,-5);ctx.stroke();}
+    if(n5){ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-4,-6);ctx.stroke();}
     ctx.restore();
 }
 function spcoaSndSkew(canvas,current,previous) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
-    const L=43,R=w-32,T=24,B=h-35;
-    const lo=-90,hi=115;
-    const y=p=>T+Math.log(1050/p)/Math.log(1050/100)*(B-T);
-    const x=(temp,p)=>L+(temp+45*Math.log(1000/p)/Math.log(10)-lo)/(hi-lo)*(R-L);
+    const L=50,R=w-46,T=26,B=h-43;
+    const top=100,bottom=1050,lo=-80,hi=83,skew=47;
+    const logSpan=Math.log(bottom/top);
+    // Correct log-pressure orientation: 100 mb TOP, 1000 mb BOTTOM.
+    const y=p=>T+Math.log(p/top)/logSpan*(B-T);
+    const x=(tc,p)=>L+(tc+skew*Math.log(1000/p)/Math.LN10-lo)/(hi-lo)*(R-L);
     ctx.save();ctx.beginPath();ctx.rect(L,T,R-L,B-T);ctx.clip();
-    for(const p of [100,150,200,250,300,400,500,600,700,800,900,1000]) {
-        const yp=y(p);ctx.strokeStyle='#25313d';ctx.lineWidth=0.8;
-        ctx.beginPath();ctx.moveTo(L,yp);ctx.lineTo(R,yp);ctx.stroke();
+    // Pressure isobars at all 50-mb intervals; major isobars emphasized.
+    for(let p=100;p<=1000;p+=50) {
+        const yy=y(p),major=p%100===0||p===850;
+        ctx.strokeStyle=major?'#3b4758':'#202933';ctx.lineWidth=major?1.0:.6;
+        ctx.beginPath();ctx.moveTo(L,yy);ctx.lineTo(R,yy);ctx.stroke();
     }
-    for(let t=-100;t<=100;t+=10) {
-        spcoaSndTrace(ctx,[{p:1000,t},{p:100,t}].map(a=>[x(a.t,a.p),y(a.p)]),'#343c49',0.7);
+    // Standard skewed isotherms (constant Celsius temperatures).
+    for(let t=-120;t<=90;t+=10){
+        ctx.strokeStyle=t===0?'#4f6390':'#343b49';ctx.lineWidth=t===0?1.1:.8;
+        spcoaSndTrace(ctx,[[x(t,bottom),y(bottom)],[x(t,top),y(top)]],ctx.strokeStyle,ctx.lineWidth);
     }
-    // Dry adiabats: constant potential temperature (physically calculated).
-    for(let th=260;th<=440;th+=20) {
+    // Dry adiabats from potential temperature.
+    for(let theta=260;theta<=480;theta+=20) {
         const pts=[];
-        for(let p=1000;p>=100;p-=20)pts.push([x(th*Math.pow(p/1000,0.2854)-273.15,p),y(p)]);
-        spcoaSndTrace(ctx,pts,'#353129',0.8);
+        for(let p=bottom;p>=top;p-=10)
+            pts.push([x(theta*Math.pow(p/1000,0.2854)-273.15,p),y(p)]);
+        spcoaSndTrace(ctx,pts,'#453c36',.75);
     }
-    const trace=(prof,name)=>prof.map(a=>Number.isFinite(a[name])?[x(a[name],a.p),y(a.p)]:null);
-    if(previous) {
-        spcoaSndTrace(ctx,trace(previous,'td'),'#7bd4a2',1.4,[4,5]);
-        spcoaSndTrace(ctx,trace(previous,'t'),'#ffb0a6',1.4,[4,5]);
+    // Standard mixing-ratio lines below ~550 mb, akin to operational Skew-T guides.
+    for(const gkg of [0.4,1,2,4,7,10,14,18,22,26,30]) {
+        const r=gkg/1000,pts=[];
+        for(let p=1050;p>=550;p-=10) {
+            const e=r*p/(.622+r),ln=Math.log(e/6.112);
+            const tc=243.5*ln/(17.67-ln);
+            if(Number.isFinite(tc))pts.push([x(tc,p),y(p)]);
+        }
+        spcoaSndTrace(ctx,pts,'#2f4934',.75);
     }
-    // Subtle parcel trace: only illustrative, not used for derived parcel diagnostics.
-    if(current)spcoaSndTrace(ctx,spcoaSndParcel(current).map(a=>[x(a.t,a.p),y(a.p)]),'#4ed2e6',1.3,[7,4]);
-    if(current) {
-        spcoaSndTrace(ctx,trace(current,'td'),'#51df81',2.5);
-        spcoaSndTrace(ctx,trace(current,'t'),'#ff555a',2.5);
+    // True native hybrid-level temperature/dewpoint traces; no 50mb smoothing.
+    // Missing upper-level humidity is NOT extrapolated or invented.
+    const trace=(prof,name)=>prof.map(a=>Number.isFinite(a[name])?
+        [x(a[name],a.p),y(a.p)]:null);
+    if(previous){
+        spcoaSndTrace(ctx,trace(previous,'td'),'#8acda7',1.6,[5,5]);
+        spcoaSndTrace(ctx,trace(previous,'t'),'#ffa29f',1.6,[5,5]);
+    }
+    if(current)spcoaSndTrace(ctx,spcoaSndParcel(current).map(a=>[x(a.t,a.p),y(a.p)]),
+       '#58bedb',1.5,[7,4]);
+    if(current){
+        spcoaSndTrace(ctx,trace(current,'td'),'#27de57',3.2);
+        spcoaSndTrace(ctx,trace(current,'t'),'#ff343d',3.2);
     }
     ctx.restore();
-    // Standard wind-barb column at common pressure levels, using native wind profile.
-    if(current) {
-        for(const pressure of [1000,925,850,800,700,600,500,400,300,250,200,150]) {
-            if(pressure > current[0].p + 5)continue;
-            const closest=current.reduce((a,b)=>Math.abs(a.p-pressure)<Math.abs(b.p-pressure)?a:b);
-            if(Math.abs(closest.p-pressure)>28)continue;
-            spcoaSndWindBarb(ctx,R+7,y(pressure),closest.u,closest.v);
+    // Dedicated white wind-barb column. Interpolation is from native HRRR winds;
+    // pressure levels every 50mb, visual thinning only where isobars crowd.
+    ctx.strokeStyle='#47515c';ctx.lineWidth=.85;
+    ctx.beginPath();ctx.moveTo(R+5,T);ctx.lineTo(R+5,B);ctx.stroke();
+    if(current){
+        let lastY=-Infinity;
+        for(const {pressure,sample:a} of spcoaSndPressureLevels(current).reverse()) {
+            if(!a || !Number.isFinite(a.u+a.v))continue;
+            const yy=y(pressure);
+            // Keep barbs separate at the high-pressure end of log-p plot.
+            if(yy-lastY<17)continue;
+            spcoaSndWindBarb(ctx,R+13,yy,a.u,a.v);
+            lastY=yy;
         }
     }
-    ctx.fillStyle='#bac3ce';ctx.textAlign='right';
-    for(const p of [100,200,300,400,500,600,700,800,900,1000]) {
-        if(y(p)>T&&y(p)<B+2)ctx.fillText(String(p),L-6,y(p)+4);
+    // Plot labels, including 50-mb pressure grid labels where room allows.
+    ctx.font='11px ui-monospace,Consolas,monospace';ctx.textAlign='right';
+    for(let p=100;p<=1000;p+=50){
+        const yy=y(p),major=(p%100===0||p===850);
+        if(major || (p<650 && p%50===0)) {
+            ctx.fillStyle=major?'#e3eaf2':'#8794a3';
+            ctx.font=major?'bold 10px ui-monospace,Consolas,monospace':'9px ui-monospace,Consolas,monospace';
+            ctx.fillText(String(p),L-7,yy+3);
+        }
     }
-    ctx.textAlign='center';
-    for(let t=-60;t<=60;t+=20){const xp=x(t,1000);if(xp>L&&xp<R)ctx.fillText(`${t}°`,xp,B+16);}
-    ctx.textAlign='left';ctx.fillStyle='#ff666d';ctx.fillText('T',L+5,T+13);
-    ctx.fillStyle='#69e49b';ctx.fillText('Td',L+23,T+13);
-    ctx.fillStyle='#5bd4e6';ctx.fillText('Parcel*',L+50,T+13);
-    ctx.fillStyle='#778899';ctx.font='9px ui-monospace,Consolas,monospace';
-    ctx.fillText('* Approx. parcel trace; CAPE from SPCOA data',L,B+28);
+    ctx.textAlign='center';ctx.fillStyle='#d0d7df';
+    ctx.font='11px ui-monospace,Consolas,monospace';
+    for(let t=-60;t<=60;t+=20){
+        const xx=x(t,1000);
+        if(xx>L&&xx<R)ctx.fillText(`${t}°`,xx,B+17);
+    }
+    if(current){
+        const s=current[0];
+        ctx.textAlign='left';ctx.fillStyle='#e8e8e8';
+        const f=v=>Number.isFinite(v)?`${Math.round(v*9/5+32)}°F`:'—';
+        ctx.fillText(`Sfc ${f(s.t)} / ${f(s.td)}`,L+3,B+30);
+        ctx.font='10px ui-monospace,Consolas,monospace';
+        ctx.fillStyle='#cfb9e7';
+        for(const height of [1,3,6,9,12,15]) {
+            let nearest=null;
+            for(const a of current)if(!nearest||Math.abs(a.z-height*1000)<Math.abs(nearest.z-height*1000))nearest=a;
+            if(nearest&&Math.abs(nearest.z-height*1000)<500&&nearest.p>=top){
+                const yy=y(nearest.p);
+                if(yy>T+8&&yy<B-8)ctx.fillText(`${height}km`,L+3,yy-3);
+            }
+        }
+    }
+    ctx.textAlign='left';ctx.font='bold 11px ui-monospace,Consolas,monospace';
+    ctx.fillStyle='#ff454a';ctx.fillText('T',L+4,T+13);
+    ctx.fillStyle='#45e67a';ctx.fillText('Td',L+22,T+13);
+    ctx.fillStyle='#67d6ea';ctx.fillText('Parcel*',L+48,T+13);
+    ctx.fillStyle='#9caabb';ctx.font='9px ui-monospace,Consolas,monospace';
+    ctx.textAlign='right';ctx.fillText('Wind (kt)',w-4,T-8);
 }
 function spcoaSndHodo(canvas,current,previous) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
@@ -19022,6 +19129,20 @@ function spcoaSndHodo(canvas,current,previous) {
             const segment=profile.filter(v=>v.z>=Math.max(10,low)&&v.z<=high);
             spcoaSndTrace(ctx,segment.map(x=>xy(x)),color,2.8);
         }
+        // WeatherFront-style height markers: numbered km dots on the native wind trace.
+        // A dark outline keeps them readable over all four layer colors.
+        for(const km of [0,1,2,3,4,5,6,7,8,9]) {
+            const wind=spcoaSndWindAt(current,Math.max(10,km*1000));
+            if(!wind || !Number.isFinite(wind.u+wind.v))continue;
+            const [hx,hy]=xy(wind);
+            if(!Number.isFinite(hx+hy))continue;
+            ctx.fillStyle='#f0f4f9';ctx.strokeStyle='#0a1017';ctx.lineWidth=1.5;
+            ctx.beginPath();ctx.arc(hx,hy,km===0?5:6.5,0,Math.PI*2);
+            ctx.fill();ctx.stroke();
+            ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 9px Arial,sans-serif';
+            ctx.fillStyle='#0c1118';ctx.fillText(String(km),hx,hy+.4);
+        }
+        ctx.textBaseline='alphabetic';
         const motion=spcoaSndBunkers(current);
         for(const [key,label,color] of [['rm','RM','#ffbb5a'],['lm','LM','#a7baff']]) {
             if(!motion?.[key])continue;
@@ -19040,21 +19161,21 @@ function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
     const css=document.createElement('style');css.id='spcoa-sounding-css';
     css.textContent=`
-#spcoa-sounding-panel{position:fixed;z-index:6100;right:16px;top:54px;width:min(945px,calc(100vw - 25px));max-height:calc(100vh - 70px);overflow:auto;box-sizing:border-box;background:#0b1017;color:#edf2f8;border:1px solid #526072;border-radius:8px;box-shadow:0 12px 48px #000b;font:12px/1.5 Arial,Helvetica,sans-serif;display:none}
+#spcoa-sounding-panel{position:fixed;z-index:6100;right:16px;top:54px;width:min(1340px,calc(100vw - 25px));max-height:calc(100vh - 70px);overflow:auto;box-sizing:border-box;background:#07090c;color:#f2f4f6;border:1px solid #526072;border-radius:8px;box-shadow:0 12px 48px #000b;font:12px/1.5 Arial,Helvetica,sans-serif;display:none}
 #spcoa-sounding-panel *{box-sizing:border-box}
-#spcoa-sounding-panel .ss-head{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #354253;background:#141c27;position:sticky;top:0;z-index:3}
+#spcoa-sounding-panel .ss-head{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #354253;background:#10151b;position:sticky;top:0;z-index:3}
 #spcoa-sounding-panel .ss-title{font-weight:700;font-size:14px;line-height:1.35}
 #spcoa-sounding-panel .ss-sub{font-size:11px;color:#a8bbcf}
 #spcoa-sounding-panel .ss-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 #spcoa-sounding-panel button{background:#223142;color:#eff5ff;border:1px solid #546477;padding:5px 9px;border-radius:4px;cursor:pointer}
 #spcoa-sounding-panel button:hover{background:#334961}
 #spcoa-sounding-panel .ss-body{padding:10px}
-#spcoa-sounding-panel .ss-figures{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
-#spcoa-sounding-panel .ss-chart{border:1px solid #3e5062;background:#080d13;padding:7px 4px 4px}
+#spcoa-sounding-panel .ss-figures{display:grid;grid-template-columns:minmax(0,1.13fr) minmax(0,.87fr);gap:8px}
+#spcoa-sounding-panel .ss-chart{border:1px solid #3e5062;background:#030406;padding:7px 4px 4px}
 #spcoa-sounding-panel .ss-chart h3{color:#cfddec;margin:0 0 3px 9px;font-size:12px}
-#spcoa-sounding-panel canvas{display:block;width:100%;height:400px}
+#spcoa-sounding-panel canvas{display:block;width:100%;height:545px}
 #spcoa-sounding-panel .ss-tables{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
-#spcoa-sounding-panel .ss-box{background:#101824;border:1px solid #34485b;border-radius:4px;padding:8px}
+#spcoa-sounding-panel .ss-box{background:#0b1118;border:1px solid #34485b;border-radius:4px;padding:8px}
 #spcoa-sounding-panel .ss-box h3{font-size:12px;color:#a8d8f8;margin:0 0 5px}
 #spcoa-sounding-panel table{border-collapse:collapse;width:100%;font:11px ui-monospace,Consolas,monospace;color:#dbe7f6}
 #spcoa-sounding-panel td,#spcoa-sounding-panel th{border-bottom:1px solid #243443;padding:3px 4px;text-align:right}
@@ -19062,6 +19183,10 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel th{font-size:10px;color:#8db4d0}
 #spcoa-sounding-panel #ss-status{color:#b8c7d6;margin:5px 0 8px;min-height:17px}
 #spcoa-sounding-panel .ss-note{color:#9aafc6;margin-top:8px;font-size:10px}
+#spcoa-sounding-panel .ss-pressure{margin-top:9px;}
+#spcoa-sounding-panel .ss-pressure-scroll{max-height:270px;overflow:auto;}
+#spcoa-sounding-panel .ss-pressure th{position:sticky;top:0;background:#15202a;}
+#spcoa-sounding-panel .ss-pressure td:first-child{font-weight:700;color:#a3cfef;}
 #spcoa-sounding-panel .ss-compare{white-space:nowrap;display:flex;align-items:center;gap:5px;font-size:11px;color:#c8d7ec}
 @media(max-width:680px){#spcoa-sounding-panel .ss-figures,#spcoa-sounding-panel .ss-tables{grid-template-columns:1fr}#spcoa-sounding-panel canvas{height:330px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
 `;
@@ -19080,7 +19205,8 @@ function spcoaSndBuildPanel() {
       <div class="ss-chart"><h3>Hodograph (kt)</h3><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables"><div class="ss-box"><h3>Thermodynamics · SPCOA gridded values</h3><table id="ss-thermo"></table></div>
       <div class="ss-box"><h3>Kinematics · Native HRRR profile</h3><table id="ss-kinematics"></table></div></div>
-      <div class="ss-note">Native F00 profiles are sampled at the nearest HRRR ~3-km grid point. CAPE/CIN and ECAPE (Peters) are retrieved from independent SPCOA scalar fields, which may differ in calculation methods and horizontal sampling. Skew-T parcel path is illustrative; no CAPE is computed from its curve. Surface T/Td use 2 m data, while surface winds use 10 m data. Hourly comparison uses the same native HRRR grid index from the preceding F00 analysis.</div></div>`;
+      <div class="ss-box ss-pressure"><h3>Standard Pressure Levels · 50 mb (native HRRR interpolation)</h3><div class="ss-pressure-scroll"><table id="ss-pressure"></table></div></div>
+      <div class="ss-note" id="ss-archive-note">Native F00 profiles are sampled at the nearest HRRR ~3-km grid point. CAPE/CIN and ECAPE (Peters) are retrieved from independent SPCOA scalar fields, which may differ in calculation methods and horizontal sampling. Skew-T parcel path is illustrative; no CAPE is computed from its curve. Surface T/Td use 2 m data, while surface winds use 10 m data. Wind barbs are sampled at standard pressure intervals with visual decluttering. Upper-level Td is shown only where archived HRRR humidity has usable precision. Hourly comparison uses the same native HRRR grid index from the preceding F00 analysis.</div></div>`;
     document.body.appendChild(panel);
     document.getElementById('ss-close').addEventListener('click',()=>{
         panel.style.display='none';
@@ -19220,6 +19346,19 @@ function spcoaSndRender() {
         ['Bunkers RM U (kt)',s1.bunkers?.rm.u*1.943844,s2.bunkers?.rm?.u*1.943844,'',0],
         ['Bunkers RM V (kt)',s1.bunkers?.rm.v*1.943844,s2.bunkers?.rm?.v*1.943844,'',0]];
     document.getElementById('ss-kinematics').innerHTML=spcoaSndTable(kinetic,!!b);
+    const table=document.getElementById('ss-pressure');
+    if(table)table.innerHTML=spcoaSndLevelTable(p);
+    const note=document.getElementById('ss-archive-note');
+    if(note){
+        const legacy=a.manifest?.quantization?.specific_humidity_kgkg?.transform!=='log10';
+        note.dataset.legacyHumidity=legacy?'yes':'no';
+        if(legacy && !note.querySelector('.ss-humidity-warning')){
+            note.insertAdjacentHTML('beforeend',
+                '<span class="ss-humidity-warning" style="display:block;color:#ffd291;margin-top:4px">This is an older sounding archive: very dry upper-level specific humidity was rounded to zero by the original compression. Reprocess this hour with the updated sounding backend to extend upper-level dewpoint where valid HRRR moisture exists.</span>');
+        }
+        const warning=note.querySelector('.ss-humidity-warning');
+        if(warning)warning.style.display=legacy?'block':'none';
+    }
 }
 function spcoaSndExportPng() {
     if(!SPCOA_SOUNDING.current)return;
