@@ -1,0 +1,9 @@
+# Separate from your existing requirements_spcoa_soundings.txt.
+# Python 3.11 recommended. Install SHARPpy separately with --no-deps
+# (its old wheel metadata pins incompatible historical dependencies).
+numpy>=1.26,<2
+scipy>=1.12,<1.15
+metpy>=1.6,<2
+pint>=0.24,<1
+boto3>=1.34,<2
+ecape-parcel==1.2.2
