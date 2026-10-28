@@ -2,7 +2,7 @@
 """SPCOA WeatherFront-style HRRR F00 sounding diagnostic engine.
 
 Reads native columns from spcoa_soundings.py v1 S3 tiles or a JSON profile.
-Computes thermodynamics from the selected profile; never substitutes gridded
+Computes thermodynamics and SB/ML/MU Peters ECAPE from the selected profile; never substitutes gridded
 SPCOA CAPE/ECAPE overlays. Output is a JSON data contract for the UI.
 
 Install: pip install numpy metpy sharppy ecape boto3
@@ -15,7 +15,7 @@ Cautions: SHARPpy inferred temperature advection is a thermal-wind estimate,
 NOT gridded -V dot grad(T). The surface row combines 2-m thermo and 10-m winds.
 """
 from __future__ import annotations
-import argparse, gzip, json, math
+import argparse, gzip, inspect, json, math
 from pathlib import Path
 import numpy as np
 
@@ -187,23 +187,137 @@ def inferred_advection(prof,latitude):
     except Exception as exc:
         return [], str(exc)
 
-def ecape_value(a):
-    """Call published Peters ECAPE implementation; no fallback approximations."""
-    try:
-        from metpy.units import units
+def lcl_lfc_rh_by_parcel(p, relative_humidity, parcel):
+    """Return actual pressure-weighted environmental LCL-to-LFC RH, by parcel.
+
+    The parcel's own LCL and LFC must define a positive-depth interval.
+    With no valid LFC, return null instead of inventing an estimate.
+    """
+    if not parcel:
+        return {'percent': None, 'status': 'parcel_unavailable'}
+    lcl = parcel.get('lcl_hpa')
+    lfc = parcel.get('lfc_hpa')
+    if lcl is None or lfc is None:
+        return {'percent': None, 'status': 'no_valid_lcl_lfc'}
+    if lcl <= lfc + 0.01:
+        return {'percent': None, 'status': 'zero_depth_or_inverted_layer'}
+    value = number(pressure_mean(p, relative_humidity, lfc, lcl))
+    return {'percent': value,
+            'status': 'valid' if value is not None else 'insufficient_layer_data'}
+
+
+def _ecape_with_parcel_bounds(a, cape_jkg, lfc_msl, el_msl):
+    """Peters ECAPE assembled from public ecape.calc components.
+
+    Used when the installed `ecape` release cannot accept user-supplied LFC,
+    EL bounds. It preserves the Method B CAPE/LFC/EL parcel definition,
+    rather than substituting MetPy's separate mixed-layer parcel. This route
+    uses the ecape package's MSE -> NCAPE -> psi -> ECAPE components and
+    its documented default right-moving 0-1-km storm-relative winds.
+    """
+    from ecape import calc as ec
+    from metpy.units import units
+    z = np.asarray(a['height_m_msl'], float)
+    if not z[0] < lfc_msl < el_msl < z[-1]:
+        raise ValueError('LFC/EL not within resolved HRRR vertical profile')
+    p = a['pressure_hpa'] * units.hPa
+    zm = z * units.meter
+    t = a['temperature_k'] * units.kelvin
+    q = a['specific_humidity_kgkg'] * units.dimensionless
+    u = a['u_ms'] * units('m/s')
+    v = a['v_ms'] * units('m/s')
+    required = ('calc_mse', 'calc_integral_arg', 'calc_ncape',
+                'calc_sr_wind', 'calc_psi', 'calc_ecape_a')
+    missing = [name for name in required if not hasattr(ec, name)]
+    if missing:
+        raise RuntimeError('Installed ecape package lacks component functions: ' + ', '.join(missing))
+    mse_bar, mse_star = ec.calc_mse(p, zm, t, q)
+    arg = ec.calc_integral_arg(mse_bar, mse_star, t)
+    # calc_ncape integrates from the last resolved level at/below LFC to
+    # the last resolved level at/below EL (same bound convention as package).
+    lfc_idx = int(np.searchsorted(z, lfc_msl, side='right') - 1)
+    el_idx = int(np.searchsorted(z, el_msl, side='right') - 1)
+    if el_idx <= lfc_idx:
+        raise ValueError('LFC/EL separation is smaller than native vertical resolution')
+    ncape = ec.calc_ncape(arg, zm, lfc_idx, el_idx).to('J/kg')
+    # Peters NCAPE is a nonnegative dilution potential.
+    if np.isfinite(ncape.magnitude) and ncape.magnitude < 0:
+        ncape = 0.0 * units('J/kg')
+    sr_wind = ec.calc_sr_wind(p, u, v, zm)
+    psi = ec.calc_psi(el_msl * units.meter)
+    value = ec.calc_ecape_a(sr_wind, psi, ncape,
+                            cape_jkg * units('J/kg'))
+    return value
+
+
+def ecape_values(a, parcels, enabled=True):
+    """Calculate SB, Method B ML and MU Peters ECAPE with independent status.
+
+    No-LFC or zero CAPE parcels are not passed to `ecape.calc`, which can
+    otherwise throw IndexError for empty positive-buoyancy arrays.
+    """
+    output = {}
+    errors = {}
+    if enabled:
         from ecape.calc import calc_ecape
-        # Explicit SB ECAPE: package default is MOST UNSTABLE, not surface based.
-        # The package documents height_msl, not height_agl.
-        result=calc_ecape(a['height_m_msl']*units.meter,
-                          a['pressure_hpa']*units.hectopascal,
-                          a['temperature_k']*units.kelvin,
-                          a['specific_humidity_kgkg']*units.dimensionless,
-                          a['u_ms']*units('m/s'),a['v_ms']*units('m/s'),
-                          cape_type='surface_based')
-        val=scalar(result.to('J/kg').magnitude if hasattr(result,'to') else result)
-        return val, None if val is not None else 'ECAPE returned nonfinite value'
-    except Exception as exc:
-        return None,str(exc)
+        from metpy.units import units
+        signature = inspect.signature(calc_ecape)
+        supports_bounds = all(k in signature.parameters for k in ('lfc', 'el'))
+        inputs = (a['height_m_msl'] * units.meter,
+                  a['pressure_hpa'] * units.hPa,
+                  a['temperature_k'] * units.kelvin,
+                  a['specific_humidity_kgkg'] * units.dimensionless,
+                  a['u_ms'] * units('m/s'), a['v_ms'] * units('m/s'))
+    else:
+        supports_bounds = False
+
+    for name, package_name in [('sb','surface_based'),('ml','mixed_layer'),
+                               ('mu','most_unstable')]:
+        row = {'ecape_jkg':None, 'status':'not_calculated',
+               'cape_type':package_name, 'calculation_method':None}
+        parcel = parcels.get(name)
+        if not enabled:
+            row['status'] = 'skipped'
+        elif not parcel:
+            row['status'] = 'parcel_unavailable'
+        else:
+            cape = parcel.get('cape_jkg')
+            lfc = parcel.get('lfc_m_agl')
+            el = parcel.get('el_m_agl')
+            if cape is None or lfc is None or el is None or cape <= 0:
+                row['status'] = 'no_positive_cape_or_valid_lfc_el'
+            elif not 0 <= lfc < el < float(a['height_m_agl'][-1]):
+                row['status'] = 'invalid_or_unresolved_lfc_el'
+            else:
+                try:
+                    # Use the exact selected parcel CAPE. This is vital for ML:
+                    # SHARPpy Method B (pressure-integrated theta/mixing ratio)
+                    # should not be silently swapped with MetPy's ML parcel.
+                    kwargs = {'cape_type':package_name,
+                              'undiluted_cape':float(cape)*units('J/kg')}
+                    if supports_bounds:
+                        kwargs.update({'lfc':(lfc + float(a['height_m_msl'][0])) * units.meter,
+                                       'el':(el + float(a['height_m_msl'][0])) * units.meter})
+                        result = calc_ecape(*inputs, **kwargs)
+                        row['calculation_method'] = 'ecape.calc; SHARPpy parcel CAPE/LFC/EL overrides'
+                    else:
+                        # Published pip ecape releases may expose just
+                        # cape_type and undiluted_cape, with no LFC/EL override.
+                        # The component pathway is physically consistent with
+                        # the selected parcel and avoids MetPy-ML LFC mismatch.
+                        result = _ecape_with_parcel_bounds(
+                            a, float(cape), lfc + float(a['height_m_msl'][0]),
+                            el + float(a['height_m_msl'][0]))
+                        row['calculation_method'] = 'ecape.calc components; SHARPpy parcel CAPE/LFC/EL'
+                    value = scalar(result.to('J/kg').magnitude if hasattr(result,'to') else result)
+                    if value is None or value < 0:
+                        raise ValueError('ECAPE returned nonfinite or negative energy')
+                    row.update({'ecape_jkg':value,'status':'valid'})
+                except Exception as exc:
+                    row['status'] = 'calculation_error'
+                    errors[name] = f'{type(exc).__name__}: {exc}'
+        output[name]=row
+    return output, errors
 
 def diagnostics(raw, ecape=True):
     from sharppy.sharptab import params, thermo
@@ -237,17 +351,9 @@ def diagnostics(raw, ecape=True):
             parcels['ml']=parcel_report(pc)
         except Exception as exc: errors['ml']=str(exc);parcels['ml']=None
     else: errors['ml']='Insufficient complete 100-hPa mixed layer';parcels['ml']=None
-    # RH averaged uniformly in pressure between SB LCL and first LFC.
-    rh_layer=None
-    sb=parcels['sb']
-    rh_status='missing_lcl_or_lfc'
-    if sb and sb['lcl_hpa'] is not None and sb['lfc_hpa'] is not None:
-        if sb['lcl_hpa'] > sb['lfc_hpa'] + 0.01:
-            rh_layer=number(pressure_mean(p,rh,sb['lfc_hpa'],sb['lcl_hpa']))
-            rh_status='valid' if rh_layer is not None else 'insufficient_layer_data'
-        else:
-            rh_status='zero_depth_or_inverted_layer'
-    # No invented RH average for an undefined/zero-depth LCL-LFC layer.
+    # RH uses each lifted parcel's own LCL and LFC. Undefined LFC stays null.
+    lcl_lfc_rh = {kind:lcl_lfc_rh_by_parcel(p,rh,parcels.get(kind))
+                  for kind in ('sb','ml','mu')}
 
     shear={}; meanwinds={}
     surface=np.asarray([a['u_ms'][0],a['v_ms'][0]])
@@ -291,26 +397,35 @@ def diagnostics(raw, ecape=True):
             lapse[f'{bottom}_{upper}m_c_km']=number((ta-tb)/(upper-bottom)*1000)
     adv,adv_error=inferred_advection(prof,float(raw.get('lat',35)))
     if adv_error: errors['inferred_advection']=adv_error
-    ec_value,ec_error=ecape_value(a) if ecape else (None,'ECAPE skipped by request')
-    if ec_error: errors['ecape']=ec_error
+    ecape_data,ecape_errors=ecape_values(a,parcels,enabled=ecape)
+    if ecape_errors: errors['ecape']=ecape_errors
     try:
         pwat=scalar(params.precip_water(prof)) # inches SHARPpy convention
     except Exception as exc: pwat=None;errors['pwat']=str(exc)
     freezing_h=first_freezing_level_m_agl(z,tc)
     return {
-      'schema':'spcoa.hrrr_f00_sounding_diagnostics.v1','source':'native HRRR F00 profile',
+      'schema':'spcoa.hrrr_f00_sounding_diagnostics.v2','source':'native HRRR F00 profile',
       'location':{k:raw.get(k) for k in ('lat','lon','i','j')},
       'run_id':raw.get('run_id'),
       'requested_location':{'lat':raw.get('requested_lat'),'lon':raw.get('requested_lon')},
       'selection_distance_km':raw.get('selection_distance_km'),
       'methods':{'ml':'Method B: 100-hPa pressure-integrated theta/mixing ratio; lifted from surface pressure',
-                 'ecape':'Peters et al. 2023, explicitly surface_based via ecape.calc.calc_ecape',
-                 'lcl_lfc_rh':'pressure-weighted environmental RH, surface-based LCL to LFC',
+                 'ecape':'Peters et al. 2023: SB, 100-hPa Method B ML, MU; SHARPpy parcel CAPE/LFC/EL, ecape package calculation',
+                 'lcl_lfc_rh':'pressure-weighted environmental RH from each SB/ML/MU parcel LCL to LFC',
                  'advection':'SHARPpy inferred geostrophic thermal-wind advection (not actual horizontal advection)',
                  'barbs':'native U/V pressure-interpolated to every 50 hPa'},
       'ml_initial':ml_initial,'parcels':parcels,
-      'peters_surface_ecape_jkg':ec_value,'sb_lcl_lfc_rh_percent':rh_layer,
-      'sb_lcl_lfc_rh_status':rh_status,
+      'peters_surface_ecape_jkg':ecape_data['sb']['ecape_jkg'],
+      'peters_ml_ecape_jkg':ecape_data['ml']['ecape_jkg'],
+      'peters_mu_ecape_jkg':ecape_data['mu']['ecape_jkg'],
+      'ecape_by_parcel':ecape_data,
+      'sb_lcl_lfc_rh_percent':lcl_lfc_rh['sb']['percent'],
+      'sb_lcl_lfc_rh_status':lcl_lfc_rh['sb']['status'],
+      'ml_lcl_lfc_rh_percent':lcl_lfc_rh['ml']['percent'],
+      'ml_lcl_lfc_rh_status':lcl_lfc_rh['ml']['status'],
+      'mu_lcl_lfc_rh_percent':lcl_lfc_rh['mu']['percent'],
+      'mu_lcl_lfc_rh_status':lcl_lfc_rh['mu']['status'],
+      'lcl_lfc_rh_by_parcel':lcl_lfc_rh,
       'wind_barbs_50hpa':wind_barbs(a),'inferred_advection_100hpa':adv,
       'bulk_shear':shear,'mean_winds':meanwinds,'storm_motions':motions,
       'storm_relative_helicity':srh,'effective_inflow':effective,
@@ -378,13 +493,17 @@ def selftest():
     diffs=longitude_difference(anchor_lons,-100.69)
     assert np.argmin(abs(diffs))==1
     assert abs(diffs[0]+29.28058)<1e-5
+    assert lcl_lfc_rh_by_parcel([1000,950,900], [30,40,50],
+        {'lcl_hpa':950,'lfc_hpa':900}) == {'percent':45.0, 'status':'valid'}
+    assert lcl_lfc_rh_by_parcel([1000,950,900],[30,40,50],
+        {'lcl_hpa':950,'lfc_hpa':None})['status']=='no_valid_lcl_lfc'
     assert abs(float(longitude_difference(179.0,-179.0))+2.0)<1e-8
     assert first_freezing_level_m_agl([0,1000,2000],[5,-5,-10])==500.0
     encoded=json.dumps(json_safe({'i':np.int64(12),'value':np.float32(1.5),
                                    'missing':np.float64(np.nan),
                                    'barbs':np.array([950,900],dtype=np.int64)}),allow_nan=False)
     assert json.loads(encoded)=={'i':12,'value':1.5,'missing':None,'barbs':[950,900]}
-    print('SELFTEST PASS: profiles, Method B integration, wind barbs, longitude wrapping, freezing crossing, JSON')
+    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, JSON')
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__)
@@ -400,4 +519,9 @@ def main():
     result=diagnostics(raw,ecape=not args.skip_ecape)
     Path(args.output).write_text(json.dumps(json_safe(result),indent=2,allow_nan=False))
     print('Wrote',args.output,'; diagnostics issues:',list(result['calculation_errors']))
+    for kind in ('sb','ml','mu'):
+        er = result['ecape_by_parcel'][kind]
+        rh = result['lcl_lfc_rh_by_parcel'][kind]
+        print(f'  {kind.upper()}: ECAPE={er["ecape_jkg"]} J/kg [{er["status"]}], '
+              f'LCL-LFC RH={rh["percent"]}% [{rh["status"]}]')
 if __name__=='__main__':main()
