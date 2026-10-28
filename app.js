@@ -6502,6 +6502,7 @@ async function applyRun(runItem, { render = true, preload = true } = {}) {
         fieldMetadata = bundle.fields;
         vectorMetadata = bundle.vectors;
         contourMetadata = bundle.contours;
+        if (typeof spcoaSndRefreshForRun === 'function') spcoaSndRefreshForRun();
         if (runIdElement) runIdElement.textContent = currentRun;
         if (analysisTimeElement) analysisTimeElement.textContent = formatAnalysisTime(currentAnalysisTime);
         const windowRuns = filteredTimelineRuns();
@@ -15306,6 +15307,7 @@ async function hodoShowNativeProfileAtClick(lon,lat) {
 }
 
 map.on('click',(event)=>{
+    if (SPCOA_SOUNDING.enabled) return; // Sounding tool owns map clicks while selected.
     if (!hodoToggle?.checked || !hodoNativeIndex || map.getZoom()<HODO_NATIVE_MIN_ZOOM) return;
     void hodoShowNativeProfileAtClick(event.lngLat.lng,event.lngLat.lat)
         .catch(err=>{console.warn('Native HRRR click:',err);hodoStatus(err.message);});
@@ -18388,6 +18390,662 @@ document.addEventListener("visibilitychange", () => {
     setTimeout(() => notify("mp-ready"), 2500);
 })();
 }
+
+
+
+
+
+
+
+/* ===============================================================================
+   SPCOA V38 | NATIVE HRRR F00 CLICKABLE SOUNDINGS
+   Source: spcoa_soundings.py v2: 32x32 binary tiles, int16 quantization,
+   manifest.json and geo_index.json, run-specific S3. No new HTML/CSS required.
+   No sounding is synthesized from a different hour or interpolated between cells.
+   =============================================================================== */
+const SPCOA_SOUNDING = {
+    enabled: false, point: null, current: null, previous: null,
+    serial: 0, marker: null, manifestCache: new Map(), geoCache: new Map(),
+    blockCache: new Map(), MAX_BLOCKS: 22,
+    fields: ['pressure_hpa','temperature_k','specific_humidity_kgkg','height_m_msl','u_ms','v_ms'],
+    labels: {sbcape:'SBCAPE',mlcape:'MLCAPE',mucape:'MUCAPE',sbcin:'SBCIN',
+             mlcin:'MLCIN',mucin:'MUCIN',ecape:'SBECAPE (Peters)'},
+    currentValues: {}, previousValues: {}, comparing: false
+};
+function spcoaSndUrl(run, part) {
+    return `${S3_BASE_URL}/runs/${encodeURIComponent(run)}/soundings/v1/${part}`;
+}
+function spcoaSndUtc(run) { return runIdToIso(run) || run; }
+function spcoaSndPrevious(run) {
+    const date = new Date(spcoaSndUtc(run));
+    if (!Number.isFinite(date.getTime())) return null;
+    const d = new Date(date.getTime() - 3600000);
+    return d.toISOString().slice(0,10).replaceAll('-','')+'_'+String(d.getUTCHours()).padStart(2,'0');
+}
+async function spcoaSndManifest(run) {
+    if (!SPCOA_SOUNDING.manifestCache.has(run)) {
+        const promise = (async () => {
+            const m = await fetchJSON(spcoaSndUrl(run,'manifest.json'));
+            if (!m || m.complete !== true || m.run_id !== run ||
+                m.schema !== 'spcoa.native_hrrr_f00_soundings.v1' ||
+                m.binary_format?.magic !== 'SPCSND01' ||
+                m.block_size !== 32 || m.grid_shape?.[0] !== 1059 ||
+                m.grid_shape?.[1] !== 1799 || m.fields?.length !== 6 ||
+                m.nlevels < 26 || m.nlevels > 101) throw new Error('Invalid sounding archive manifest');
+            return m;
+        })().catch(e=>{SPCOA_SOUNDING.manifestCache.delete(run);throw e;});
+        SPCOA_SOUNDING.manifestCache.set(run,promise);
+    }
+    return SPCOA_SOUNDING.manifestCache.get(run);
+}
+async function spcoaSndIndex(run) {
+    if (!SPCOA_SOUNDING.geoCache.has(run)) {
+        const promise = (async () => {
+            const idx = await fetchJSON(spcoaSndUrl(run,'geo_index.json'));
+            if (idx.run_id !== run || !Array.isArray(idx.anchors) || idx.anchors.length < 1000 ||
+                idx.block_size !== 32) throw new Error('Invalid sounding geographic index');
+            return idx.anchors;
+        })().catch(e=>{SPCOA_SOUNDING.geoCache.delete(run);throw e;});
+        SPCOA_SOUNDING.geoCache.set(run,promise);
+    }
+    return SPCOA_SOUNDING.geoCache.get(run);
+}
+async function spcoaSndBlock(run, j0, i0, manifest) {
+    const nrows = 1059, ncols = 1799, block = 32;
+    if (j0 < 0 || i0 < 0 || j0 >= nrows || i0 >= ncols ||
+        j0 % block || i0 % block) return null;
+    const ident = `${run}/${j0}/${i0}`;
+    if (SPCOA_SOUNDING.blockCache.has(ident)) {
+        const val=SPCOA_SOUNDING.blockCache.get(ident);
+        SPCOA_SOUNDING.blockCache.delete(ident);
+        SPCOA_SOUNDING.blockCache.set(ident,val);
+        return val;
+    }
+    const promise = (async () => {
+        const path=`tiles/j${String(j0).padStart(4,'0')}/i${String(i0).padStart(4,'0')}.bin`;
+        const response=await fetch(spcoaSndUrl(run,path));
+        if (!response.ok) throw new Error(`Sounding block HTTP ${response.status}`);
+        let buffer=await response.arrayBuffer();
+        let dv=new DataView(buffer);
+        if (dv.byteLength > 2 && dv.getUint8(0) === 31 && dv.getUint8(1) === 139) {
+            if (typeof DecompressionStream !== 'function')
+                throw new Error('Browser cannot decompress sounding archive');
+            buffer=await new Response(new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+            dv=new DataView(buffer);
+        }
+        if (dv.byteLength < 20 || Array.from({length:8},(_,k)=>String.fromCharCode(dv.getUint8(k))).join('') !== 'SPCSND01')
+            throw new Error('Sounding block header invalid (check S3 gzip encoding)');
+        const y=dv.getUint16(8,true),x=dv.getUint16(10,true),h=dv.getUint16(12,true),w=dv.getUint16(14,true),
+              levels=dv.getUint16(16,true),nf=dv.getUint16(18,true);
+        const expected=20+8*h*w+2*nf*levels*h*w;
+        if (y !== j0 || x !== i0 || h !== Math.min(32,nrows-j0) ||
+            w !== Math.min(32,ncols-i0) || nf !== 6 || levels !== manifest.nlevels || dv.byteLength !== expected)
+            throw new Error(`Sounding block grid or length mismatch: ${ident}`);
+        return {dv,j0,i0,h,w,levels,cells:h*w};
+    })().catch(e=>{SPCOA_SOUNDING.blockCache.delete(ident);throw e;});
+    SPCOA_SOUNDING.blockCache.set(ident,promise);
+    while (SPCOA_SOUNDING.blockCache.size > SPCOA_SOUNDING.MAX_BLOCKS)
+        SPCOA_SOUNDING.blockCache.delete(SPCOA_SOUNDING.blockCache.keys().next().value);
+    return promise;
+}
+function spcoaSndCoords(b,k) {
+    const p=20+4*k, q=20+4*b.cells+4*k;
+    const lati=b.dv.getInt32(p,true),loni=b.dv.getInt32(q,true);
+    return lati === -2147483648 ? null : {lat:lati/1e5,lon:loni/1e5};
+}
+function spcoaSndDistance(lat,lon,toLat,toLon) {
+    const dlat=(lat-toLat)*Math.PI/180;
+    const dlon=(((lon-toLon+180)%360+360)%360-180)*Math.PI/180;
+    const s=Math.sin(dlat/2)**2+Math.cos(lat*Math.PI/180)*Math.cos(toLat*Math.PI/180)*Math.sin(dlon/2)**2;
+    return 12742*Math.asin(Math.sqrt(Math.max(0,Math.min(1,s))));
+}
+function spcoaSndFindInBlock(b,lat,lon) {
+    let best=null;
+    for(let k=0;k<b.cells;k++) {
+        const pos=spcoaSndCoords(b,k);
+        if (!pos) continue;
+        const km=spcoaSndDistance(lat,lon,pos.lat,pos.lon);
+        if (!best || km<best.km) best={...pos,km,j:b.j0+Math.floor(k/b.w),i:b.i0+(k%b.w),k,block:b};
+    }
+    return best;
+}
+function spcoaSndDecodePoint(block, k, manifest) {
+    const c=spcoaSndCoords(block,k);
+    if (!c) throw new Error('No sounding geolocation at selected native grid point');
+    const out={...c,j:block.j0+Math.floor(k/block.w),i:block.i0+k%block.w};
+    for(let f=0;f<6;f++) {
+        const name=SPCOA_SOUNDING.fields[f];
+        const enc=manifest.quantization[name];
+        if (!enc || !Number.isFinite(enc.factor) || enc.factor===0) throw new Error(`Sounding quantization missing: ${name}`);
+        const a=[];
+        for(let lev=0;lev<block.levels;lev++) {
+            const index=((f*block.levels+lev)*block.cells+k);
+            const raw=block.dv.getInt16(20+8*block.cells+index*2,true);
+            a.push(raw===-32768 ? NaN : raw/enc.factor+enc.offset);
+        }
+        out[name]=a;
+    }
+    return out;
+}
+async function spcoaSndNearest(run,lat,lon) {
+    const manifest=await spcoaSndManifest(run);
+    const anchors=await spcoaSndIndex(run);
+    const near=anchors.map(a=>({j0:Math.floor(a[0]/32)*32,i0:Math.floor(a[1]/32)*32,
+        km:spcoaSndDistance(lat,lon,a[2],a[3])})).sort((a,b)=>a.km-b.km);
+    if (!near.length || near[0].km > 140) throw new Error('Clicked location is outside the HRRR sounding domain');
+    const candidates=new Map();
+    // Native Lambert grid: include neighbors near block boundaries and curved outer edges.
+    for(const anchor of near.slice(0,3)) for(let dj=-1;dj<=1;dj++) for(let di=-1;di<=1;di++) {
+        const j0=anchor.j0+dj*32,i0=anchor.i0+di*32;
+        if (j0>=0 && i0>=0 && j0<1059 && i0<1799)
+            candidates.set(`${j0}/${i0}`,{j0,i0});
+    }
+    const lookup=new Map(near.map(a=>[`${a.j0}/${a.i0}`,a.km]));
+    const entries=[...candidates.values()].sort((a,b)=>
+        (lookup.get(`${a.j0}/${a.i0}`)??Infinity)-(lookup.get(`${b.j0}/${b.i0}`)??Infinity));
+    // Fetch a few blocks at a time: avoid a large burst of 20+ compressed blocks.
+    let best=null;
+    for(let n=0;n<entries.length;n+=4) {
+        const group=await Promise.allSettled(entries.slice(n,n+4).map(a=>spcoaSndBlock(run,a.j0,a.i0,manifest)));
+        for(const result of group) if(result.status==='fulfilled' && result.value) {
+            const found=spcoaSndFindInBlock(result.value,lat,lon);
+            if(found && (!best || found.km<best.km)) best=found;
+        }
+        if(best && best.km<1.5) break;
+    }
+    if (!best || best.km>12) throw new Error('No nearby native HRRR sounding (outside valid grid)');
+    return {profile:spcoaSndDecodePoint(best.block,best.k,manifest),manifest,km:best.km};
+}
+async function spcoaSndSamePoint(run,j,i) {
+    const manifest=await spcoaSndManifest(run);
+    const block=await spcoaSndBlock(run,Math.floor(j/32)*32,Math.floor(i/32)*32,manifest);
+    return {profile:spcoaSndDecodePoint(block,(j-block.j0)*block.w+i-block.i0,manifest),manifest};
+}
+function spcoaSndFormatted(value,digits=0) {
+    return Number.isFinite(value)?value.toLocaleString('en-US',{maximumFractionDigits:digits,minimumFractionDigits:digits}):'—';
+}
+function spcoaSndDewpoint(q,pHpa) {
+    const e=q*pHpa/(0.622+0.378*q);
+    if(!(e>0 && e<200)) return NaN;
+    const ln=Math.log(e/6.112);
+    return 243.5*ln/(17.67-ln);
+}
+function spcoaSndProfile(p) {
+    if(!p)return [];
+    const ground=p.height_m_msl[0];
+    const out=[];
+    for(let k=0;k<p.pressure_hpa.length;k++) {
+        const press=p.pressure_hpa[k], t=p.temperature_k[k],q=p.specific_humidity_kgkg[k];
+        const z=p.height_m_msl[k]-ground,u=p.u_ms[k],v=p.v_ms[k];
+        if(![press,t,q,z].every(Number.isFinite)||press<90||press>1100||z < -100 ||z>30000)continue;
+        out.push({p:press,t:t-273.15,td:spcoaSndDewpoint(q,press),z,u,v,q,k});
+    }
+    // Surface row has 2m T and 10m winds; avoid claiming all 6 variables are colocated.
+    out.sort((a,b)=>a.z-b.z);
+    const clean=[];
+    for(const a of out) if(!clean.length || a.z>clean.at(-1).z+0.1)clean.push(a);
+    return clean;
+}
+function spcoaSndWindAt(profile,z) {
+    if(!profile?.length||z<profile[0].z-25||z>profile.at(-1).z+5) return null;
+    let a=profile[0];
+    for(let k=1;k<profile.length;k++) {
+        const b=profile[k];
+        if(b.z>=z) {
+            const t=Math.max(0,Math.min(1,(z-a.z)/(b.z-a.z||1)));
+            return {u:a.u+(b.u-a.u)*t,v:a.v+(b.v-a.v)*t};
+        }
+        a=b;
+    }
+    return {u:a.u,v:a.v};
+}
+function spcoaSndMeanWind(p,z1,z2) {
+    let u=0,v=0,n=0;
+    for(let z=z1;z<=z2;z+=125) {
+        const a=spcoaSndWindAt(p,z);if(!a||!Number.isFinite(a.u+a.v))continue;
+        u+=a.u;v+=a.v;n++;
+    }
+    return n>=2?{u:u/n,v:v/n}:null;
+}
+function spcoaSndBunkers(p) {
+    const mean=spcoaSndMeanWind(p,0,6000),low=spcoaSndMeanWind(p,0,500),high=spcoaSndMeanWind(p,5500,6000);
+    if(!mean||!low||!high)return null;
+    const du=high.u-low.u,dv=high.v-low.v,mag=Math.hypot(du,dv);
+    if(mag<0.1)return null;
+    return {rm:{u:mean.u+7.5*dv/mag,v:mean.v-7.5*du/mag},
+            lm:{u:mean.u-7.5*dv/mag,v:mean.v+7.5*du/mag},mean};
+}
+function spcoaSndShear(p,top) {
+    const low=spcoaSndWindAt(p,10),up=spcoaSndWindAt(p,top);
+    return low&&up?Math.hypot(up.u-low.u,up.v-low.v)*1.943844:NaN;
+}
+function spcoaSndSrh(p,top,motion) {
+    if(!motion)return NaN;
+    let srh=0,prev=spcoaSndWindAt(p,10);
+    if(!prev)return NaN;
+    for(let z=125;z<=top;z+=125) {
+        const v=spcoaSndWindAt(p,z);if(!v)return NaN;
+        srh+=(v.u-motion.u)*(prev.v-motion.v)-(prev.u-motion.u)*(v.v-motion.v);
+        prev=v;
+    }
+    return srh;
+}
+function spcoaSndLcl(p) {
+    const a=p[0];if(!a||!Number.isFinite(a.td))return NaN;
+    const t=a.t+273.15,td=a.td+273.15;
+    return (1/(1/(td-56)+Math.log(t/td)/800)+56);
+}
+function spcoaSndStats(p) {
+    const bk=spcoaSndBunkers(p);
+    const lclK=spcoaSndLcl(p);
+    const t=p[0]?.t+273.15;
+    const lclP=p[0]?.p*Math.pow(lclK/t,1/0.2854);
+    const lclZ=Number.isFinite(lclP)?p.find(x=>x.p<=lclP)?.z:NaN;
+    const wind=p[0]&&Number.isFinite(p[0].u+p[0].v)?Math.hypot(p[0].u,p[0].v)*1.943844:NaN;
+    return {lclZ,wind,sh01:spcoaSndShear(p,1000),sh03:spcoaSndShear(p,3000),sh06:spcoaSndShear(p,6000),
+        srh01:spcoaSndSrh(p,1000,bk?.rm),srh03:spcoaSndSrh(p,3000,bk?.rm),bunkers:bk};
+}
+async function spcoaSndFieldValue(run,field,lat,lon) {
+    let meta;
+    try {
+        if(run===currentRun && fieldMetadata?.[field])meta=fieldMetadata[field];
+        else meta=await fetchJSON(`${S3_BASE_URL}/runs/${run}/${field==='ecape'?'ecape':field}/metadata.json`);
+    } catch (_) {return null;}
+    const zooms=Array.isArray(meta.zoom_levels)?meta.zoom_levels.map(Number).filter(Number.isFinite):[7,6,5,4];
+    if(!zooms.length)return null;
+    const z=Math.max(...zooms.filter(v=>v<=7));
+    const gx=lonToTileX(lon,z)*256,gy=latToTileY(lat,z)*256;
+    const x=Math.floor(gx/256),y=Math.floor(gy/256),px=Math.floor(gx)%256,py=Math.floor(gy)%256;
+    let tile;
+    try {tile=await loadScalarTile(field,z,x,y,run,1);}catch(_){return null;}
+    if(!tile)return null;
+    const raw=tile[py*256+px];
+    const enc=getEncoding(meta);
+    if(raw===65535||raw===enc.nodata)return null;
+    const val=raw*enc.scale+enc.offset;
+    return Number.isFinite(val)?val:null;
+}
+async function spcoaSndLoadValues(run,lat,lon) {
+    const result={};
+    await Promise.all(Object.keys(SPCOA_SOUNDING.labels).map(async key=> {
+        result[key]=await spcoaSndFieldValue(run,key,lat,lon);
+    }));
+    return result;
+}
+function spcoaSndTrace(ctx,points,color,width=2,dash=[]) {
+    if(points.length<2)return;
+    ctx.beginPath();ctx.setLineDash(dash);ctx.lineWidth=width;ctx.strokeStyle=color;
+    let started=false;
+    for(const point of points) {
+        if(!point || !Number.isFinite(point[0]+point[1])) {started=false;continue;}
+        if(started)ctx.lineTo(point[0],point[1]);else {ctx.moveTo(point[0],point[1]);started=true;}
+    }
+    ctx.stroke();ctx.setLineDash([]);
+}
+function spcoaSndCanvas(canvas) {
+    const bounds=canvas.getBoundingClientRect();
+    const w=Math.max(300,Math.round(bounds.width || 390));
+    const h=Math.max(280,Math.round(bounds.height || 410));
+    const dpr=Math.min(2,window.devicePixelRatio||1);
+    canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);
+    const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.fillStyle='#080d13';ctx.fillRect(0,0,w,h);
+    ctx.font='11px ui-monospace,Consolas,monospace';
+    return {ctx,w,h};
+}
+function spcoaSndParcel(profile) {
+    const a=profile[0];if(!a||!Number.isFinite(a.td))return [];
+    const t0=a.t+273.15,p0=a.p,tlcl=spcoaSndLcl(profile),plcl=p0*Math.pow(tlcl/t0,1/0.2854);
+    if(!Number.isFinite(plcl))return [];
+    const out=[];let T=tlcl,p=plcl;
+    const rsat=(temp,pressure)=>{
+        const Tc=temp-273.15;
+        const e=611.2*Math.exp(17.67*Tc/(Tc+243.5));
+        return 0.622*e/Math.max(1,pressure-e);
+    };
+    // An approximate pseudo-adiabatic visualization; operational CAPE values
+    // are read from existing SPCOA gridded products, NOT from this trace.
+    for(const lev of [...profile].sort((x,y)=>y.p-x.p)) {
+        if(lev.p>=plcl) {out.push({p:lev.p,t:t0*Math.pow(lev.p/p0,0.2854)-273.15});continue;}
+        while(p>lev.p) {
+            const nextp=Math.max(lev.p,p-1.0),q=rsat(T,p*100),tv=T*(1+0.61*q);
+            const moist=(9.80665/1004)*(1+(2.5e6*q)/(287.05*T)) /
+                (1+(2.5e6*2.5e6*q*0.622)/(1004*287.05*T*T));
+            const dz=287.05*tv/9.80665*Math.log(p/nextp);
+            T-=moist*dz;p=nextp;
+            if(!Number.isFinite(T)||T<170)break;
+        }
+        out.push({p:lev.p,t:T-273.15});
+    }
+    return out;
+}
+function spcoaSndWindBarb(ctx,x,y,u,v) {
+    if(!Number.isFinite(u+v))return;
+    const kt=Math.round(Math.hypot(u,v)*1.943844/5)*5;
+    ctx.save();ctx.translate(x,y);
+    // Staff points toward the direction FROM which the wind blows.
+    ctx.rotate(Math.atan2(v,-u));
+    ctx.strokeStyle='#dce7f4';ctx.fillStyle='#dce7f4';ctx.lineWidth=1.1;
+    if(kt<5){ctx.beginPath();ctx.arc(0,0,2,0,Math.PI*2);ctx.stroke();ctx.restore();return;}
+    const length=20;
+    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(length,0);ctx.stroke();
+    let n50=Math.floor(kt/50),remainder=kt%50,n10=Math.floor(remainder/10),n5=(remainder%10)>=5;
+    let position=length;
+    for(let i=0;i<n50;i++) {
+        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-5,-8);ctx.lineTo(position-5,0);
+        ctx.closePath();ctx.fill();position-=6;
+    }
+    for(let i=0;i<n10;i++) {
+        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-5,-8);ctx.stroke();position-=4;
+    }
+    if(n5){ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-3,-5);ctx.stroke();}
+    ctx.restore();
+}
+function spcoaSndSkew(canvas,current,previous) {
+    const {ctx,w,h}=spcoaSndCanvas(canvas);
+    const L=43,R=w-32,T=24,B=h-35;
+    const lo=-90,hi=115;
+    const y=p=>T+Math.log(1050/p)/Math.log(1050/100)*(B-T);
+    const x=(temp,p)=>L+(temp+45*Math.log(1000/p)/Math.log(10)-lo)/(hi-lo)*(R-L);
+    ctx.save();ctx.beginPath();ctx.rect(L,T,R-L,B-T);ctx.clip();
+    for(const p of [100,150,200,250,300,400,500,600,700,800,900,1000]) {
+        const yp=y(p);ctx.strokeStyle='#25313d';ctx.lineWidth=0.8;
+        ctx.beginPath();ctx.moveTo(L,yp);ctx.lineTo(R,yp);ctx.stroke();
+    }
+    for(let t=-100;t<=100;t+=10) {
+        spcoaSndTrace(ctx,[{p:1000,t},{p:100,t}].map(a=>[x(a.t,a.p),y(a.p)]),'#343c49',0.7);
+    }
+    // Dry adiabats: constant potential temperature (physically calculated).
+    for(let th=260;th<=440;th+=20) {
+        const pts=[];
+        for(let p=1000;p>=100;p-=20)pts.push([x(th*Math.pow(p/1000,0.2854)-273.15,p),y(p)]);
+        spcoaSndTrace(ctx,pts,'#353129',0.8);
+    }
+    const trace=(prof,name)=>prof.map(a=>Number.isFinite(a[name])?[x(a[name],a.p),y(a.p)]:null);
+    if(previous) {
+        spcoaSndTrace(ctx,trace(previous,'td'),'#7bd4a2',1.4,[4,5]);
+        spcoaSndTrace(ctx,trace(previous,'t'),'#ffb0a6',1.4,[4,5]);
+    }
+    // Subtle parcel trace: only illustrative, not used for derived parcel diagnostics.
+    if(current)spcoaSndTrace(ctx,spcoaSndParcel(current).map(a=>[x(a.t,a.p),y(a.p)]),'#4ed2e6',1.3,[7,4]);
+    if(current) {
+        spcoaSndTrace(ctx,trace(current,'td'),'#51df81',2.5);
+        spcoaSndTrace(ctx,trace(current,'t'),'#ff555a',2.5);
+    }
+    ctx.restore();
+    // Standard wind-barb column at common pressure levels, using native wind profile.
+    if(current) {
+        for(const pressure of [1000,925,850,800,700,600,500,400,300,250,200,150]) {
+            if(pressure > current[0].p + 5)continue;
+            const closest=current.reduce((a,b)=>Math.abs(a.p-pressure)<Math.abs(b.p-pressure)?a:b);
+            if(Math.abs(closest.p-pressure)>28)continue;
+            spcoaSndWindBarb(ctx,R+7,y(pressure),closest.u,closest.v);
+        }
+    }
+    ctx.fillStyle='#bac3ce';ctx.textAlign='right';
+    for(const p of [100,200,300,400,500,600,700,800,900,1000]) {
+        if(y(p)>T&&y(p)<B+2)ctx.fillText(String(p),L-6,y(p)+4);
+    }
+    ctx.textAlign='center';
+    for(let t=-60;t<=60;t+=20){const xp=x(t,1000);if(xp>L&&xp<R)ctx.fillText(`${t}°`,xp,B+16);}
+    ctx.textAlign='left';ctx.fillStyle='#ff666d';ctx.fillText('T',L+5,T+13);
+    ctx.fillStyle='#69e49b';ctx.fillText('Td',L+23,T+13);
+    ctx.fillStyle='#5bd4e6';ctx.fillText('Parcel*',L+50,T+13);
+    ctx.fillStyle='#778899';ctx.font='9px ui-monospace,Consolas,monospace';
+    ctx.fillText('* Approx. parcel trace; CAPE from SPCOA data',L,B+28);
+}
+function spcoaSndHodo(canvas,current,previous) {
+    const {ctx,w,h}=spcoaSndCanvas(canvas);
+    const cx=w*.50,cy=h*.55;
+    let maxKt=60;
+    for(const prof of [current,previous])if(prof)for(const v of prof)
+        if(v.z<=10000&&Number.isFinite(v.u+v.v))maxKt=Math.max(maxKt,Math.hypot(v.u,v.v)*1.943844);
+    const limit=Math.ceil((maxKt+15)/20)*20;
+    const radius=Math.min(w*.43,h*.43),scale=radius/limit;
+    const xy=wind=>[cx+wind.u*1.943844*scale,cy-wind.v*1.943844*scale];
+    for(let r=20;r<=limit;r+=20) {
+        ctx.strokeStyle='#293644';ctx.lineWidth=1;
+        ctx.beginPath();ctx.arc(cx,cy,r*scale,0,2*Math.PI);ctx.stroke();
+        ctx.fillStyle='#7b8b9b';ctx.textAlign='center';ctx.font='10px ui-monospace,Consolas,monospace';
+        ctx.fillText(String(r),cx+r*scale,cy-5);
+    }
+    ctx.strokeStyle='#3c495a';ctx.beginPath();ctx.moveTo(cx-radius,cy);ctx.lineTo(cx+radius,cy);
+    ctx.moveTo(cx,cy-radius);ctx.lineTo(cx,cy+radius);ctx.stroke();
+    const sample=p=>{
+        if(!p)return [];
+        const a=[];for(let z=10;z<=Math.min(9000,p.at(-1).z);z+=100) {
+            const v=spcoaSndWindAt(p,z);if(v&&Number.isFinite(v.u+v.v))a.push({z,...v});
+        }return a;
+    };
+    if(previous)spcoaSndTrace(ctx,sample(previous).map(x=>xy(x)),'#a1acbd',1.8,[4,5]);
+    if(current) {
+        const profile=sample(current);
+        const layers=[[0,500,'#e86af9'],[500,3000,'#ff737d'],[3000,6000,'#5de684'],[6000,9000,'#f7d354']];
+        for(const [low,high,color] of layers) {
+            const segment=profile.filter(v=>v.z>=Math.max(10,low)&&v.z<=high);
+            spcoaSndTrace(ctx,segment.map(x=>xy(x)),color,2.8);
+        }
+        const motion=spcoaSndBunkers(current);
+        for(const [key,label,color] of [['rm','RM','#ffbb5a'],['lm','LM','#a7baff']]) {
+            if(!motion?.[key])continue;
+            const [mx,my]=xy(motion[key]);
+            ctx.fillStyle=color;ctx.strokeStyle='#121820';ctx.lineWidth=3;
+            ctx.beginPath();ctx.arc(mx,my,4,0,Math.PI*2);ctx.stroke();ctx.fill();
+            ctx.font='11px ui-monospace,Consolas,monospace';ctx.fillText(label,mx+7,my-4);
+        }
+    }
+    ctx.font='10px ui-monospace,Consolas,monospace';ctx.textAlign='left';
+    const legend=[['0–0.5 km','#e86af9'],['0.5–3 km','#ff737d'],['3–6 km','#5de684'],['6–9 km','#f7d354']];
+    legend.forEach(([text,color],i)=>{ctx.fillStyle=color;ctx.fillText(text,10,18+i*14);});
+    ctx.fillStyle='#94a3b8';ctx.fillText('Bunkers RM / LM • kt',10,h-12);
+}
+function spcoaSndInjectStyles() {
+    if(document.getElementById('spcoa-sounding-css'))return;
+    const css=document.createElement('style');css.id='spcoa-sounding-css';
+    css.textContent=`
+#spcoa-sounding-tool {position:fixed;right:17px;top:155px;z-index:6000;background:#0f1720;color:#e8f1ff;border:1px solid #677585;border-radius:6px;padding:9px 12px;font:700 12px Arial,sans-serif;box-shadow:0 2px 8px #0006;cursor:pointer}
+#spcoa-sounding-tool[aria-pressed="true"]{background:#006c9a;border-color:#77dbfa;box-shadow:0 0 0 2px #00bcff55}
+#spcoa-sounding-panel{position:fixed;z-index:6100;right:16px;top:54px;width:min(945px,calc(100vw - 25px));max-height:calc(100vh - 70px);overflow:auto;box-sizing:border-box;background:#0b1017;color:#edf2f8;border:1px solid #526072;border-radius:8px;box-shadow:0 12px 48px #000b;font:12px/1.5 Arial,Helvetica,sans-serif;display:none}
+#spcoa-sounding-panel *{box-sizing:border-box}
+#spcoa-sounding-panel .ss-head{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #354253;background:#141c27;position:sticky;top:0;z-index:3}
+#spcoa-sounding-panel .ss-title{font-weight:700;font-size:14px;line-height:1.35}
+#spcoa-sounding-panel .ss-sub{font-size:11px;color:#a8bbcf}
+#spcoa-sounding-panel .ss-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+#spcoa-sounding-panel button{background:#223142;color:#eff5ff;border:1px solid #546477;padding:5px 9px;border-radius:4px;cursor:pointer}
+#spcoa-sounding-panel button:hover{background:#334961}
+#spcoa-sounding-panel .ss-body{padding:10px}
+#spcoa-sounding-panel .ss-figures{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+#spcoa-sounding-panel .ss-chart{border:1px solid #3e5062;background:#080d13;padding:7px 4px 4px}
+#spcoa-sounding-panel .ss-chart h3{color:#cfddec;margin:0 0 3px 9px;font-size:12px}
+#spcoa-sounding-panel canvas{display:block;width:100%;height:400px}
+#spcoa-sounding-panel .ss-tables{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
+#spcoa-sounding-panel .ss-box{background:#101824;border:1px solid #34485b;border-radius:4px;padding:8px}
+#spcoa-sounding-panel .ss-box h3{font-size:12px;color:#a8d8f8;margin:0 0 5px}
+#spcoa-sounding-panel table{border-collapse:collapse;width:100%;font:11px ui-monospace,Consolas,monospace;color:#dbe7f6}
+#spcoa-sounding-panel td,#spcoa-sounding-panel th{border-bottom:1px solid #243443;padding:3px 4px;text-align:right}
+#spcoa-sounding-panel td:first-child,#spcoa-sounding-panel th:first-child{text-align:left}
+#spcoa-sounding-panel th{font-size:10px;color:#8db4d0}
+#spcoa-sounding-panel #ss-status{color:#b8c7d6;margin:5px 0 8px;min-height:17px}
+#spcoa-sounding-panel .ss-note{color:#9aafc6;margin-top:8px;font-size:10px}
+#spcoa-sounding-panel .ss-compare{white-space:nowrap;display:flex;align-items:center;gap:5px;font-size:11px;color:#c8d7ec}
+@media(max-width:680px){#spcoa-sounding-panel .ss-figures,#spcoa-sounding-panel .ss-tables{grid-template-columns:1fr}#spcoa-sounding-panel canvas{height:330px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}#spcoa-sounding-tool{top:120px}}
+`;
+    document.head.appendChild(css);
+}
+function spcoaSndBuildPanel() {
+    if(document.getElementById('spcoa-sounding-panel'))return;
+    spcoaSndInjectStyles();
+    const tool=document.createElement('button');tool.type='button';tool.id='spcoa-sounding-tool';
+    tool.textContent='◉ Sounding';tool.title='Select, then click the map to open a native HRRR F00 sounding';
+    tool.setAttribute('aria-pressed','false');
+    document.body.appendChild(tool);
+    const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
+    panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
+    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Click a location with the Sounding tool enabled</div></div>
+      <div class="ss-actions"><label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
+      <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
+      <div class="ss-body"><div id="ss-status" role="status">Choose a location on the map.</div>
+      <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P</h3><canvas id="ss-skew"></canvas></div>
+      <div class="ss-chart"><h3>Hodograph (kt)</h3><canvas id="ss-hodo"></canvas></div></div>
+      <div class="ss-tables"><div class="ss-box"><h3>Thermodynamics · SPCOA gridded values</h3><table id="ss-thermo"></table></div>
+      <div class="ss-box"><h3>Kinematics · Native HRRR profile</h3><table id="ss-kinematics"></table></div></div>
+      <div class="ss-note">Native F00 profiles are sampled at the nearest HRRR ~3-km grid point. CAPE/CIN and ECAPE (Peters) are retrieved from independent SPCOA scalar fields, which may differ in calculation methods and horizontal sampling. Skew-T parcel path is illustrative; no CAPE is computed from its curve. Surface T/Td use 2 m data, while surface winds use 10 m data. Hourly comparison uses the same native HRRR grid index from the preceding F00 analysis.</div></div>`;
+    document.body.appendChild(panel);
+    tool.addEventListener('click',()=> {
+        SPCOA_SOUNDING.enabled=!SPCOA_SOUNDING.enabled;
+        tool.setAttribute('aria-pressed',String(SPCOA_SOUNDING.enabled));
+        if(SPCOA_SOUNDING.enabled && typeof setDrawingTool === 'function')setDrawingTool('pan');
+        map.getCanvas().style.cursor=SPCOA_SOUNDING.enabled?'crosshair':'';
+    });
+    document.getElementById('ss-close').addEventListener('click',()=>{
+        panel.style.display='none';
+        SPCOA_SOUNDING.point=null;SPCOA_SOUNDING.serial++;
+        if(SPCOA_SOUNDING.marker){SPCOA_SOUNDING.marker.remove();SPCOA_SOUNDING.marker=null;}
+        SPCOA_SOUNDING.enabled=false;tool.setAttribute('aria-pressed','false');
+        map.getCanvas().style.cursor='';
+    });
+    document.getElementById('ss-compare').addEventListener('change',e=>{
+        SPCOA_SOUNDING.comparing=e.target.checked;
+        if(SPCOA_SOUNDING.point)void spcoaSndLoadSelection();
+    });
+    document.getElementById('ss-save').addEventListener('click',spcoaSndExportPng);
+    map.on('click',event=>{
+        if(!SPCOA_SOUNDING.enabled)return;
+        SPCOA_SOUNDING.point={lat:event.lngLat.lat,lon:event.lngLat.lng};
+        panel.style.display='block';
+        void spcoaSndLoadSelection();
+    });
+    window.addEventListener('resize',()=>{
+        if(panel.style.display==='block' && SPCOA_SOUNDING.current)spcoaSndRender();
+    });
+}
+function spcoaSndStatus(text) {
+    const el=document.getElementById('ss-status');if(el)el.textContent=text;
+}
+async function spcoaSndLoadSelection() {
+    const point=SPCOA_SOUNDING.point,run=currentRun;
+    if(!point||!run)return;
+    const serial=++SPCOA_SOUNDING.serial;
+    SPCOA_SOUNDING.current=null;SPCOA_SOUNDING.previous=null;
+    SPCOA_SOUNDING.currentValues={};SPCOA_SOUNDING.previousValues={};
+    spcoaSndStatus(`Loading native HRRR F00 sounding for ${run}...`);
+    try {
+        const result=await spcoaSndNearest(run,point.lat,point.lon);
+        if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
+        SPCOA_SOUNDING.current=result;
+        if(SPCOA_SOUNDING.marker)SPCOA_SOUNDING.marker.remove();
+        const marker=document.createElement('div');
+        marker.style.cssText='width:14px;height:14px;background:#54e4fc;border:3px solid #07131c;border-radius:50%;box-shadow:0 0 0 2px #fff,0 0 6px #000a';
+        SPCOA_SOUNDING.marker=new maplibregl.Marker({element:marker,anchor:'center'})
+            .setLngLat([result.profile.lon,result.profile.lat]).addTo(map);
+        const prevRun=spcoaSndPrevious(run);
+        if(SPCOA_SOUNDING.comparing && prevRun) {
+            try {
+                const prev=await spcoaSndSamePoint(prevRun,result.profile.j,result.profile.i);
+                if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
+                const km=spcoaSndDistance(result.profile.lat,result.profile.lon,prev.profile.lat,prev.profile.lon);
+                if(km>1)throw new Error(`Previous-hour grid alignment changed by ${km.toFixed(1)} km`);
+                SPCOA_SOUNDING.previous={...prev,run:prevRun};
+            } catch(e) {
+                SPCOA_SOUNDING.previous=null;
+                spcoaSndStatus(`Previous hour (${prevRun}) is unavailable: ${e.message}`);
+            }
+        }
+        spcoaSndRender();
+        const [curr,prev]=await Promise.all([
+            spcoaSndLoadValues(run,result.profile.lat,result.profile.lon),
+            SPCOA_SOUNDING.previous?spcoaSndLoadValues(prevRun,result.profile.lat,result.profile.lon):Promise.resolve({})
+        ]);
+        if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
+        SPCOA_SOUNDING.currentValues=curr;SPCOA_SOUNDING.previousValues=prev;
+        spcoaSndRender();
+    } catch(e) {
+        if(serial!==SPCOA_SOUNDING.serial)return;
+        console.error('SPCOA native sounding:',e);
+        spcoaSndStatus(`Could not load sounding: ${e.message}`);
+    }
+}
+function spcoaSndTable(rows,previous) {
+    let html='<tr><th>Parameter</th><th>Current</th>';
+    if(previous)html+='<th>Prev</th><th>Δ</th>';
+    html+='</tr>';
+    for(const [label,value,old,units,digits] of rows) {
+        const a=spcoaSndFormatted(value,digits),b=spcoaSndFormatted(old,digits);
+        html+=`<tr><td>${label}</td><td>${a}</td>`;
+        if(previous)html+=`<td>${b}</td><td>${Number.isFinite(value)&&Number.isFinite(old)?(value-old>=0?'+':'')+spcoaSndFormatted(value-old,digits):'—'}</td>`;
+        html+='</tr>';
+    }
+    return html;
+}
+function spcoaSndRender() {
+    const a=SPCOA_SOUNDING.current,b=SPCOA_SOUNDING.previous;
+    if(!a)return;
+    const p=spcoaSndProfile(a.profile),q=b?spcoaSndProfile(b.profile):null;
+    if(p.length<12) {spcoaSndStatus('Sounding contains insufficient vertical data');return;}
+    const run=currentRun;
+    document.getElementById('ss-title').textContent=`HRRR F00 · ${run?.slice(-2)}Z ${spcoaSndUtc(run)?.slice(0,10)}`;
+    document.getElementById('ss-location').textContent=
+        `${Math.abs(a.profile.lat).toFixed(3)}°${a.profile.lat>=0?'N':'S'}, ${Math.abs(a.profile.lon).toFixed(3)}°${a.profile.lon>=0?'E':'W'} · native i=${a.profile.i}, j=${a.profile.j} · ${a.km.toFixed(1)} km from click`;
+    const text=SPCOA_SOUNDING.comparing?
+        (b?`Comparing ${b.run.slice(-2)}Z → ${run.slice(-2)}Z at identical native grid point`:
+            `Previous-hour sounding unavailable; displaying ${run.slice(-2)}Z only`):
+        `Current HRRR F00 analysis ${run}`;
+    spcoaSndStatus(text);
+    spcoaSndSkew(document.getElementById('ss-skew'),p,q);
+    spcoaSndHodo(document.getElementById('ss-hodo'),p,q);
+    const cv=SPCOA_SOUNDING.currentValues,pv=SPCOA_SOUNDING.previousValues;
+    const thermos=Object.keys(SPCOA_SOUNDING.labels).map(key=>[
+        SPCOA_SOUNDING.labels[key]+' (J/kg)',cv[key]??NaN,pv[key]??NaN,'J/kg',0]);
+    const s1=spcoaSndStats(p),s2=q?spcoaSndStats(q):{};
+    thermos.push(['LCL est. (m AGL)',s1.lclZ,s2.lclZ,'m',0],
+        ['Sfc T (°C)',p[0]?.t,q?.[0]?.t,'°C',1],['Sfc Td (°C)',p[0]?.td,q?.[0]?.td,'°C',1]);
+    document.getElementById('ss-thermo').innerHTML=spcoaSndTable(thermos,!!b);
+    const kinetic=[['0–1 km shear (kt)',s1.sh01,s2.sh01,'kt',0],
+        ['0–3 km shear (kt)',s1.sh03,s2.sh03,'kt',0],
+        ['0–6 km shear (kt)',s1.sh06,s2.sh06,'kt',0],
+        ['0–1 km RM SRH (m²/s²)',s1.srh01,s2.srh01,'',0],
+        ['0–3 km RM SRH (m²/s²)',s1.srh03,s2.srh03,'',0],
+        ['Bunkers RM U (kt)',s1.bunkers?.rm.u*1.943844,s2.bunkers?.rm?.u*1.943844,'',0],
+        ['Bunkers RM V (kt)',s1.bunkers?.rm.v*1.943844,s2.bunkers?.rm?.v*1.943844,'',0]];
+    document.getElementById('ss-kinematics').innerHTML=spcoaSndTable(kinetic,!!b);
+}
+function spcoaSndExportPng() {
+    if(!SPCOA_SOUNDING.current)return;
+    const c=document.createElement('canvas');c.width=1460;c.height=1040;
+    const ctx=c.getContext('2d');ctx.fillStyle='#0b1017';ctx.fillRect(0,0,c.width,c.height);
+    ctx.fillStyle='#e7f1ff';ctx.font='bold 24px Arial';
+    ctx.fillText(document.getElementById('ss-title').textContent,30,40);
+    ctx.fillStyle='#b8cbe0';ctx.font='16px Arial';
+    ctx.fillText(document.getElementById('ss-location').textContent,30,68);
+    for(const [id,x] of [['ss-skew',20],['ss-hodo',740]]) {
+        const source=document.getElementById(id);
+        ctx.drawImage(source,x,88,700,610);
+    }
+    const tables=[document.getElementById('ss-thermo'),document.getElementById('ss-kinematics')];
+    tables.forEach((table,i)=>{
+        const rows=[...table.querySelectorAll('tr')];let y=730;
+        ctx.font='bold 17px Arial';ctx.fillStyle='#a7d9fa';
+        ctx.fillText(i?'Kinematics':'Thermodynamics',i?745:30,y);y+=26;
+        for(const row of rows) {
+            const cells=[...row.children].map(e=>e.textContent.trim());
+            ctx.font='14px monospace';ctx.fillStyle='#e5edf8';
+            ctx.fillText(cells[0]||'',i?745:30,y);
+            ctx.textAlign='right';ctx.fillText(cells.slice(1).join('  |  '),i?1430:718,y);
+            ctx.textAlign='left';y+=22;if(y>1010)break;
+        }
+    });
+    c.toBlob(blob=>{
+        if(!blob)return;
+        const url=URL.createObjectURL(blob),link=document.createElement('a');
+        link.href=url;link.download=`SPCOA_HRRR_Sounding_${currentRun}_${SPCOA_SOUNDING.current.profile.i}_${SPCOA_SOUNDING.current.profile.j}.png`;
+        link.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
+    },'image/png');
+}
+function spcoaSndRefreshForRun() {
+    if(!SPCOA_SOUNDING.point || document.getElementById('spcoa-sounding-panel')?.style.display!=='block')return;
+    void spcoaSndLoadSelection();
+}
+spcoaSndBuildPanel();
 
 
 
