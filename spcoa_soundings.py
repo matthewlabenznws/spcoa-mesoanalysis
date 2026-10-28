@@ -38,7 +38,8 @@ Uncompressed format, little endian:
  ...: 6*nlevels*height*width int16 values, order [field, level, j, i]
 Quantization (sentinel -32768):
   pressure 0.1 hPa, temperature 0.01 K relative to 200 K,
-  specific humidity 1e-5 kg/kg, height 1 m MSL, U/V 0.1 m/s.
+  specific humidity logarithmic log10(q) * 2500, height 1 m MSL,
+  U/V 0.1 m/s. The quantization transform is declared in the manifest.
 Level 0 is surface: 2-m T/q, 10-m winds, surface pressure/terrain.
 Remaining levels are *true native HRRR hybrid levels*, in decreasing pressure.
 The mixed-height surface row is deliberate and identified in the manifest.
@@ -80,8 +81,12 @@ SCHEMA = 'spcoa.native_hrrr_f00_soundings.v1'
 FIELD_NAMES = ('pressure_hpa', 'temperature_k', 'specific_humidity_kgkg',
                'height_m_msl', 'u_ms', 'v_ms')
 # quantized int16 = (value - offset) * factor; missing = -32768
-QUANT = ((0.0, 10.0), (200.0, 100.0), (0.0, 100000.0),
+# Specific humidity is stored as int16 log10(q) * 2500. Very dry upper
+# levels retain orders-of-magnitude more precision than 1e-5 kg/kg linear bins.
+# Old archives remain readable by the JavaScript decoder via manifest metadata.
+QUANT = ((0.0, 10.0), (200.0, 100.0), (0.0, 2500.0),
          (0.0, 1.0), (0.0, 10.0), (0.0, 10.0))
+Q_ZERO_RAW = -32767
 RANGES = ((0.05, 1150.0), (150.0, 345.0), (0.0, 0.07),
           (-500.0, 32500.0), (-200.0, 200.0), (-200.0, 200.0))
 SENTINEL = -32768
@@ -355,7 +360,14 @@ def encode_tile(values: np.ndarray, lat: np.ndarray, lon: np.ndarray,
         okay = (np.isfinite(data)&(data>=lower)&(data<=upper))
         # Every level's geolocation must be known for the vertical profile.
         okay &= coords_valid[None,:,:]
-        scaled = np.rint((data[okay]-offset)*factor)
+        if f == 2:
+            # q == 0 has a distinct valid code; missing data is SENTINEL.
+            # Clip positive values below 1e-12 to a representable floor.
+            v = data[okay]
+            scaled = np.where(v == 0, Q_ZERO_RAW,
+                              np.rint(np.log10(np.maximum(v,1e-12))*factor))
+        else:
+            scaled = np.rint((data[okay]-offset)*factor)
         in_range = (scaled>=-32767)&(scaled<=32767)
         if np.any(in_range):
             # Avoid large temporary arrays for full CONUS: tile is <=32x32.
@@ -399,7 +411,11 @@ def decode_profile(tile: dict[str,Any], dj: int, di: int) -> dict[str, Any]:
     for f,name in enumerate(FIELD_NAMES):
         offset,factor=QUANT[f]
         raw=tile['quantized'][f,:,dj,di].astype(np.float32)
-        numeric=np.where(raw!=SENTINEL,raw/factor+offset,np.nan)
+        if f==2:
+            numeric=np.where(raw==SENTINEL,np.nan,
+                             np.where(raw==Q_ZERO_RAW,0.0,10**(raw/factor+offset)))
+        else:
+            numeric=np.where(raw!=SENTINEL,raw/factor+offset,np.nan)
         out[name]=numeric.tolist()
     return out
 
@@ -557,7 +573,9 @@ def publish(run: str, shards: int, force: bool = False):
         'block_size':BLOCK,'tile_count':len(expected),'grid_cells':n_cells,
         'valid_surface_cells':n_valid,'shards':shards,
         'fields':list(FIELD_NAMES),
-        'quantization':{name:{'offset':o,'factor':fac,'missing_raw':SENTINEL}
+        'quantization':{name:({'offset':o,'factor':fac,'missing_raw':SENTINEL,
+                                'transform':'log10','zero_raw':Q_ZERO_RAW} if name=='specific_humidity_kgkg'
+                               else {'offset':o,'factor':fac,'missing_raw':SENTINEL})
                         for name,(o,fac) in zip(FIELD_NAMES,QUANT)},
         'coordinate_scale':100000,'coordinate_missing_raw':LATLON_FILL,
         'binary_format':{'magic':MAGIC.decode('ascii'),'endianness':'little',
@@ -656,6 +674,12 @@ def selftest():
     assert np.isnan(prof['temperature_k'][3])
     assert abs(prof['pressure_hpa'][1]-800)<.11
     assert abs(prof['specific_humidity_kgkg'][0]-.012)<.00002
+    data[2,6]=1.0e-7
+    data[2,7]=0.0
+    raw_upper,_=encode_tile(data,lat,lon,64,96)
+    upper=decode_profile(decode_tile(raw_upper),2,4)
+    assert abs(upper['specific_humidity_kgkg'][6]/1.0e-7-1)<.002
+    assert upper['specific_humidity_kgkg'][7] == 0.0
     assert gzip.decompress(gzip.compress(raw))==raw
     assert len(published_tile_names())==math.ceil(ROWS/BLOCK)*math.ceil(COLS/BLOCK)==1938
     count=sum((min(ROWS-j0*BLOCK,BLOCK)*min(COLS-i0*BLOCK,BLOCK))
@@ -689,9 +713,6 @@ def main():
     elif args.mode=='publish':publish(args.run,args.shards,args.force)
     elif args.mode=='lookup':lookup(args.run,args.lat,args.lon)
 
-
-if __name__=='__main__':
-    main()
 
 if __name__=='__main__':
     main()
