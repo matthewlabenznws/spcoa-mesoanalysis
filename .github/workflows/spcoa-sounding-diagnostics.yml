@@ -85,9 +85,14 @@ jobs:
           with open('diagnostic-results/summary.txt','w') as f:
               f.write('Native HRRR F00 single-point diagnostics\n')
               f.write(f"Location: {d.get('location')}\n")
-              f.write(f"Parcels: {json.dumps(d.get('parcels'), indent=2)}\n")
-              f.write(f"Peters ECAPE: {d.get('peters_surface_ecape_jkg')} J/kg\n")
-              f.write(f"SB LCL-LFC RH: {d.get('sb_lcl_lfc_rh_percent')} %\n")
+              for kind, parcel in d.get('parcels',{}).items():
+                  if parcel:
+                      f.write(f"{kind.upper()} CAPE: {parcel.get('cape_jkg')} J/kg; CIN: {parcel.get('cin_jkg')} J/kg; LFC: {parcel.get('lfc_hpa')} hPa; EL: {parcel.get('el_hpa')} hPa\n")
+              for kind in ('sb','ml','mu'):
+                  ec=d.get('ecape_by_parcel',{}).get(kind,{})
+                  rh=d.get('lcl_lfc_rh_by_parcel',{}).get(kind,{})
+                  f.write(f"{kind.upper()} ECAPE: {ec.get('ecape_jkg')} J/kg (status={ec.get('status')})\n")
+                  f.write(f"{kind.upper()} LCL-LFC RH: {rh.get('percent')} % (status={rh.get('status')})\n")
               f.write(f"Warnings: {d.get('warnings')}\n")
               f.write(f"Calculation errors: {json.dumps(d.get('calculation_errors'), indent=2)}\n")
           print(open('diagnostic-results/summary.txt').read()[:12000])
