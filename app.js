@@ -1633,7 +1633,8 @@ if (!__MP_CHILD) {
             refreshSpcoaSectorOptions(document.getElementById("sector-select"));
             refreshSpcoaSectorOptions(d.getElementById("sector-select"));
             document.querySelectorAll("#sidebar input[id], #sidebar select[id], #drawing-toolbar input[id], #timeline-bar input[id], #timeline-bar select[id]").forEach(host => {
-                if (host.id === "layout-select" || host.id === "parameter-scope" || host.id === "drawing-scope") return;
+                if (host.id === "layout-select" || host.id === "parameter-scope" ||
+                    host.id === "drawing-scope" || host.id === "spcoa-sounding-toggle") return;
                 const child = d.getElementById(host.id);
                 if (!child) return;
                 if ((host.id === "cwa-border-color" || host.id === "city-density" || host.id.startsWith("roads-color-")) &&
@@ -1857,6 +1858,11 @@ if (!__MP_CHILD) {
                 const i = Number(msg.panel) - 1;
                 if (panels[i]) {
                     panels[i].ready = true;
+                    // Newly loaded child iframes inherit the visible host's
+                    // sounding selection even if they loaded after it was enabled.
+                    if (document.getElementById("spcoa-sounding-toggle")?.checked) {
+                        setTimeout(() => spcoaHostSoundingMode(true, i), 0);
+                    }
                     try {
                         panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*");
                     } catch (_) {}
@@ -2376,6 +2382,83 @@ if (!__MP_CHILD) {
             }
         }
         installSavedPanelLayouts();
+
+        /* V41: The visible sidebar is in the HOST document; map clicks and
+         * sounding archives live in the child map iframe. Mirror the selector
+         * beside Cursor Sample here, and pass its state to each map panel. */
+        function spcoaHostSoundingMode(enabled, onlyPanel = null) {
+            const targets = onlyPanel === null
+                ? Array.from({length: layoutCount}, (_, i) => i)
+                : [onlyPanel];
+            for (const i of targets) {
+                const cw = panels[i]?.frame?.contentWindow;
+                if (!cw) continue;
+                try {
+                    if (typeof cw.__mpSetSoundingMode === "function") {
+                        cw.__mpSetSoundingMode(enabled);
+                    } else {
+                        cw.postMessage({type: "spcoa-sounding-mode", enabled}, "*");
+                    }
+                } catch (error) {
+                    console.warn("Could not synchronize sounding selector to panel", i + 1, error);
+                }
+            }
+        }
+        function spcoaHostInstallSoundingSelector() {
+            const sample = document.getElementById("cursor-sample-toggle");
+            if (!sample || document.getElementById("spcoa-sounding-toggle")) return;
+            const anchor = sample.closest("label") ||
+                document.querySelector('label[for="cursor-sample-toggle"]') || sample;
+            const label = document.createElement("label");
+            label.id = "spcoa-sounding-selector";
+            if (anchor.tagName === "LABEL") label.className = anchor.className;
+            label.style.cssText = "display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;white-space:nowrap;vertical-align:middle;";
+            label.title = "Check Sounding, then left-click the map for the native HRRR F00 Skew-T";
+            const toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.id = "spcoa-sounding-toggle";
+            toggle.setAttribute("aria-label", "Sounding: click the map");
+            label.append(toggle, document.createTextNode("Sounding"));
+            anchor.insertAdjacentElement("afterend", label);
+            toggle.addEventListener("change", () => {
+                if (toggle.checked) {
+                    setSharedDrawingTool("pan");
+                    // Switch the visible annotation toolbar to Pan; every child
+                    // will independently switch to Pan on receipt of this mode.
+                }
+                spcoaHostSoundingMode(toggle.checked);
+                console.info("SPCOA host sounding selector", toggle.checked ? "enabled" : "disabled");
+            });
+            // The child iframe can load after the user enables Sounding.
+            // Its 'load' event fires after the map script has registered the
+            // bridge functions, so forwarding here cannot race initialization.
+            panels.forEach((panel, i) => panel.frame.addEventListener("load", () => {
+                if (toggle.checked) spcoaHostSoundingMode(true, i);
+            }));
+            console.info("SPCOA host Sounding control installed beside Cursor Sample");
+        }
+        spcoaHostInstallSoundingSelector();
+
+        // When the host's shared annotation canvas intercepts clicks, there is
+        // no browser click inside the child iframe. Route those clicks too.
+        let spcoaHostClickDown = null;
+        sharedCanvas.addEventListener("pointerdown", e => {
+            spcoaHostClickDown = e.button === 0 ? {x: e.clientX, y: e.clientY} : null;
+        }, true);
+        sharedCanvas.addEventListener("click", e => {
+            if (!document.getElementById("spcoa-sounding-toggle")?.checked || e.button !== 0) return;
+            if (spcoaHostClickDown && Math.hypot(e.clientX - spcoaHostClickDown.x,
+                                                  e.clientY - spcoaHostClickDown.y) > 7) return;
+            const p = canvasXY(e), panelIndex = panelAtCanvasPoint(p.x, p.y);
+            if (panelIndex < 0) return;
+            const ll = unprojectShared(panelIndex, p.x, p.y);
+            if (!ll || !Number.isFinite(ll.lat) || !Number.isFinite(ll.lng)) return;
+            const cw = panels[panelIndex]?.frame?.contentWindow;
+            if (typeof cw?.__mpOpenSoundingAt === "function") {
+                setActivePanel(panelIndex);
+                cw.__mpOpenSoundingAt(ll.lat, ll.lng);
+            }
+        }, true);
 
         setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); if (drawingScope.value === "all") renderSharedOverlay(); }, 350);
         applyLayout(layoutSelect ? layoutSelect.value : 1);
@@ -18898,14 +18981,32 @@ function spcoaSndBuildPanel() {
         if(SPCOA_SOUNDING.point)void spcoaSndLoadSelection();
     });
     document.getElementById('ss-save').addEventListener('click',spcoaSndExportPng);
-    // A dedicated map click listener is controlled by the Sounding checkbox.
-    // Cursor Sample keeps its existing independent mousemove behavior.
-    // Use MapLibre's own coordinates so terrain/pan and overlay pixel scaling
-    // cannot break the sounding location.
-    map.on('click', event => {
-        if (!spcoaSoundingSelectEnabled) return;
-        spcoaSndOpenAt(event.lngLat.lat, event.lngLat.lng);
-    });
+    // Capture native DOM clicks at the map wrapper rather than map.on('click').
+    // Weather/annotation canvases may be stacked above the MapLibre canvas,
+    // preventing MapLibre from ever receiving a click. Capture phase also works
+    // if those overlays stop bubbling. The host shell has an equivalent handler
+    // for its shared annotation canvas, which sits outside this iframe.
+    let spcoaPointerDown = null;
+    mapWrapper.addEventListener('pointerdown', event => {
+        spcoaPointerDown = event.button === 0
+            ? {x:event.clientX, y:event.clientY} : null;
+    }, true);
+    mapWrapper.addEventListener('click', event => {
+        if (!spcoaSoundingSelectEnabled || event.button !== 0) return;
+        if (spcoaPointerDown && Math.hypot(event.clientX-spcoaPointerDown.x,
+                                          event.clientY-spcoaPointerDown.y) > 7) return;
+        const t=event.target;
+        // Do not load a sounding when interacting with an existing map control,
+        // popup, color legend, annotation toolbar, or map label control.
+        if (t?.closest?.('button,input,select,textarea,a,[role="button"],.maplibregl-control-container,.maplibregl-popup,#spcoa-sounding-panel,#map-legend,#legend')) return;
+        const rect=map.getContainer().getBoundingClientRect();
+        if (event.clientX < rect.left || event.clientX > rect.right ||
+            event.clientY < rect.top || event.clientY > rect.bottom) return;
+        const ll=map.unproject([event.clientX-rect.left,event.clientY-rect.top]);
+        if (ll && Number.isFinite(ll.lat) && Number.isFinite(ll.lng)) {
+            spcoaSndOpenAt(ll.lat,ll.lng);
+        }
+    }, true);
     window.addEventListener('resize',()=>{
         if(panel.style.display==='block' && SPCOA_SOUNDING.current)spcoaSndRender();
     });
@@ -19069,27 +19170,38 @@ function spcoaSndInstallCursorSelector() {
     label.append(toggle,document.createTextNode('Sounding'));
     anchor.insertAdjacentElement('afterend',label);
 
-    toggle.addEventListener('change', () => {
-        spcoaSoundingSelectEnabled = toggle.checked;
-        // Prevent an annotation tool from stealing the map click. Existing
-        // drawing features remain available when Sounding is switched off.
-        if (spcoaSoundingSelectEnabled && typeof setDrawingTool === 'function') {
-            setDrawingTool('pan');
-        }
-        const canvas = map && map.getCanvas ? map.getCanvas() : null;
-        if (canvas) canvas.style.cursor = (spcoaSoundingSelectEnabled || cursorSampleEnabled) ? 'crosshair' : '';
-        // Immediate feedback confirms the tool is active even when no run
-        // has a published sounding archive yet.
-        const status = document.getElementById('ss-status');
-        if (spcoaSoundingSelectEnabled && status && !SPCOA_SOUNDING.point) {
-            status.textContent = 'Sounding enabled: left-click the map to load a native HRRR F00 profile.';
-        }
-    });
-    console.info('SPCOA Sounding selector installed beside Cursor Sample');
+    toggle.addEventListener('change', () => spcoaSndSetEnabled(toggle.checked));
+    console.info('SPCOA child Sounding selector installed beside Cursor Sample');
 }
+function spcoaSndSetEnabled(enabled) {
+    spcoaSoundingSelectEnabled=Boolean(enabled);
+    const toggle=document.getElementById('spcoa-sounding-toggle');
+    if (toggle) toggle.checked=spcoaSoundingSelectEnabled;
+    if (spcoaSoundingSelectEnabled && typeof setDrawingTool === 'function') {
+        setDrawingTool('pan');
+    }
+    const canvas=map?.getCanvas?.();
+    if (canvas) canvas.style.cursor=(spcoaSoundingSelectEnabled || cursorSampleEnabled) ? 'crosshair' : '';
+    const status=document.getElementById('ss-status');
+    if (spcoaSoundingSelectEnabled && status && !SPCOA_SOUNDING.point) {
+        status.textContent='Sounding enabled: left-click the map to open a native HRRR F00 sounding.';
+    }
+    console.info('SPCOA child sounding mode:',spcoaSoundingSelectEnabled);
+}
+// Same-origin parent shell can activate map panels directly or via postMessage.
+window.__mpSetSoundingMode=spcoaSndSetEnabled;
+window.__mpOpenSoundingAt=(lat,lon)=>{
+    if (!spcoaSoundingSelectEnabled) spcoaSndSetEnabled(true);
+    spcoaSndOpenAt(Number(lat),Number(lon));
+};
+window.addEventListener('message', event => {
+    if (event.source !== window.parent) return;
+    if (event.data?.type === 'spcoa-sounding-mode') {
+        spcoaSndSetEnabled(Boolean(event.data.enabled));
+    }
+});
 spcoaSndBuildPanel();
 spcoaSndInstallCursorSelector();
-
 
 
 
