@@ -300,6 +300,85 @@ def first_da(result, preferred):
     return result[vars_[0]].squeeze()
 
 
+def normalize_hrrr_axis(coord, label):
+    """Return cfgrib native Lambert axis in metres, without changing points."""
+    axis=np.asarray(coord.values, dtype=np.float64)
+    if axis.ndim != 1 or len(axis)<2 or not np.all(np.isfinite(axis)):
+        raise RuntimeError(f'HRRR {label} coordinate is not a finite 1-D axis')
+    step=float(np.median(np.diff(axis)))
+    if step <= 0:
+        raise RuntimeError(f'HRRR {label} axis is reversed or has invalid spacing')
+    units=str(coord.attrs.get('units', '')).lower().strip()
+    # cfgrib builds commonly use metres; a few decoders expose kilometres.
+    if units in ('km', 'kilometer', 'kilometers', 'kilometre', 'kilometres') or (2.5<step<3.5):
+        axis=axis*1000.
+        step*=1000.
+    if not 2900.<step<3100.:
+        raise RuntimeError(f'Unexpected HRRR native {label} spacing {step:.2f} m; expected 3 km')
+    if np.max(np.abs(np.diff(axis)-step))>1.:
+        raise RuntimeError(f'HRRR {label} axis is not regularly spaced')
+    return axis
+
+
+def projected_hrrr_axes(da):
+    """Anchor a native HRRR strip to its real Lambert projected geolocation.
+
+    The y/x coordinate origin reported by cfgrib is not necessarily the
+    projection origin used by pyproj.  Compare nine authoritative HRRR
+    lat/lon samples to identify a CONSTANT translation.  Refuse to publish
+    if that translation cannot place all samples within 1 km of the grid.
+    """
+    for key in ('x','y','latitude','longitude'):
+        if key not in da.coords:
+            raise RuntimeError(f'Missing HRRR coordinate {key!r}; cannot verify ECAPE geolocation')
+    x=normalize_hrrr_axis(da.coords['x'],'x')
+    y=normalize_hrrr_axis(da.coords['y'],'y')
+    if da.coords['latitude'].dims!=('y','x') or da.coords['longitude'].dims!=('y','x'):
+        raise RuntimeError('HRRR latitude/longitude must use (y, x) dimensions')
+    if da.coords['latitude'].shape!=(len(y),len(x)) or da.coords['longitude'].shape!=(len(y),len(x)):
+        raise RuntimeError('HRRR latitude/longitude dimensions do not match native axes')
+    ijs=[(iy,ix) for iy in sorted(set((0,len(y)//2,len(y)-1)))
+                 for ix in sorted(set((0,len(x)//2,len(x)-1)))]
+    lats=np.array([float(da.coords['latitude'].values[iy,ix]) for iy,ix in ijs])
+    lons=np.array([float(da.coords['longitude'].values[iy,ix]) for iy,ix in ijs])
+    if not np.all(np.isfinite(lats+lons)) or not np.all((-90<=lats)&(lats<=90)):
+        raise RuntimeError('HRRR grid has invalid latitude/longitude geolocation samples')
+    px,py=source_projection().transform(lons,lats)
+    if not np.all(np.isfinite(px+py)):
+        raise RuntimeError('Cannot project authoritative HRRR latitude/longitude coordinates')
+    offsets_x=np.array([xp-x[ix] for (iy,ix),xp in zip(ijs,px)])
+    offsets_y=np.array([yp-y[iy] for (iy,ix),yp in zip(ijs,py)])
+    shift_x=float(np.median(offsets_x))
+    shift_y=float(np.median(offsets_y))
+    residuals=np.hypot(offsets_x-shift_x,offsets_y-shift_y)
+    worst=float(np.max(residuals))
+    if worst>1000.:
+        raise RuntimeError(
+            f'HRRR projection is not a simple coordinate-origin offset: '
+            f'max geolocation residual {worst:.0f} m after translation. '
+            'Refusing to publish misplaced ECAPE tiles.'
+        )
+    x=x+shift_x
+    y=y+shift_y
+    print(f'HRRR native Lambert grid aligned to actual geolocation: '
+          f'origin correction dx={shift_x:,.0f} m, dy={shift_y:,.0f} m, '
+          f'max residual={worst:.1f} m',flush=True)
+    return x,y
+
+
+def check_native_hrrr_grid(da, rows, cols):
+    """Ensure all HRRR fields align with the same native grid axes."""
+    if da.sizes.get('y')!=rows or da.sizes.get('x')!=cols:
+        raise RuntimeError('HRRR sfc/prs fields have different horizontal grid shapes')
+    # Values and x/y coordinate metadata must agree; if supplied, also
+    # inspect native horizontal spacing to catch a different GRIB grid.
+    for key, expected in (('x',cols),('y',rows)):
+        if key in da.coords:
+            axis=normalize_hrrr_axis(da.coords[key],key)
+            if len(axis)!=expected:
+                raise RuntimeError(f'HRRR {key} grid dimensions differ between fields')
+
+
 def load_hrrr_strip(run,start,stop):
     from herbie import Herbie
     dt=datetime.strptime(run,'%Y%m%d_%H')
@@ -320,19 +399,12 @@ def load_hrrr_strip(run,start,stop):
     ]
     surf=[field(*x) for x in specifications]
     ydim,x_dim=surf[0].sizes['y'],surf[0].sizes['x']
-    # Preserve exact HRRR Lambert grid coords for the publisher.
-    x=np.asarray(surf[0].coords['x'].values,dtype=np.float64)
-    y=np.asarray(surf[0].coords['y'].values,dtype=np.float64)
-    # Guard against silent longitude/latitude shifts if HRRR changes its grid.
-    da0=surf[0]
-    if 'latitude' in da0.coords and 'longitude' in da0.coords:
-        iy=len(y)//2;ix=len(x)//2
-        true_lat=float(da0.latitude.values[iy,ix])
-        true_lon=float(da0.longitude.values[iy,ix])
-        tx,ty=source_projection().transform(true_lon,true_lat)
-        error=math.hypot(tx-x[ix],ty-y[iy])
-        if error>10000.:
-            raise RuntimeError(f'HRRR grid/projection mismatch: {error:.0f} metres; refusing misplaced ECAPE tiles')
+    # cfgrib x/y axes can be referenced to a different Lambert projection
+    # origin from our EPSG:3857 tiling transform.  Align native 3-km axes to
+    # the *actual HRRR lat/lon geolocation*; never disable georeferencing QA.
+    # This fixes large constant offsets (e.g. ~1,455 km), while rejecting a
+    # genuinely inconsistent projection, orientation, spacing, or grid.
+    x,y=projected_hrrr_axes(surf[0])
     pvars=[
         ('prs',r':HGT:[0-9]+ mb:',['gh','hgt']),
         ('prs',r':TMP:[0-9]+ mb:',['t','tmp']),
@@ -341,6 +413,17 @@ def load_hrrr_strip(run,start,stop):
         ('prs',r':VGRD:[0-9]+ mb:',['v','vgrd']),
     ]
     press=[field(*s) for s in pvars]
+    # Every product must be on the same 1799x1059 native HRRR grid.
+    for source_da in surf[1:]+press:
+        check_native_hrrr_grid(source_da, len(y), len(x))
+        if 'x' in source_da.coords and 'y' in source_da.coords:
+            # x/y arrays from different products must share a consistent
+            # relative origin; strip origin may differ from pyproj origin.
+            x_other=normalize_hrrr_axis(source_da.coords['x'],'x')
+            y_other=normalize_hrrr_axis(source_da.coords['y'],'y')
+            if not (np.allclose(np.diff(x_other),np.diff(x),atol=1.,rtol=0.) and
+                    np.allclose(np.diff(y_other),np.diff(y),atol=1.,rtol=0.)):
+                raise RuntimeError('Surface/pressure horizontal spacing mismatch')
     def pressure_name(da):
         for key in ('isobaricInhPa','isobaricInPa','pressure','level'):
             if key in da.coords: return key
