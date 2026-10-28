@@ -1487,7 +1487,7 @@ if (!__MP_CHILD) {
         }
 
         sharedCanvas.addEventListener("pointerdown",event=>{
-            if(drawingScope.value!=="all"||sharedDrawingTool==="pan")return;
+            if(event.button!==0 || drawingScope.value!=="all" || sharedDrawingTool==="pan")return;
             event.preventDefault(); event.stopPropagation();
             const p=canvasXY(event),panel=panelAtCanvasPoint(p.x,p.y); if(panel<0)return;
             if(sharedDrawingTool==="eraser"){eraseSharedAt(panel,p.x,p.y);return;}
@@ -1519,6 +1519,24 @@ if (!__MP_CHILD) {
         }
         sharedCanvas.addEventListener("pointerup",finishSharedDrawing);
         sharedCanvas.addEventListener("pointercancel",finishSharedDrawing);
+        // Right click also works while the shared multi-panel drawing overlay is active.
+        // The overlay belongs to the host, so forward geographical coordinates to
+        // the chosen child panel instead of trying to display a host-side sounding.
+        sharedCanvas.addEventListener('contextmenu', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const p = canvasXY(event);
+            const panel = panelAtCanvasPoint(p.x, p.y);
+            if (panel < 0) return;
+            const ll = unprojectShared(panel, p.x, p.y);
+            if (!ll || !Number.isFinite(ll.lng) || !Number.isFinite(ll.lat)) return;
+            try {
+                panels[panel].frame.contentWindow?.postMessage(
+                    {type:'mp-open-sounding',lat:ll.lat,lon:ll.lng},window.location.origin);
+            } catch (error) {
+                console.warn('SPCOA shared right-click sounding:',error);
+            }
+        }, true);
 
         function childUrl(index) {
             const u = new URL(window.location.href);
@@ -15307,7 +15325,6 @@ async function hodoShowNativeProfileAtClick(lon,lat) {
 }
 
 map.on('click',(event)=>{
-    if (SPCOA_SOUNDING.enabled) return; // Sounding tool owns map clicks while selected.
     if (!hodoToggle?.checked || !hodoNativeIndex || map.getZoom()<HODO_NATIVE_MIN_ZOOM) return;
     void hodoShowNativeProfileAtClick(event.lngLat.lng,event.lngLat.lat)
         .catch(err=>{console.warn('Native HRRR click:',err);hodoStatus(err.message);});
@@ -17930,7 +17947,7 @@ if (drawingToolbar && annotationCanvas) {
     });
 
     annotationCanvas.addEventListener("pointerdown", event => {
-        if (activeDrawingTool === "pan") return;
+        if (activeDrawingTool === "pan" || event.button !== 0) return;
         event.preventDefault();
         if (activeDrawingTool === "eraser") {
             eraseAt(event);
@@ -18398,13 +18415,13 @@ document.addEventListener("visibilitychange", () => {
 
 
 /* ===============================================================================
-   SPCOA V38 | NATIVE HRRR F00 CLICKABLE SOUNDINGS
+   SPCOA V39 | RIGHT-CLICK NATIVE HRRR F00 SOUNDINGS
    Source: spcoa_soundings.py v2: 32x32 binary tiles, int16 quantization,
    manifest.json and geo_index.json, run-specific S3. No new HTML/CSS required.
    No sounding is synthesized from a different hour or interpolated between cells.
    =============================================================================== */
 const SPCOA_SOUNDING = {
-    enabled: false, point: null, current: null, previous: null,
+    point: null, current: null, previous: null,
     serial: 0, marker: null, manifestCache: new Map(), geoCache: new Map(),
     blockCache: new Map(), MAX_BLOCKS: 22,
     fields: ['pressure_hpa','temperature_k','specific_humidity_kgkg','height_m_msl','u_ms','v_ms'],
@@ -18843,8 +18860,6 @@ function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
     const css=document.createElement('style');css.id='spcoa-sounding-css';
     css.textContent=`
-#spcoa-sounding-tool {position:fixed;right:17px;top:155px;z-index:6000;background:#0f1720;color:#e8f1ff;border:1px solid #677585;border-radius:6px;padding:9px 12px;font:700 12px Arial,sans-serif;box-shadow:0 2px 8px #0006;cursor:pointer}
-#spcoa-sounding-tool[aria-pressed="true"]{background:#006c9a;border-color:#77dbfa;box-shadow:0 0 0 2px #00bcff55}
 #spcoa-sounding-panel{position:fixed;z-index:6100;right:16px;top:54px;width:min(945px,calc(100vw - 25px));max-height:calc(100vh - 70px);overflow:auto;box-sizing:border-box;background:#0b1017;color:#edf2f8;border:1px solid #526072;border-radius:8px;box-shadow:0 12px 48px #000b;font:12px/1.5 Arial,Helvetica,sans-serif;display:none}
 #spcoa-sounding-panel *{box-sizing:border-box}
 #spcoa-sounding-panel .ss-head{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #354253;background:#141c27;position:sticky;top:0;z-index:3}
@@ -18868,57 +18883,72 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel #ss-status{color:#b8c7d6;margin:5px 0 8px;min-height:17px}
 #spcoa-sounding-panel .ss-note{color:#9aafc6;margin-top:8px;font-size:10px}
 #spcoa-sounding-panel .ss-compare{white-space:nowrap;display:flex;align-items:center;gap:5px;font-size:11px;color:#c8d7ec}
-@media(max-width:680px){#spcoa-sounding-panel .ss-figures,#spcoa-sounding-panel .ss-tables{grid-template-columns:1fr}#spcoa-sounding-panel canvas{height:330px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}#spcoa-sounding-tool{top:120px}}
+@media(max-width:680px){#spcoa-sounding-panel .ss-figures,#spcoa-sounding-panel .ss-tables{grid-template-columns:1fr}#spcoa-sounding-panel canvas{height:330px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
 `;
     document.head.appendChild(css);
 }
 function spcoaSndBuildPanel() {
     if(document.getElementById('spcoa-sounding-panel'))return;
     spcoaSndInjectStyles();
-    const tool=document.createElement('button');tool.type='button';tool.id='spcoa-sounding-tool';
-    tool.textContent='◉ Sounding';tool.title='Select, then click the map to open a native HRRR F00 sounding';
-    tool.setAttribute('aria-pressed','false');
-    document.body.appendChild(tool);
     const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
     panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
-    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Click a location with the Sounding tool enabled</div></div>
+    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Right-click anywhere on the map to open a sounding</div></div>
       <div class="ss-actions"><label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
-      <div class="ss-body"><div id="ss-status" role="status">Choose a location on the map.</div>
+      <div class="ss-body"><div id="ss-status" role="status">Right-click the map to open a native HRRR F00 sounding.</div>
       <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P</h3><canvas id="ss-skew"></canvas></div>
       <div class="ss-chart"><h3>Hodograph (kt)</h3><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables"><div class="ss-box"><h3>Thermodynamics · SPCOA gridded values</h3><table id="ss-thermo"></table></div>
       <div class="ss-box"><h3>Kinematics · Native HRRR profile</h3><table id="ss-kinematics"></table></div></div>
       <div class="ss-note">Native F00 profiles are sampled at the nearest HRRR ~3-km grid point. CAPE/CIN and ECAPE (Peters) are retrieved from independent SPCOA scalar fields, which may differ in calculation methods and horizontal sampling. Skew-T parcel path is illustrative; no CAPE is computed from its curve. Surface T/Td use 2 m data, while surface winds use 10 m data. Hourly comparison uses the same native HRRR grid index from the preceding F00 analysis.</div></div>`;
     document.body.appendChild(panel);
-    tool.addEventListener('click',()=> {
-        SPCOA_SOUNDING.enabled=!SPCOA_SOUNDING.enabled;
-        tool.setAttribute('aria-pressed',String(SPCOA_SOUNDING.enabled));
-        if(SPCOA_SOUNDING.enabled && typeof setDrawingTool === 'function')setDrawingTool('pan');
-        map.getCanvas().style.cursor=SPCOA_SOUNDING.enabled?'crosshair':'';
-    });
     document.getElementById('ss-close').addEventListener('click',()=>{
         panel.style.display='none';
         SPCOA_SOUNDING.point=null;SPCOA_SOUNDING.serial++;
         if(SPCOA_SOUNDING.marker){SPCOA_SOUNDING.marker.remove();SPCOA_SOUNDING.marker=null;}
-        SPCOA_SOUNDING.enabled=false;tool.setAttribute('aria-pressed','false');
-        map.getCanvas().style.cursor='';
     });
     document.getElementById('ss-compare').addEventListener('change',e=>{
         SPCOA_SOUNDING.comparing=e.target.checked;
         if(SPCOA_SOUNDING.point)void spcoaSndLoadSelection();
     });
     document.getElementById('ss-save').addEventListener('click',spcoaSndExportPng);
-    map.on('click',event=>{
-        if(!SPCOA_SOUNDING.enabled)return;
-        SPCOA_SOUNDING.point={lat:event.lngLat.lat,lon:event.lngLat.lng};
-        panel.style.display='block';
-        void spcoaSndLoadSelection();
-    });
+    // Capture context-menu events from either MapLibre or the annotation
+    // overlay. This works while the pan tool is enabled, and doesn't steal
+    // ordinary left-clicks used by existing map and hodograph functions.
+    mapWrapper.addEventListener('contextmenu', event => {
+        const target = event.target;
+        // Never hijack browser menus on form controls, zoom buttons, etc.
+        if (target instanceof Element && target.closest(
+            'button, input, select, textarea, a, .maplibregl-ctrl, .mapboxgl-ctrl, #spcoa-sounding-panel')) return;
+        const rect = map.getCanvas().getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+        const coord = map.unproject([x, y]);
+        if (!coord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        spcoaSndOpenAt(coord.lat, coord.lng);
+    }, true);
     window.addEventListener('resize',()=>{
         if(panel.style.display==='block' && SPCOA_SOUNDING.current)spcoaSndRender();
     });
 }
+function spcoaSndOpenAt(lat,lon) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const panel=document.getElementById('spcoa-sounding-panel');
+    if (!panel) return;
+    SPCOA_SOUNDING.point={lat,lon};
+    panel.style.display='block';
+    void spcoaSndLoadSelection();
+}
+// The multi-panel host can forward a right-click from its drawing overlay.
+// Only accept the message from our own parent frame on the same origin.
+if (__MP_CHILD) window.addEventListener('message', event => {
+    if (event.source!==window.parent || event.origin!==window.location.origin) return;
+    if (event.data?.type!=='mp-open-sounding') return;
+    spcoaSndOpenAt(Number(event.data.lat),Number(event.data.lon));
+});
 function spcoaSndStatus(text) {
     const el=document.getElementById('ss-status');if(el)el.textContent=text;
 }
@@ -19046,6 +19076,7 @@ function spcoaSndRefreshForRun() {
     void spcoaSndLoadSelection();
 }
 spcoaSndBuildPanel();
+
 
 
 
