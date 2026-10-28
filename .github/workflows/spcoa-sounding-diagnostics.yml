@@ -1,0 +1,103 @@
+name: SPCOA HRRR F00 Sounding Diagnostics Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "Published sounding archive run (YYYYMMDD_HH)"
+        required: true
+        default: "20261028_06"
+        type: string
+      latitude:
+        description: "Requested latitude"
+        required: true
+        default: "41.18"
+        type: string
+      longitude:
+        description: "Requested longitude (west negative)"
+        required: true
+        default: "-100.69"
+        type: string
+      skip_ecape:
+        description: "Temporarily omit ECAPE during troubleshooting"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic-test:
+    name: Single-point HRRR F00 diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-2
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install scientific and AWS dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes0 || true
+          python -m pip install --upgrade pip
+          python -m pip install numpy metpy sharppy ecape boto3
+
+      - name: Verify source files
+        run: |
+          test -f spcoa_soundings.py
+          test -f spcoa_sounding_diagnostics.py
+          python -m py_compile spcoa_soundings.py spcoa_sounding_diagnostics.py
+
+      - name: Run diagnostic self-test
+        run: python spcoa_sounding_diagnostics.py selftest
+
+      - name: Calculate selected HRRR sounding
+        env:
+          RUN_ID: ${{ inputs.run }}
+          LATITUDE: ${{ inputs.latitude }}
+          LONGITUDE: ${{ inputs.longitude }}
+          SKIP_ECAPE: ${{ inputs.skip_ecape }}
+        run: |
+          mkdir -p diagnostic-results
+          ARGS=()
+          if [ "$SKIP_ECAPE" = 'true' ]; then ARGS+=(--skip-ecape); fi
+          python spcoa_sounding_diagnostics.py s3 \
+            --run "$RUN_ID" --lat "$LATITUDE" --lon "$LONGITUDE" \
+            --output diagnostic-results/diagnostic_test.json "${ARGS[@]}"
+
+      - name: Summarize output
+        if: success()
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('diagnostic-results/diagnostic_test.json'))
+          with open('diagnostic-results/summary.txt','w') as f:
+              f.write('Native HRRR F00 single-point diagnostics\n')
+              f.write(f"Location: {d.get('location')}\n")
+              f.write(f"Parcels: {json.dumps(d.get('parcels'), indent=2)}\n")
+              f.write(f"Peters ECAPE: {d.get('peters_surface_ecape_jkg')} J/kg\n")
+              f.write(f"SB LCL-LFC RH: {d.get('sb_lcl_lfc_rh_percent')} %\n")
+              f.write(f"Warnings: {d.get('warnings')}\n")
+              f.write(f"Calculation errors: {json.dumps(d.get('calculation_errors'), indent=2)}\n")
+          print(open('diagnostic-results/summary.txt').read()[:12000])
+          PY
+
+      - name: Upload diagnostic output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spcoa-sounding-diagnostic-results
+          path: diagnostic-results/
+          if-no-files-found: warn
+          retention-days: 14
