@@ -2413,11 +2413,11 @@ if (!__MP_CHILD) {
             label.id = "spcoa-sounding-selector";
             if (anchor.tagName === "LABEL") label.className = anchor.className;
             label.style.cssText = "display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;white-space:nowrap;vertical-align:middle;";
-            label.title = "Check Sounding, then left-click the map for the native HRRR F00 Skew-T";
+            label.title = "Enable Sounding, then hold the map for 0.7 seconds to open a native HRRR F00 Skew-T";
             const toggle = document.createElement("input");
             toggle.type = "checkbox";
             toggle.id = "spcoa-sounding-toggle";
-            toggle.setAttribute("aria-label", "Sounding: click the map");
+            toggle.setAttribute("aria-label", "Sounding: press and hold the map");
             label.append(toggle, document.createTextNode("Sounding"));
             anchor.insertAdjacentElement("afterend", label);
             toggle.addEventListener("change", () => {
@@ -2439,26 +2439,136 @@ if (!__MP_CHILD) {
         }
         spcoaHostInstallSoundingSelector();
 
-        // When the host's shared annotation canvas intercepts clicks, there is
-        // no browser click inside the child iframe. Route those clicks too.
-        let spcoaHostClickDown = null;
-        sharedCanvas.addEventListener("pointerdown", e => {
-            spcoaHostClickDown = e.button === 0 ? {x: e.clientX, y: e.clientY} : null;
-        }, true);
-        sharedCanvas.addEventListener("click", e => {
-            if (!document.getElementById("spcoa-sounding-toggle")?.checked || e.button !== 0) return;
-            if (spcoaHostClickDown && Math.hypot(e.clientX - spcoaHostClickDown.x,
-                                                  e.clientY - spcoaHostClickDown.y) > 7) return;
-            const p = canvasXY(e), panelIndex = panelAtCanvasPoint(p.x, p.y);
-            if (panelIndex < 0) return;
-            const ll = unprojectShared(panelIndex, p.x, p.y);
-            if (!ll || !Number.isFinite(ll.lat) || !Number.isFinite(ll.lng)) return;
-            const cw = panels[panelIndex]?.frame?.contentWindow;
-            if (typeof cw?.__mpOpenSoundingAt === "function") {
-                setActivePanel(panelIndex);
-                cw.__mpOpenSoundingAt(ll.lat, ll.lng);
+        /* V42 — Press-and-hold sounding capture at the TOP-LEVEL document.
+         * MapLibre and annotation canvases live in child iframes; their mouse
+         * and click events cannot bubble into the host. A dedicated overlay,
+         * enabled ONLY with the Sounding checkbox, makes the gesture reliable.
+         * Dragging the overlay delegates a map pan to the selected child.
+         * Regular clicks never load a sounding. */
+        (function spcoaInstallHostSoundingHold() {
+            const control = document.getElementById('spcoa-sounding-toggle');
+            if (!control) { console.warn('SPCOA: Sounding checkbox not found'); return; }
+            const HOLD_MS = 700, MAX_MOVE = 11;
+            const surface = document.createElement('div');
+            surface.id = 'spcoa-sounding-hold-surface';
+            surface.setAttribute('aria-label','Press and hold to load an HRRR sounding');
+            surface.style.cssText = 'position:absolute;inset:0;z-index:10000;pointer-events:none;display:none;cursor:crosshair;touch-action:none;background:transparent;';
+            const notice = document.createElement('div');
+            notice.id = 'spcoa-sounding-hold-notice';
+            notice.setAttribute('role','status');
+            notice.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);max-width:95%;background:#122536ed;color:#e8f5ff;border:1px solid #558aab;border-radius:6px;padding:6px 11px;box-shadow:0 2px 12px #0007;font:12px/1.4 Arial,sans-serif;pointer-events:none;white-space:nowrap;';
+            notice.textContent = 'Sounding: press and hold on the map for 0.7 seconds · Drag to pan';
+            surface.appendChild(notice);
+            panelGrid.style.position = 'relative';
+            panelGrid.appendChild(surface);
+            let press = null;
+            function setNotice(value) { notice.textContent = value; }
+            function cancelPress() {
+                if (!press) return;
+                clearTimeout(press.timer);
+                press = null;
             }
-        }, true);
+            function getPosition(e) {
+                const rect = sharedCanvas.getBoundingClientRect();
+                const x=e.clientX-rect.left, y=e.clientY-rect.top;
+                return {x,y,index:panelAtCanvasPoint(x,y)};
+            }
+            function getChild(index) { return panels[index]?.frame?.contentWindow || null; }
+            function openAt(p) {
+                if (!control.checked) return;
+                const rawLocation = unprojectShared(p.index,p.x,p.y);
+                // Existing __mpUnproject returns [longitude,latitude] for
+                // annotations, not the {lng,lat} object the old sounding
+                // handler expected. Preserve the annotation bridge untouched.
+                const ll = Array.isArray(rawLocation)
+                    ? {lng:Number(rawLocation[0]),lat:Number(rawLocation[1])}
+                    : rawLocation;
+                if (!ll || !Number.isFinite(ll.lat) || !Number.isFinite(ll.lng)) {
+                    setNotice('Unable to determine map location — try again when the map finishes loading.');
+                    console.warn('SPCOA: Sounding long-press could not unproject map coordinate');
+                    return;
+                }
+                const child = getChild(p.index);
+                setActivePanel(p.index);
+                try {
+                    if (typeof child?.__mpOpenSoundingAt === 'function') {
+                        child.__mpOpenSoundingAt(ll.lat,ll.lng);
+                        setNotice(`Opening HRRR F00 sounding at ${ll.lat.toFixed(2)}°, ${ll.lng.toFixed(2)}°…`);
+                        // Remove the host capture surface after selection so
+                        // the iframe sounding window remains fully clickable.
+                        control.checked=false;
+                        control.dispatchEvent(new Event('change',{bubbles:true}));
+                    } else if (child) {
+                        child.postMessage({type:'spcoa-sounding-open',lat:ll.lat,lon:ll.lng},window.location.origin);
+                        setNotice('Sent sounding request to map panel; waiting for sounding interface…');
+                    } else {
+                        setNotice('Sounding map panel has not loaded yet.');
+                    }
+                } catch (error) {
+                    setNotice('Sounding could not open: '+(error.message||error));
+                    console.error('SPCOA sounding long-press open failed',error);
+                }
+            }
+            surface.addEventListener('pointerdown', e => {
+                if (!control.checked || !e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+                // The overlay exists over map panels only; ignore outside-viewport panels.
+                const at=getPosition(e);
+                if(at.index<0) return;
+                e.preventDefault();
+                cancelPress();
+                press={pointerId:e.pointerId,startX:e.clientX,startY:e.clientY,lastX:e.clientX,lastY:e.clientY,index:at.index,dragging:false,triggered:false,timer:null};
+                try {surface.setPointerCapture(e.pointerId);} catch(_){}
+                const thisPress=press;
+                setNotice('Hold to open sounding…');
+                thisPress.timer=setTimeout(()=>{
+                    if (press !== thisPress || thisPress.dragging || !control.checked) return;
+                    thisPress.triggered=true;
+                    openAt(getPosition({clientX:thisPress.startX,clientY:thisPress.startY}));
+                }, HOLD_MS);
+            },true);
+            surface.addEventListener('pointermove',e=>{
+                if (!press || e.pointerId !== press.pointerId) return;
+                const dx=e.clientX-press.lastX, dy=e.clientY-press.lastY;
+                const moved=Math.hypot(e.clientX-press.startX,e.clientY-press.startY);
+                if (!press.triggered && moved>MAX_MOVE) {
+                    press.dragging=true;
+                    clearTimeout(press.timer);
+                    setNotice('Drag to pan · Press and hold for sounding');
+                }
+                if (press.dragging && !press.triggered) {
+                    const child=getChild(press.index);
+                    try { child?.__mpSoundingPanBy?.(dx,dy); }
+                    catch(error) {console.warn('SPCOA sounding drag pan:',error);}
+                }
+                press.lastX=e.clientX;press.lastY=e.clientY;
+            },true);
+            function endPress(e){
+                if (!press || e.pointerId!==press.pointerId) return;
+                const wasTriggered=press.triggered;
+                cancelPress();
+                if (!wasTriggered) setNotice('Sounding: press and hold on the map for 0.7 seconds · Drag to pan');
+                try{surface.releasePointerCapture(e.pointerId);}catch(_){}
+            }
+            surface.addEventListener('pointerup',endPress,true);
+            surface.addEventListener('pointercancel',endPress,true);
+            surface.addEventListener('lostpointercapture',()=>cancelPress(),true);
+            surface.addEventListener('contextmenu',e=>e.preventDefault());
+            surface.addEventListener('wheel',e=>{
+                if(!control.checked)return;
+                e.preventDefault();
+                const p=getPosition(e), child=getChild(p.index);
+                if(p.index>=0)try{child?.__mpSoundingWheelZoom?.(e.deltaY,p.x-panelGeometry(p.index).x,p.y-panelGeometry(p.index).y);}catch(err){console.warn(err);}
+            },{passive:false});
+            function update(){
+                cancelPress();
+                surface.style.display = control.checked ? 'block' : 'none';
+                surface.style.pointerEvents=control.checked ? 'auto':'none';
+                setNotice('Sounding: press and hold on the map for 0.7 seconds · Drag to pan');
+            }
+            control.addEventListener('change',update);
+            update();
+            console.info('SPCOA host press-and-hold map sounding surface ready');
+        })();
 
         setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); if (drawingScope.value === "all") renderSharedOverlay(); }, 350);
         applyLayout(layoutSelect ? layoutSelect.value : 1);
@@ -18484,7 +18594,7 @@ document.addEventListener("visibilitychange", () => {
 
 
 /* ===============================================================================
-   SPCOA V40 | CURSOR-SAMPLE TOOLBAR CLICKABLE HRRR F00 SOUNDINGS
+   SPCOA V42 | PRESS-AND-HOLD CLICKABLE HRRR F00 SOUNDINGS
    Source: spcoa_soundings.py v2: 32x32 binary tiles, int16 quantization,
    manifest.json and geo_index.json, run-specific S3. No new HTML/CSS required.
    No sounding is synthesized from a different hour or interpolated between cells.
@@ -18961,10 +19071,10 @@ function spcoaSndBuildPanel() {
     spcoaSndInjectStyles();
     const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
     panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
-    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Enable Sounding next to Cursor Sample, then click the map</div></div>
+    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Enable Sounding next to Cursor Sample, then press and hold on the map</div></div>
       <div class="ss-actions"><label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
-      <div class="ss-body"><div id="ss-status" role="status">Enable Sounding next to Cursor Sample, then click the map.</div>
+      <div class="ss-body"><div id="ss-status" role="status">Enable Sounding next to Cursor Sample, then press and hold on the map.</div>
       <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P</h3><canvas id="ss-skew"></canvas></div>
       <div class="ss-chart"><h3>Hodograph (kt)</h3><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables"><div class="ss-box"><h3>Thermodynamics · SPCOA gridded values</h3><table id="ss-thermo"></table></div>
@@ -18981,32 +19091,31 @@ function spcoaSndBuildPanel() {
         if(SPCOA_SOUNDING.point)void spcoaSndLoadSelection();
     });
     document.getElementById('ss-save').addEventListener('click',spcoaSndExportPng);
-    // Capture native DOM clicks at the map wrapper rather than map.on('click').
-    // Weather/annotation canvases may be stacked above the MapLibre canvas,
-    // preventing MapLibre from ever receiving a click. Capture phase also works
-    // if those overlays stop bubbling. The host shell has an equivalent handler
-    // for its shared annotation canvas, which sits outside this iframe.
-    let spcoaPointerDown = null;
-    mapWrapper.addEventListener('pointerdown', event => {
-        spcoaPointerDown = event.button === 0
-            ? {x:event.clientX, y:event.clientY} : null;
-    }, true);
-    mapWrapper.addEventListener('click', event => {
-        if (!spcoaSoundingSelectEnabled || event.button !== 0) return;
-        if (spcoaPointerDown && Math.hypot(event.clientX-spcoaPointerDown.x,
-                                          event.clientY-spcoaPointerDown.y) > 7) return;
-        const t=event.target;
-        // Do not load a sounding when interacting with an existing map control,
-        // popup, color legend, annotation toolbar, or map label control.
-        if (t?.closest?.('button,input,select,textarea,a,[role="button"],.maplibregl-control-container,.maplibregl-popup,#spcoa-sounding-panel,#map-legend,#legend')) return;
+    // V42: fallback hold gesture for a map panel opened outside the host shell.
+    // In normal multipanel use the HOST overlay owns the hold gesture, since
+    // an iframe's native DOM events cannot reach the outer document.
+    let spcoaChildHold=null;
+    const childHoldCancel=()=>{if(spcoaChildHold){clearTimeout(spcoaChildHold.timer);spcoaChildHold=null;}};
+    mapWrapper.addEventListener('pointerdown', e=>{
+        if(!spcoaSoundingSelectEnabled || (e.pointerType==='mouse' && e.button!==0))return;
+        if(e.target?.closest?.('button,input,select,textarea,a,[role="button"],.maplibregl-control-container,.maplibregl-popup,#spcoa-sounding-panel,#map-legend,#legend'))return;
+        childHoldCancel();
         const rect=map.getContainer().getBoundingClientRect();
-        if (event.clientX < rect.left || event.clientX > rect.right ||
-            event.clientY < rect.top || event.clientY > rect.bottom) return;
-        const ll=map.unproject([event.clientX-rect.left,event.clientY-rect.top]);
-        if (ll && Number.isFinite(ll.lat) && Number.isFinite(ll.lng)) {
-            spcoaSndOpenAt(ll.lat,ll.lng);
-        }
-    }, true);
+        const held={pointerId:e.pointerId,x:e.clientX,y:e.clientY,timer:null};
+        spcoaChildHold=held;
+        held.timer=setTimeout(()=>{
+            if(spcoaChildHold!==held || !spcoaSoundingSelectEnabled)return;
+            const ll=map.unproject([held.x-rect.left,held.y-rect.top]);
+            if(ll && Number.isFinite(ll.lat) && Number.isFinite(ll.lng))spcoaSndOpenAt(ll.lat,ll.lng);
+            spcoaChildHold=null;
+        },700);
+    },true);
+    mapWrapper.addEventListener('pointermove',e=>{
+        if(spcoaChildHold && e.pointerId===spcoaChildHold.pointerId &&
+           Math.hypot(e.clientX-spcoaChildHold.x,e.clientY-spcoaChildHold.y)>11)childHoldCancel();
+    },true);
+    mapWrapper.addEventListener('pointerup',childHoldCancel,true);
+    mapWrapper.addEventListener('pointercancel',childHoldCancel,true);
     window.addEventListener('resize',()=>{
         if(panel.style.display==='block' && SPCOA_SOUNDING.current)spcoaSndRender();
     });
@@ -19017,6 +19126,8 @@ function spcoaSndOpenAt(lat,lon) {
     if (!panel) return;
     SPCOA_SOUNDING.point={lat,lon};
     panel.style.display='block';
+    spcoaSndStatus('Loading sounding profile for selected HRRR F00 hour…');
+    if (!currentRun) spcoaSndStatus('No HRRR F00 analysis hour selected yet.');
     void spcoaSndLoadSelection();
 }
 function spcoaSndStatus(text) {
@@ -19146,7 +19257,7 @@ function spcoaSndRefreshForRun() {
     void spcoaSndLoadSelection();
 }
 /* Add Sounding beside Cursor Sample without changing index.html.
- * Left-click a grid location to open the native F00 Skew-T; click again to update.
+ * Press and hold a grid location to open the native F00 Skew-T; hold again to update.
  * The existing Cursor Sample hover mode can remain enabled concurrently.
  */
 function spcoaSndInstallCursorSelector() {
@@ -19160,12 +19271,12 @@ function spcoaSndInstallCursorSelector() {
     // the original Cursor Sample markup is just a bare input element.
     if (anchor.tagName === 'LABEL') label.className = anchor.className;
     label.style.cssText = 'display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;white-space:nowrap;vertical-align:middle;';
-    label.title = 'Enable, then left-click the map to open a native HRRR F00 Skew-T and hodograph';
+    label.title = 'Enable, then press and hold the map to open a native HRRR F00 Skew-T and hodograph';
 
     const toggle = document.createElement('input');
     toggle.type = 'checkbox';
     toggle.id = 'spcoa-sounding-toggle';
-    toggle.setAttribute('aria-label', 'Sounding: click the map');
+    toggle.setAttribute('aria-label', 'Sounding: press and hold the map');
     toggle.style.cursor = 'pointer';
     label.append(toggle,document.createTextNode('Sounding'));
     anchor.insertAdjacentElement('afterend',label);
@@ -19184,7 +19295,7 @@ function spcoaSndSetEnabled(enabled) {
     if (canvas) canvas.style.cursor=(spcoaSoundingSelectEnabled || cursorSampleEnabled) ? 'crosshair' : '';
     const status=document.getElementById('ss-status');
     if (spcoaSoundingSelectEnabled && status && !SPCOA_SOUNDING.point) {
-        status.textContent='Sounding enabled: left-click the map to open a native HRRR F00 sounding.';
+        status.textContent='Sounding enabled: press and hold the map for 0.7 seconds to open an HRRR F00 sounding.';
     }
     console.info('SPCOA child sounding mode:',spcoaSoundingSelectEnabled);
 }
@@ -19194,16 +19305,27 @@ window.__mpOpenSoundingAt=(lat,lon)=>{
     if (!spcoaSoundingSelectEnabled) spcoaSndSetEnabled(true);
     spcoaSndOpenAt(Number(lat),Number(lon));
 };
+// Preserve pan and wheel navigation while the top-level hold overlay is active.
+window.__mpSoundingPanBy=(dx,dy)=>{
+    if(map && Number.isFinite(dx) && Number.isFinite(dy))map.panBy([-dx,-dy],{duration:0});
+};
+window.__mpSoundingWheelZoom=(deltaY,x,y)=>{
+    if(!map || !Number.isFinite(deltaY))return;
+    const zoom=map.getZoom()+Math.max(-0.8,Math.min(0.8,-deltaY/360));
+    const pt=(Number.isFinite(x)&&Number.isFinite(y))?map.unproject([x,y]):undefined;
+    map.zoomTo(zoom,{duration:0,...(pt?{around:pt}:{})});
+};
 window.addEventListener('message', event => {
     if (event.source !== window.parent) return;
     if (event.data?.type === 'spcoa-sounding-mode') {
         spcoaSndSetEnabled(Boolean(event.data.enabled));
     }
+    if (event.data?.type === 'spcoa-sounding-open') {
+        spcoaSndOpenAt(Number(event.data.lat),Number(event.data.lon));
+    }
 });
 spcoaSndBuildPanel();
 spcoaSndInstallCursorSelector();
-
-
 
 
 
