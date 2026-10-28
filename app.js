@@ -18586,7 +18586,7 @@ document.addEventListener("visibilitychange", () => {
     map.once("idle", () => notify("mp-ready"));
     setTimeout(() => notify("mp-ready"), 2500);
 })();
-}
+// V44: Sounding code must run inside mp-child to access currentRun and map state.
 
 
 
@@ -19327,6 +19327,8 @@ window.addEventListener('message', event => {
 });
 spcoaSndBuildPanel();
 spcoaSndInstallCursorSelector();
+
+} // End multi-panel mp-child branch (V44 sounding scope correction)
 
 
 
