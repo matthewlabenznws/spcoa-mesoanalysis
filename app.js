@@ -1519,25 +1519,6 @@ if (!__MP_CHILD) {
         }
         sharedCanvas.addEventListener("pointerup",finishSharedDrawing);
         sharedCanvas.addEventListener("pointercancel",finishSharedDrawing);
-        // Right click also works while the shared multi-panel drawing overlay is active.
-        // The overlay belongs to the host, so forward geographical coordinates to
-        // the chosen child panel instead of trying to display a host-side sounding.
-        sharedCanvas.addEventListener('contextmenu', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const p = canvasXY(event);
-            const panel = panelAtCanvasPoint(p.x, p.y);
-            if (panel < 0) return;
-            const ll = unprojectShared(panel, p.x, p.y);
-            if (!ll || !Number.isFinite(ll.lng) || !Number.isFinite(ll.lat)) return;
-            try {
-                panels[panel].frame.contentWindow?.postMessage(
-                    {type:'mp-open-sounding',lat:ll.lat,lon:ll.lng},window.location.origin);
-            } catch (error) {
-                console.warn('SPCOA shared right-click sounding:',error);
-            }
-        }, true);
-
         function childUrl(index) {
             const u = new URL(window.location.href);
             u.searchParams.set("mpchild", "1");
@@ -5242,6 +5223,10 @@ let cursorSampleEnabled =
     cursorSampleToggle
         ? cursorSampleToggle.checked
         : false;
+
+// Sounding selection is opt-in, adjacent to the existing Cursor Sample toggle.
+// It works with the Pan tool: click the map to load a sounding; drag to pan.
+let spcoaSoundingSelectEnabled = false;
 
 
 /* =========================================================================================
@@ -14238,7 +14223,7 @@ function setCursorSampleEnabled(enabled) {
 
     const canvas = map && map.getCanvas ? map.getCanvas() : null;
     if (canvas) {
-        canvas.style.cursor = cursorSampleEnabled ? "crosshair" : "";
+        canvas.style.cursor = (cursorSampleEnabled || spcoaSoundingSelectEnabled) ? "crosshair" : "";
     }
 }
 
@@ -15325,6 +15310,7 @@ async function hodoShowNativeProfileAtClick(lon,lat) {
 }
 
 map.on('click',(event)=>{
+    if (spcoaSoundingSelectEnabled) return; // Sounding click selector owns this map click.
     if (!hodoToggle?.checked || !hodoNativeIndex || map.getZoom()<HODO_NATIVE_MIN_ZOOM) return;
     void hodoShowNativeProfileAtClick(event.lngLat.lng,event.lngLat.lat)
         .catch(err=>{console.warn('Native HRRR click:',err);hodoStatus(err.message);});
@@ -18415,7 +18401,7 @@ document.addEventListener("visibilitychange", () => {
 
 
 /* ===============================================================================
-   SPCOA V39 | RIGHT-CLICK NATIVE HRRR F00 SOUNDINGS
+   SPCOA V40 | CURSOR-SAMPLE TOOLBAR CLICKABLE HRRR F00 SOUNDINGS
    Source: spcoa_soundings.py v2: 32x32 binary tiles, int16 quantization,
    manifest.json and geo_index.json, run-specific S3. No new HTML/CSS required.
    No sounding is synthesized from a different hour or interpolated between cells.
@@ -18892,10 +18878,10 @@ function spcoaSndBuildPanel() {
     spcoaSndInjectStyles();
     const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
     panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
-    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Right-click anywhere on the map to open a sounding</div></div>
+    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Enable Sounding next to Cursor Sample, then click the map</div></div>
       <div class="ss-actions"><label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
-      <div class="ss-body"><div id="ss-status" role="status">Right-click the map to open a native HRRR F00 sounding.</div>
+      <div class="ss-body"><div id="ss-status" role="status">Enable Sounding next to Cursor Sample, then click the map.</div>
       <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P</h3><canvas id="ss-skew"></canvas></div>
       <div class="ss-chart"><h3>Hodograph (kt)</h3><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables"><div class="ss-box"><h3>Thermodynamics · SPCOA gridded values</h3><table id="ss-thermo"></table></div>
@@ -18912,24 +18898,14 @@ function spcoaSndBuildPanel() {
         if(SPCOA_SOUNDING.point)void spcoaSndLoadSelection();
     });
     document.getElementById('ss-save').addEventListener('click',spcoaSndExportPng);
-    // Capture context-menu events from either MapLibre or the annotation
-    // overlay. This works while the pan tool is enabled, and doesn't steal
-    // ordinary left-clicks used by existing map and hodograph functions.
-    mapWrapper.addEventListener('contextmenu', event => {
-        const target = event.target;
-        // Never hijack browser menus on form controls, zoom buttons, etc.
-        if (target instanceof Element && target.closest(
-            'button, input, select, textarea, a, .maplibregl-ctrl, .mapboxgl-ctrl, #spcoa-sounding-panel')) return;
-        const rect = map.getCanvas().getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
-        if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
-        const coord = map.unproject([x, y]);
-        if (!coord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        spcoaSndOpenAt(coord.lat, coord.lng);
-    }, true);
+    // A dedicated map click listener is controlled by the Sounding checkbox.
+    // Cursor Sample keeps its existing independent mousemove behavior.
+    // Use MapLibre's own coordinates so terrain/pan and overlay pixel scaling
+    // cannot break the sounding location.
+    map.on('click', event => {
+        if (!spcoaSoundingSelectEnabled) return;
+        spcoaSndOpenAt(event.lngLat.lat, event.lngLat.lng);
+    });
     window.addEventListener('resize',()=>{
         if(panel.style.display==='block' && SPCOA_SOUNDING.current)spcoaSndRender();
     });
@@ -18942,13 +18918,6 @@ function spcoaSndOpenAt(lat,lon) {
     panel.style.display='block';
     void spcoaSndLoadSelection();
 }
-// The multi-panel host can forward a right-click from its drawing overlay.
-// Only accept the message from our own parent frame on the same origin.
-if (__MP_CHILD) window.addEventListener('message', event => {
-    if (event.source!==window.parent || event.origin!==window.location.origin) return;
-    if (event.data?.type!=='mp-open-sounding') return;
-    spcoaSndOpenAt(Number(event.data.lat),Number(event.data.lon));
-});
 function spcoaSndStatus(text) {
     const el=document.getElementById('ss-status');if(el)el.textContent=text;
 }
@@ -19075,7 +19044,52 @@ function spcoaSndRefreshForRun() {
     if(!SPCOA_SOUNDING.point || document.getElementById('spcoa-sounding-panel')?.style.display!=='block')return;
     void spcoaSndLoadSelection();
 }
+/* Add Sounding beside Cursor Sample without changing index.html.
+ * Left-click a grid location to open the native F00 Skew-T; click again to update.
+ * The existing Cursor Sample hover mode can remain enabled concurrently.
+ */
+function spcoaSndInstallCursorSelector() {
+    const sample = document.getElementById('cursor-sample-toggle');
+    if (!sample || document.getElementById('spcoa-sounding-toggle')) return;
+
+    const anchor = sample.closest('label') || document.querySelector('label[for="cursor-sample-toggle"]') || sample;
+    const label = document.createElement('label');
+    label.id = 'spcoa-sounding-selector';
+    // Reuse site-specific label classes, while keeping a visible control if
+    // the original Cursor Sample markup is just a bare input element.
+    if (anchor.tagName === 'LABEL') label.className = anchor.className;
+    label.style.cssText = 'display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;white-space:nowrap;vertical-align:middle;';
+    label.title = 'Enable, then left-click the map to open a native HRRR F00 Skew-T and hodograph';
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.id = 'spcoa-sounding-toggle';
+    toggle.setAttribute('aria-label', 'Sounding: click the map');
+    toggle.style.cursor = 'pointer';
+    label.append(toggle,document.createTextNode('Sounding'));
+    anchor.insertAdjacentElement('afterend',label);
+
+    toggle.addEventListener('change', () => {
+        spcoaSoundingSelectEnabled = toggle.checked;
+        // Prevent an annotation tool from stealing the map click. Existing
+        // drawing features remain available when Sounding is switched off.
+        if (spcoaSoundingSelectEnabled && typeof setDrawingTool === 'function') {
+            setDrawingTool('pan');
+        }
+        const canvas = map && map.getCanvas ? map.getCanvas() : null;
+        if (canvas) canvas.style.cursor = (spcoaSoundingSelectEnabled || cursorSampleEnabled) ? 'crosshair' : '';
+        // Immediate feedback confirms the tool is active even when no run
+        // has a published sounding archive yet.
+        const status = document.getElementById('ss-status');
+        if (spcoaSoundingSelectEnabled && status && !SPCOA_SOUNDING.point) {
+            status.textContent = 'Sounding enabled: left-click the map to load a native HRRR F00 profile.';
+        }
+    });
+    console.info('SPCOA Sounding selector installed beside Cursor Sample');
+}
 spcoaSndBuildPanel();
+spcoaSndInstallCursorSelector();
+
 
 
 
