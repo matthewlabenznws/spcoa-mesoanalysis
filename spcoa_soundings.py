@@ -210,8 +210,13 @@ class HRRRInput:
         from herbie import Herbie
         import cfgrib
         work.mkdir(parents=True, exist_ok=True)
-        dt = run_date(run)
-        print(f'Opening HRRR NAT + SFC {run} F00 (full native CONUS)', flush=True)
+        # Herbie internally uses timezone-naive pandas timestamps.  Passing a
+        # timezone-aware UTC datetime causes pandas to compare tz-aware and
+        # tz-naive timestamps and fail.  Match the established HRRR hodograph
+        # workflow: pass a timezone-free UTC timestamp STRING to Herbie.
+        # Keep run_date() itself timezone-aware for AWS metadata/validation.
+        dt = run_date(run).strftime('%Y-%m-%d %H:%M')
+        print(f'Opening HRRR NAT + SFC {run} F00 (full native CONUS; Herbie UTC {dt})', flush=True)
         self.nat = Herbie(dt, model='hrrr', product='nat', fxx=0,
                           save_dir=str(work / 'grib'), priority=['aws','google','nomads'],
                           verbose=False)
@@ -684,6 +689,9 @@ def main():
     elif args.mode=='publish':publish(args.run,args.shards,args.force)
     elif args.mode=='lookup':lookup(args.run,args.lat,args.lon)
 
+
+if __name__=='__main__':
+    main()
 
 if __name__=='__main__':
     main()
