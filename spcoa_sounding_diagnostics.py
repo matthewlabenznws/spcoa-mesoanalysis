@@ -5,7 +5,8 @@ Reads the EXISTING native ~3 km SPCOA sounding archive, calculates SHARPpy
 SB / 100-hPa ML / lowest-300-hPa MU diagnostics, and calculates Peters-based
 SB / ML / MU ECAPE with the ecape-parcel analytic formulation. Also outputs
 100-hPa-layer *inferred geostrophic* temperature advection (WAA/CAA), 50-hPa
-wind-barb samples, and kinematics for a WeatherFront-inspired sounding UI.
+wind-barb samples, height-weighted environmental LCL-to-LFC mean RH, and
+moisture/parcel-origin quality control for a WeatherFront-inspired sounding UI.
 
 The archive backend ``spcoa_soundings.py`` is NOT modified or re-run.
 This script processes an individual clicked point (or a bounded test block).
@@ -36,9 +37,15 @@ Scientific methods:
 * SHARPpy DefineParcel + parcelx: undiluted CAPE/CIN, virtual T, LCL/LFC/EL; SB/ML/MU. Mixing/search depth is never passed as a parcel origin pressure.
 * SHARPpy inferred_temp_adv: 100-hPa layers, geostrophic assumption (C/hr).
 * Peters/Urquhart ecape-parcel ecape_calc.calc_ecape: SB/ML/MU ECAPE (J/kg).
+  SHARPpy CAPE and LFC/EL (AGL converted to MSL) are passed explicitly to
+  avoid MetPy MU parcel-search mismatches and keep parcel definitions aligned.
   This is not necessarily numerically identical to the existing standalone
   gridded SBECAPE algorithm. Their methods and parcel assumptions can differ.
 * Native HRRR pressure, T, specific humidity, height, U/V drive all diagnostics.
+* Environmental LCL-LFC RH is height-weighted over SHARPpy parcel LCL/LFC
+  using liquid-water saturation; unavailable layers remain null.
+* Minor dewpoint-over-temperature inconsistencies (up to 0.25 C) are capped
+  at saturation before lifting; larger profile inconsistencies are rejected.
   Surface row combines 2-m T/q, 10-m wind, and terrain/surface pressure.
 
 All metric failures are recorded as null with a warning; never as invented 0.
@@ -347,6 +354,125 @@ def make_dewpoint(pr: dict) -> np.ndarray:
     return np.asarray(dewpoint_from_specific_humidity(p,t,q).to('degC').magnitude,dtype=float)
 
 
+
+
+def qc_moisture_profile(pr: dict, dewpoint_c: np.ndarray) -> tuple[np.ndarray, dict, list[str]]:
+    """QC native q/T consistency *before* passing the sounding to diagnostics.
+
+    The native archive quantizes atmospheric fields. Tiny positive Td-T
+    differences can result from interpolation/quantization in otherwise moist
+    layers. For differences <=0.25 C we cap q at liquid-water saturation (and
+    Td at T) so SHARPpy and Peters ECAPE use the SAME corrected humidity.
+    Larger supersaturation is not silently discarded or reinterpreted.
+    """
+    from metpy.calc import specific_humidity_from_dewpoint
+    from metpy.units import units
+
+    td = np.asarray(dewpoint_c, dtype=float).copy()
+    t_c = np.asarray(pr['temperature_k'], dtype=float) - 273.15
+    delta = td - t_c
+    if not np.all(np.isfinite(delta)):
+        raise ValueError('Nonfinite dewpoint/temperature encountered in QC')
+    violated = delta > 1e-6
+    tolerance_c = 0.25
+    excessive = delta > tolerance_c + 1e-8
+    maximum = float(np.max(np.maximum(delta, 0.0)))
+    if np.any(excessive):
+        idx = int(np.argmax(delta))
+        raise ValueError(
+            'HRRR moisture QC: dewpoint exceeds temperature by '
+            f'{maximum:.3f} C at {pr["pressure_hpa"][idx]:.1f} hPa '
+            f'(limit {tolerance_c:.2f} C). Refusing to calculate parcels '
+            'from an inconsistent humidity profile.'
+        )
+
+    flagged = np.flatnonzero(violated)
+    warnings = []
+    if len(flagged):
+        p = np.asarray(pr['pressure_hpa'], dtype=float)
+        q_saturation = np.asarray(
+            specific_humidity_from_dewpoint(
+                p[flagged] * units.hectopascal,
+                t_c[flagged] * units.degC,
+            ).to('dimensionless').magnitude,
+            dtype=float,
+        )
+        if not np.all(np.isfinite(q_saturation)) or np.any(q_saturation <= 0):
+            raise ValueError('Unable to compute saturation specific humidity for QC')
+        humidity = np.asarray(pr['specific_humidity_kgkg'], dtype=float).copy()
+        old_humidity = humidity[flagged].copy()
+        humidity[flagged] = np.minimum(humidity[flagged], q_saturation)
+        td[flagged] = t_c[flagged]
+        pr['specific_humidity_kgkg'] = humidity
+        pr['moisture_qc_humidity_reduction_max_pct'] = float(
+            np.max(100 * np.maximum(old_humidity - humidity[flagged], 0.0) / old_humidity)
+        )
+        warnings.append(
+            f'HRRR native-profile moisture QC: capped {len(flagged)} '
+            f'slightly supersaturated level(s) (max Td - T = {maximum:.3f} C); '
+            'adjusted humidity is used consistently for SHARPpy and ECAPE.'
+        )
+
+    info = {
+        'method': 'QC of dewpoint derived from native HRRR specific humidity',
+        'saturation_reference': 'liquid water',
+        'minor_supersaturation_tolerance_c': tolerance_c,
+        'source_levels_with_td_above_t': int(len(flagged)),
+        'max_source_td_above_t_c': round(maximum, 4),
+        'native_q_capped_at_saturation': bool(len(flagged)),
+        'max_relative_q_adjustment_pct': finite(
+            pr.get('moisture_qc_humidity_reduction_max_pct', 0.0), 4
+        ),
+    }
+    return td, info, warnings
+
+
+def environmental_rh_profile(pr: dict) -> np.ndarray:
+    """HRRR environmental RH (%) using q, T and p, referenced to liquid water."""
+    from metpy.calc import relative_humidity_from_specific_humidity
+    from metpy.units import units
+    rh = relative_humidity_from_specific_humidity(
+        np.asarray(pr['pressure_hpa']) * units.hectopascal,
+        np.asarray(pr['temperature_k']) * units.kelvin,
+        np.asarray(pr['specific_humidity_kgkg']) * units.dimensionless,
+        phase='liquid',
+    )
+    values = np.asarray(rh.to('dimensionless').magnitude, dtype=float) * 100
+    if not np.all(np.isfinite(values)) or np.any(values < -1) or np.any(values > 100.5):
+        raise ValueError('Environmental RH invalid even after moisture QC')
+    return np.clip(values, 0, 100)
+
+
+def height_weighted_lcl_lfc_mean_rh(
+    height_agl_m: np.ndarray, rh_percent: np.ndarray,
+    lcl_m_agl: float | None, lfc_m_agl: float | None,
+) -> float | None:
+    """Mean environmental RH by integration in HEIGHT (not level count).
+
+    Interpolates at LCL and LFC boundaries and integrates between them.
+    Null where a legitimate LFC is missing, limits are invalid, or there is no
+    observed/archived atmosphere covering the full layer.
+    """
+    if lcl_m_agl is None or lfc_m_agl is None:
+        return None
+    low, high = float(lcl_m_agl), float(lfc_m_agl)
+    z = np.asarray(height_agl_m, dtype=float)
+    rh = np.asarray(rh_percent, dtype=float)
+    if z.ndim != 1 or rh.shape != z.shape or len(z) < 2:
+        return None
+    if not np.all(np.isfinite(z)) or not np.all(np.isfinite(rh)):
+        return None
+    if not np.all(np.diff(z) > 0) or low < -0.1 or high <= low + 1:
+        return None
+    if low < float(z[0]) - 0.1 or high > float(z[-1]) + 0.1:
+        return None
+    lower, upper = max(low, float(z[0])), min(high, float(z[-1]))
+    inside = (z > lower) & (z < upper)
+    zz = np.concatenate(([lower], z[inside], [upper]))
+    rr = np.interp(zz, z, np.clip(rh, 0, 100))
+    return finite(float(np.sum(0.5 * (rr[1:] + rr[:-1]) * np.diff(zz)) / (upper - lower)), 1)
+
+
 def sharppy_lift_parcel(sprof: Any, flag: int, depth_hpa: int | None):
     """Lift a SHARPpy parcel without confusing mixing depth with origin pressure.
 
@@ -364,9 +490,27 @@ def sharppy_lift_parcel(sprof: Any, flag: int, depth_hpa: int | None):
         lpl = params.DefineParcel(sprof, flag=flag, pres=depth_hpa)
     else:
         raise ValueError(f'Unsupported SHARPpy parcel flag {flag}')
+    # Correct tiny parcel-origin supersaturation that can appear after
+    # SHARPpy's MU interpolation (even with QC'd source levels). The selected
+    # parcel itself, not just its displayed dewpoint, must be corrected BEFORE
+    # lifting so CAPE/CIN/LCL and ECAPE remain internally consistent.
+    origin_t, origin_td = finite(lpl.tmpc, 6), finite(lpl.dwpc, 6)
+    if origin_t is None or origin_td is None:
+        raise ValueError('SHARPpy parcel origin has invalid T/Td')
+    excess = origin_td - origin_t
+    qc_record = {'adjusted': False, 'original_td_above_t_c': finite(max(excess, 0), 4)}
+    if excess > 0.25 + 1e-6:
+        raise ValueError(
+            f'Parcel-origin Td exceeds T by {excess:.3f} C, above 0.25 C QC limit'
+        )
+    if excess > 1e-6:
+        lpl.dwpc = lpl.tmpc
+        qc_record['adjusted'] = True
     # Explicitly use lplvals: do NOT send 'pres' to parcelx, since that would
     # misinterpret 100/300 hPa depth as the parcel starting pressure.
-    return params.parcelx(sprof, lplvals=lpl)
+    result = params.parcelx(sprof, lplvals=lpl)
+    setattr(result, '_spcoa_origin_moisture_qc', qc_record)
+    return result
 
 
 def parcel_diagnostics(sprof: Any) -> tuple[dict, list[str]]:
@@ -377,7 +521,8 @@ def parcel_diagnostics(sprof: Any) -> tuple[dict, list[str]]:
         raise ValueError('Invalid surface pressure for SHARPpy parcels')
     fields = ('cape_jkg', 'cin_jkg', 'lcl_m_agl',
               'lfc_m_agl', 'el_m_agl', 'starting_pressure_hpa',
-              'starting_temp_c', 'starting_dewpoint_c')
+              'starting_temp_c', 'starting_dewpoint_c',
+              'lcl_lfc_mean_rh_pct')
     for kind, flag, depth in (('SB', 1, None), ('ML', 4, 100), ('MU', 3, 300)):
         try:
             parcel = sharppy_lift_parcel(sprof, flag, depth)
@@ -390,7 +535,16 @@ def parcel_diagnostics(sprof: Any) -> tuple[dict, list[str]]:
                 'starting_pressure_hpa': finite(parcel.pres, 1),
                 'starting_temp_c': finite(parcel.tmpc, 2),
                 'starting_dewpoint_c': finite(parcel.dwpc, 2),
+                'lcl_lfc_mean_rh_pct': None,  # filled after RH profile QC
             }
+            pqc = getattr(parcel, '_spcoa_origin_moisture_qc', {})
+            values['origin_moisture_qc'] = pqc
+            if pqc.get('adjusted'):
+                warn.append(
+                    f'{kind} parcel-origin moisture QC: capped dewpoint to T '
+                    f'(original Td - T = {pqc["original_td_above_t_c"]:.3f} C) '
+                    'before SHARPpy parcel lift and downstream ECAPE.'
+                )
             origin_p = values['starting_pressure_hpa']
             if origin_p is None:
                 raise ValueError(f'{kind}: parcel starting pressure missing')
@@ -411,48 +565,96 @@ def parcel_diagnostics(sprof: Any) -> tuple[dict, list[str]]:
         except Exception as exc:
             warn.append(f'{kind} SHARPpy parcel calculation failed: {type(exc).__name__}: {exc}')
             out[kind] = {field: None for field in fields}
+            out[kind]['origin_moisture_qc'] = None
     return out, warn
 
 
-def ecape_diagnostics(pr: dict, parcels: dict, enabled: bool) -> tuple[dict,list[str]]:
-    results={};warnings=[]
+def _ecape_sharppy_inputs(pr: dict, parcel: dict) -> tuple[float, float, float]:
+    """Convert validated SHARPpy parcel diagnostics to ECAPE's MSL heights.
+
+    SHARPpy reports LFC/EL in metres ABOVE GROUND; ecape-parcel requires
+    heights ABOVE SEA LEVEL that correspond to the supplied ``height_msl``
+    profile. Do not silently substitute or estimate missing heights.
+    """
+    cape = parcel.get('cape_jkg')
+    lfc_agl = parcel.get('lfc_m_agl')
+    el_agl = parcel.get('el_m_agl')
+    if any(x is None or not math.isfinite(float(x)) for x in (cape, lfc_agl, el_agl)):
+        raise ValueError('SHARPpy CAPE, LFC, or EL unavailable')
+    cape, lfc_agl, el_agl = float(cape), float(lfc_agl), float(el_agl)
+    if cape <= 0 or lfc_agl < 0 or el_agl <= lfc_agl:
+        raise ValueError('No valid positive-CAPE parcel with EL above LFC')
+
+    height = np.asarray(pr['height_m_msl'], dtype=float)
+    if height.ndim != 1 or len(height) < 10 or not np.all(np.isfinite(height)):
+        raise ValueError('Invalid source sounding heights')
+    z_surface = float(height[0])
+    lfc_msl = z_surface + lfc_agl
+    el_msl = z_surface + el_agl
+    # ECAPE looks up the first native height strictly GREATER than each bound;
+    # avoid its internal indexing error for a height above the available profile.
+    if not (z_surface <= lfc_msl < el_msl < float(height[-1])):
+        raise ValueError('SHARPpy LFC/EL outside available native height range')
+    return cape, lfc_msl, el_msl
+
+
+def ecape_diagnostics(pr: dict, parcels: dict, enabled: bool) -> tuple[dict, list[str]]:
+    """Analytic Peters ECAPE using the SAME parcel CAPE and LFC/EL as SHARPpy.
+
+    ecape-parcel may fail while independently detecting MU LFC/EL, especially
+    in elevated unstable profiles. Supply the SHARPpy parcel quantities so
+    comparisons remain internally consistent instead of re-deriving them.
+    """
+    results = {}
+    warnings = []
     if not enabled:
-        return {p:None for p in ('SB','ML','MU')},['ECAPE calculation disabled by --no-ecape']
+        return {p: None for p in ('SB', 'ML', 'MU')}, [
+            'ECAPE calculation disabled by --no-ecape']
     try:
         from ecape_parcel.ecape_calc import calc_ecape
         from metpy.units import units
     except ImportError as exc:
-        return {p:None for p in ('SB','ML','MU')},[
+        return {p: None for p in ('SB', 'ML', 'MU')}, [
             f'Install ecape-parcel and MetPy to calculate ECAPE: {exc}']
-    # Analytic Peters-type ECAPE: use the same full native profile for all parcels.
-    # The package chooses the SB, ML(100 hPa), or MU parcel definition internally.
-    h=pr['height_m_msl']*units.meter
-    p=pr['pressure_hpa']*units.hPa
-    t=pr['temperature_k']*units.kelvin
-    q=pr['specific_humidity_kgkg']*units.dimensionless
-    u=pr['u_ms']*units('m/s')
-    v=pr['v_ms']*units('m/s')
-    for kind,cape_type in (('SB','surface_based'),('ML','mixed_layer'),('MU','most_unstable')):
-        cape=parcels.get(kind,{}).get('cape_jkg')
+
+    h = pr['height_m_msl'] * units.meter
+    p = pr['pressure_hpa'] * units.hPa
+    t = pr['temperature_k'] * units.kelvin
+    q = pr['specific_humidity_kgkg'] * units.dimensionless
+    u = pr['u_ms'] * units('m/s')
+    v = pr['v_ms'] * units('m/s')
+    for kind, cape_type in (('SB', 'surface_based'), ('ML', 'mixed_layer'),
+                            ('MU', 'most_unstable')):
+        parcel = parcels.get(kind, {})
+        cape = parcel.get('cape_jkg')
         if cape is None:
-            results[kind]=None
-            warnings.append(f'{kind} ECAPE not computed: missing valid CAPE')
+            results[kind] = None
+            warnings.append(f'{kind} ECAPE not computed: missing valid SHARPpy CAPE')
             continue
         if cape <= 0:
-            results[kind]=0.0
+            # A valid undiluted zero-CAPE parcel has no positive CAPE to entrain.
+            results[kind] = 0.0
             continue
         try:
-            value=calc_ecape(h,p,t,q,u,v,cape_type=cape_type,
-                             inflow_bottom=0*units.meter,
-                             inflow_top=1000*units.meter,
-                             storm_motion='right_moving')
-            x=finite(value.to('J/kg').magnitude,1) if hasattr(value,'to') else finite(value,1)
-            if x is None or x<0 or x>25000: raise ValueError(f'out-of-bounds result {x}')
-            results[kind]=x
+            cape_jkg, lfc_msl, el_msl = _ecape_sharppy_inputs(pr, parcel)
+            value = calc_ecape(
+                h, p, t, q, u, v,
+                cape_type=cape_type,
+                undiluted_cape=cape_jkg * units('J/kg'),
+                lfc=lfc_msl * units.meter,
+                el=el_msl * units.meter,
+                inflow_bottom=0 * units.meter,
+                inflow_top=1000 * units.meter,
+                storm_motion='right_moving',
+            )
+            x = finite(value.to('J/kg').magnitude, 1) if hasattr(value, 'to') else finite(value, 1)
+            if x is None or x < 0 or x > 25000:
+                raise ValueError(f'out-of-bounds ECAPE result {x}')
+            results[kind] = x
         except Exception as exc:
-            results[kind]=None
+            results[kind] = None
             warnings.append(f'{kind} Peters ECAPE unavailable: {type(exc).__name__}: {exc}')
-    return results,warnings
+    return results, warnings
 
 
 def temp_advection(sprof: Any, latitude: float|None):
@@ -486,9 +688,18 @@ def temp_advection(sprof: Any, latitude: float|None):
 def diagnose(raw: dict, run: str|None=None, include_ecape: bool=True) -> dict:
     """Calculate one native grid-point's diagnostics; keep errors explicit."""
     pr=prepare_profile(raw)
-    td=make_dewpoint(pr)
+    td_original=make_dewpoint(pr)
+    td, moisture_qc, moisture_warnings=qc_moisture_profile(pr, td_original)
     shp=build_sharppy_profile(pr,td)
     parcels,warnings=parcel_diagnostics(shp)
+    warnings = moisture_warnings + warnings
+    rh=environmental_rh_profile(pr)
+    height_agl=np.asarray(pr['height_m_msl'],dtype=float)-float(pr['height_m_msl'][0])
+    for kind in ('SB', 'ML', 'MU'):
+        pcl=parcels[kind]
+        pcl['lcl_lfc_mean_rh_pct']=height_weighted_lcl_lfc_mean_rh(
+            height_agl, rh, pcl.get('lcl_m_agl'), pcl.get('lfc_m_agl')
+        )
     ecape,ew=ecape_diagnostics(pr,parcels,include_ecape)
     warnings.extend(ew)
     waa,aw=temp_advection(shp,pr['lat'])
@@ -501,6 +712,7 @@ def diagnose(raw: dict, run: str|None=None, include_ecape: bool=True) -> dict:
         'location':{'j':pr['j'],'i':pr['i'],'lat':pr['lat'],'lon':pr['lon']},
         'levels_native':pr['levels_native'],'levels_valid':pr['levels_valid'],
         'parcels':parcels,
+        'moisture_quality_control':moisture_qc,
         'kinematics':kinematics(pr),
         'inferred_temp_advection':{
             'method':'SHARPpy inferred geostrophic thermal advection',
@@ -510,8 +722,10 @@ def diagnose(raw: dict, run: str|None=None, include_ecape: bool=True) -> dict:
         'methodology':{
             'undiluted_parcels':'SHARPpy DefineParcel + parcelx (virtual-temperature-corrected, checked origin pressure)',
             'parcel_definitions':'SB=surface; ML=lowest 100 hPa; MU=most unstable in lowest 300 hPa (SHARPpy)',
-            'ecape':'Peters-based analytic ECAPE via ecape-parcel/ecape_calc, 0-1 km Bunkers RM inflow',
-            'ecape_note':'ECAPE may differ from existing SPCOA gridded ECAPE because of algorithm and parcel details',
+            'ecape':'Peters-based analytic ECAPE via ecape-parcel/ecape_calc with SHARPpy CAPE/LFC/EL, 0-1 km Bunkers RM inflow',
+            'ecape_note':'Uses SHARPpy parcel CAPE/LFC/EL (AGL converted to MSL); ECAPE may differ from SPCOA gridded ECAPE due to implementation details',
+            'lcl_lfc_mean_rh':'Height-weighted environmental RH from parcel LCL to LFC; liquid-water saturation; null when LFC missing or layer invalid',
+            'moisture_qc':'Native q/T and SHARPpy parcel-origin Td>T capped only when excess <=0.25 C; larger discrepancies rejected',
             'source_surface_note':'Surface is 2-m thermodynamics + 10-m wind + surface terrain/pressure',
             'platform_note':'Derived parameters may differ across sites due to interpolation and parcel methodology.'},
         'warnings':warnings,
@@ -585,6 +799,82 @@ def _selftest_parcel_depth_handling():
             else:sys.modules[k]=v
 
 
+def _selftest_ecape_parcel_bounds():
+    """Validate the AGL -> MSL conversion and reject missing/invalid EL."""
+    heights=np.array([820.0, 1020.0, 1500.0, 3000.0, 5000.0,
+                      8000.0, 10500.0, 12000.0, 16000.0, 18000.0])
+    profile={'height_m_msl':heights}
+    parcel={'cape_jkg':789.8, 'lfc_m_agl':2408.0, 'el_m_agl':10032.0}
+    cape,lfc,el=_ecape_sharppy_inputs(profile,parcel)
+    assert abs(cape-789.8)<1e-6
+    assert abs(lfc-3228.0)<1e-6, 'LFC must be MSL'
+    assert abs(el-10852.0)<1e-6, 'EL must be MSL'
+    for invalid in (
+        {'cape_jkg':789.8,'lfc_m_agl':None,'el_m_agl':10032.0},
+        {'cape_jkg':789.8,'lfc_m_agl':2408.0,'el_m_agl':None},
+        {'cape_jkg':789.8,'lfc_m_agl':10032.0,'el_m_agl':2408.0},
+        {'cape_jkg':789.8,'lfc_m_agl':2408.0,'el_m_agl':20000.0},
+    ):
+        try:
+            _ecape_sharppy_inputs(profile,invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'Invalid ECAPE parcel bounds accepted: {invalid}')
+
+
+
+
+def _selftest_lcl_lfc_mean_rh():
+    # Constant RH gives the same value even on highly irregular vertical grid.
+    z=np.array([0., 200., 450., 1100., 1900., 2400., 3200.])
+    rh=np.full(z.shape, 66.0)
+    assert height_weighted_lcl_lfc_mean_rh(z,rh,431.3,2408.)==66.0
+    # Linear RH slope has an exact height-weighted average (no level bias).
+    linear=30 + z/100
+    expected=(30 + 431.3/100 + 30 + 2408/100) / 2
+    got=height_weighted_lcl_lfc_mean_rh(z,linear,431.3,2408.)
+    assert abs(got-expected)<0.06,(got,expected)
+    assert height_weighted_lcl_lfc_mean_rh(z,rh,None,2000.) is None
+    assert height_weighted_lcl_lfc_mean_rh(z,rh,431.3,None) is None
+    assert height_weighted_lcl_lfc_mean_rh(z,rh,431.3,431.3) is None
+    assert height_weighted_lcl_lfc_mean_rh(z,rh,431.3,4500.) is None
+
+
+def _selftest_sharppy_parcel_moisture_qc():
+    from types import ModuleType, SimpleNamespace
+    fake_mod=ModuleType('sharppy.sharptab.params')
+    observed=[]
+    def define(_profile,flag,**kw):
+        return SimpleNamespace(pres=865.9,tmpc=12.54,dwpc=12.62)
+    def parcelx(_profile, **kwargs):
+        lpl=kwargs['lplvals']
+        observed.append((lpl.tmpc,lpl.dwpc))
+        return SimpleNamespace(pres=lpl.pres,tmpc=lpl.tmpc,dwpc=lpl.dwpc)
+    fake_mod.DefineParcel=define;fake_mod.parcelx=parcelx
+    fake_sharp=ModuleType('sharppy');fake_tab=ModuleType('sharppy.sharptab')
+    fake_tab.params=fake_mod
+    old={k:sys.modules.get(k) for k in ('sharppy','sharppy.sharptab','sharppy.sharptab.params')}
+    try:
+        sys.modules['sharppy']=fake_sharp
+        sys.modules['sharppy.sharptab']=fake_tab
+        sys.modules['sharppy.sharptab.params']=fake_mod
+        result=sharppy_lift_parcel(SimpleNamespace(),3,300)
+        assert result.dwpc==result.tmpc==12.54
+        assert result._spcoa_origin_moisture_qc['adjusted']
+        assert abs(result._spcoa_origin_moisture_qc['original_td_above_t_c']-.08)<.001
+        assert observed==[(12.54,12.54)]
+        fake_mod.DefineParcel=lambda *_a,**_kw:SimpleNamespace(
+            pres=865.9,tmpc=12.54,dwpc=13.54)
+        try:sharppy_lift_parcel(SimpleNamespace(),3,300)
+        except ValueError as exc:assert '0.25 C' in str(exc)
+        else:raise AssertionError('Large parcel-origin supersaturation was accepted')
+    finally:
+        for k,v in old.items():
+            if v is None:sys.modules.pop(k,None)
+            else:sys.modules[k]=v
+
+
 def basic_selftest():
     """No AWS, SHARPpy or MetPy required for the format and kinematic tests."""
     z=np.arange(0,16001,400,dtype=float)
@@ -610,7 +900,10 @@ def basic_selftest():
     assert interp_pressure(p['pressure_hpa'],p['temperature_k'],25) is None
     assert abs(srh_layer(z,u,v,7,5,1000))<1e4
     _selftest_parcel_depth_handling()
-    print('SELFTEST PASS: profile QC, 50-mb barbs, shear/SRH, and correct SHARPpy parcel depth versus origin pressure')
+    _selftest_ecape_parcel_bounds()
+    _selftest_lcl_lfc_mean_rh()
+    _selftest_sharppy_parcel_moisture_qc()
+    print('SELFTEST PASS: profile QC, 50-mb barbs, shear/SRH, parcel selection, MU Td>T QC, LCL-LFC RH, and ECAPE heights')
 
 
 def main():
@@ -670,7 +963,7 @@ def main():
                 for kind in ('SB','ML','MU'):
                     delta[kind]={}
                     for field in ('cape_jkg','cin_jkg','ecape_peters_jkg',
-                                  'lcl_m_agl','lfc_m_agl','el_m_agl'):
+                                  'lcl_m_agl','lfc_m_agl','el_m_agl', 'lcl_lfc_mean_rh_pct'):
                         a=doc['parcels'][kind].get(field)
                         b=prev_doc['parcels'][kind].get(field)
                         delta[kind][field]=round(a-b,2) if a is not None and b is not None else None
