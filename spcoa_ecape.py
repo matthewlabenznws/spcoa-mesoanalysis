@@ -321,48 +321,105 @@ def normalize_hrrr_axis(coord, label):
 
 
 def projected_hrrr_axes(da):
-    """Anchor a native HRRR strip to its real Lambert projected geolocation.
+    """Create georeferenced HRRR Lambert axes from the *actual* lat/lon grid.
 
-    The y/x coordinate origin reported by cfgrib is not necessarily the
-    projection origin used by pyproj.  Compare nine authoritative HRRR
-    lat/lon samples to identify a CONSTANT translation.  Refuse to publish
-    if that translation cannot place all samples within 1 km of the grid.
+    HRRR GRIB decoders can provide the horizontal dimensions named ``x`` and
+    ``y`` without including ``x``/``y`` *coordinate arrays*.  Previously the
+    lack of an optional coordinate array stopped the ECAPE run.  Latitude and
+    longitude, not the existence of these optional native-axis labels, are
+    authoritative for geographic placement.
+
+    The HRRR native Lambert grid is rectilinear.  Use 3x3 reference points to
+    estimate its native spacing/offset from latitude/longitude, verify that
+    the native spacing is ~3 km, and confirm that all reference points agree
+    to within 1 km.  If explicit native x/y coordinates are also provided,
+    preserve their spacing and resolve their coordinate-origin translation.
+    Never silently bypass the geographic integrity check.
     """
-    for key in ('x','y','latitude','longitude'):
+    ny=int(da.sizes.get('y',0))
+    nx=int(da.sizes.get('x',0))
+    if ny<3 or nx<3:
+        raise RuntimeError(f'Unexpected HRRR horizontal dimensions: {da.sizes}')
+    for key in ('latitude','longitude'):
         if key not in da.coords:
-            raise RuntimeError(f'Missing HRRR coordinate {key!r}; cannot verify ECAPE geolocation')
-    x=normalize_hrrr_axis(da.coords['x'],'x')
-    y=normalize_hrrr_axis(da.coords['y'],'y')
-    if da.coords['latitude'].dims!=('y','x') or da.coords['longitude'].dims!=('y','x'):
-        raise RuntimeError('HRRR latitude/longitude must use (y, x) dimensions')
-    if da.coords['latitude'].shape!=(len(y),len(x)) or da.coords['longitude'].shape!=(len(y),len(x)):
-        raise RuntimeError('HRRR latitude/longitude dimensions do not match native axes')
-    ijs=[(iy,ix) for iy in sorted(set((0,len(y)//2,len(y)-1)))
-                 for ix in sorted(set((0,len(x)//2,len(x)-1)))]
-    lats=np.array([float(da.coords['latitude'].values[iy,ix]) for iy,ix in ijs])
-    lons=np.array([float(da.coords['longitude'].values[iy,ix]) for iy,ix in ijs])
-    if not np.all(np.isfinite(lats+lons)) or not np.all((-90<=lats)&(lats<=90)):
-        raise RuntimeError('HRRR grid has invalid latitude/longitude geolocation samples')
+            raise RuntimeError(
+                f'Missing HRRR coordinate {key!r}; cannot geolocate ECAPE. '
+                f'Available dimensions={tuple(da.dims)}, coords={tuple(da.coords)}'
+            )
+        if tuple(da.coords[key].dims)!=('y','x') or da.coords[key].shape!=(ny,nx):
+            raise RuntimeError(
+                f'HRRR {key} is not aligned with (y, x): '
+                f'dims={da.coords[key].dims}, shape={da.coords[key].shape}; '
+                f'expected ({ny}, {nx})'
+            )
+
+    rows=sorted(set((0,ny//2,ny-1)))
+    cols=sorted(set((0,nx//2,nx-1)))
+    ij=[(i,j) for i in rows for j in cols]
+    # Index only 9 coordinates, not the entire 1799-column field.
+    lat_coord=da.coords['latitude'].values
+    lon_coord=da.coords['longitude'].values
+    lats=np.array([float(lat_coord[i,j]) for i,j in ij],dtype=np.float64)
+    lons=np.array([float(lon_coord[i,j]) for i,j in ij],dtype=np.float64)
+    if (not np.all(np.isfinite(lats+lons))
+            or not np.all((-90.<=lats)&(lats<=90.))
+            or not np.all((-360.<=lons)&(lons<=360.))):
+        raise RuntimeError('HRRR latitude/longitude samples have invalid values')
     px,py=source_projection().transform(lons,lats)
+    px=np.asarray(px,dtype=np.float64)
+    py=np.asarray(py,dtype=np.float64)
     if not np.all(np.isfinite(px+py)):
-        raise RuntimeError('Cannot project authoritative HRRR latitude/longitude coordinates')
-    offsets_x=np.array([xp-x[ix] for (iy,ix),xp in zip(ijs,px)])
-    offsets_y=np.array([yp-y[iy] for (iy,ix),yp in zip(ijs,py)])
-    shift_x=float(np.median(offsets_x))
-    shift_y=float(np.median(offsets_y))
-    residuals=np.hypot(offsets_x-shift_x,offsets_y-shift_y)
+        raise RuntimeError('Cannot project authoritative HRRR lat/lon samples')
+
+    i_index=np.array([i for i,j in ij],dtype=np.float64)
+    j_index=np.array([j for i,j in ij],dtype=np.float64)
+    have_x='x' in da.coords
+    have_y='y' in da.coords
+    # Use the native axis when available; otherwise derive it from observed
+    # geolocation.  Some cfgrib configurations only expose integer dimensions.
+    if have_x:
+        native_x=normalize_hrrr_axis(da.coords['x'],'x')
+        dx=float(np.median(np.diff(native_x)))
+        x0=float(np.median(px-native_x[j_index.astype(int)]))+native_x[0]
+        x=x0 + np.arange(nx,dtype=np.float64)*dx
+    else:
+        # With three widely separated reference columns, fit a native ~3km
+        # spacing rather than assume how a particular GRIB library encodes x.
+        dx=float(np.polyfit(j_index,px,1)[0])
+        x0=float(np.median(px - dx*j_index))
+        x=x0+dx*np.arange(nx,dtype=np.float64)
+
+    if have_y:
+        native_y=normalize_hrrr_axis(da.coords['y'],'y')
+        dy=float(np.median(np.diff(native_y)))
+        y0=float(np.median(py-native_y[i_index.astype(int)]))+native_y[0]
+        y=y0 + np.arange(ny,dtype=np.float64)*dy
+    else:
+        dy=float(np.polyfit(i_index,py,1)[0])
+        y0=float(np.median(py-dy*i_index))
+        y=y0+dy*np.arange(ny,dtype=np.float64)
+
+    if not (2900.<dx<3100. and 2900.<dy<3100.):
+        raise RuntimeError(
+            f'HRRR projected spacing incompatible with 3-km native grid: '
+            f'dx={dx:.2f}m, dy={dy:.2f}m; '
+            f'explicit x/y coords={have_x}/{have_y}. '
+            'Check the HRRR projection and latitude/longitude metadata.'
+        )
+    residuals=np.hypot(px-(x0+j_index*dx),py-(y0+i_index*dy))
     worst=float(np.max(residuals))
     if worst>1000.:
         raise RuntimeError(
-            f'HRRR projection is not a simple coordinate-origin offset: '
-            f'max geolocation residual {worst:.0f} m after translation. '
-            'Refusing to publish misplaced ECAPE tiles.'
+            'HRRR projection failed geolocation quality control: '
+            f'max residual={worst:.1f} m across nine reference points. '
+            'Refusing to publish geographically misplaced ECAPE tiles.'
         )
-    x=x+shift_x
-    y=y+shift_y
-    print(f'HRRR native Lambert grid aligned to actual geolocation: '
-          f'origin correction dx={shift_x:,.0f} m, dy={shift_y:,.0f} m, '
-          f'max residual={worst:.1f} m',flush=True)
+    print(
+        f'HRRR Lambert alignment verified from 9 lat/lon points: '
+        f'dx={dx:.2f} m, dy={dy:.2f} m, '
+        f'explicit axes={have_x}/{have_y}, '
+        f'max residual={worst:.1f} m',flush=True
+    )
     return x,y
 
 
