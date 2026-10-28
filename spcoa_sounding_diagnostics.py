@@ -21,6 +21,27 @@ import numpy as np
 
 KTS_PER_MS = 1.94384449244
 
+def json_safe(value):
+    """Convert NumPy values to strict JSON-compatible Python values."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, (float, np.floating)):
+        x = float(value)
+        return x if math.isfinite(x) else None
+    if isinstance(value, (np.integer, np.bool_)):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return json_safe(value.tolist())
+    if np.ma.is_masked(value):
+        return None
+    if isinstance(value, np.ma.MaskedArray):
+        return json_safe(value.filled(np.nan).tolist())
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    raise TypeError(f"Cannot convert {type(value).__name__} to JSON")
+
 def number(x):
     try:
         a = float(x)
@@ -301,7 +322,11 @@ def selftest():
         fake['u_ms'].append(2+i*.6)
         fake['v_ms'].append(3+i*.2)
     a=prepare(fake); assert len(wind_barbs(a))>10
-    print('SELFTEST PASS: profile validation, Method B pressure integration, 50-hPa barbs')
+    encoded=json.dumps(json_safe({'i':np.int64(12),'value':np.float32(1.5),
+                                   'missing':np.float64(np.nan),
+                                   'barbs':np.array([950,900],dtype=np.int64)}),allow_nan=False)
+    assert json.loads(encoded)=={'i':12,'value':1.5,'missing':None,'barbs':[950,900]}
+    print('SELFTEST PASS: profile validation, Method B pressure integration, 50-hPa barbs, JSON serialization')
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__)
@@ -315,6 +340,6 @@ def main():
     if args.command=='selftest':return selftest()
     raw=json.loads(Path(args.input).read_text()) if args.command=='profile' else get_s3_profile(args.run,args.lat,args.lon)
     result=diagnostics(raw,ecape=not args.skip_ecape)
-    Path(args.output).write_text(json.dumps(result,indent=2,allow_nan=False))
+    Path(args.output).write_text(json.dumps(json_safe(result),indent=2,allow_nan=False))
     print('Wrote',args.output,'; diagnostics issues:',list(result['calculation_errors']))
 if __name__=='__main__':main()
