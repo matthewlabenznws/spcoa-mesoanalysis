@@ -1,0 +1,151 @@
+name: SPCOA - ML Averaging A-B Test (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Completed sounding archive hour YYYYMMDD_HH (blank uses latest SPCOA hour)'
+        required: false
+        type: string
+        default: '20261028_06'
+      latitude:
+        description: 'Test sounding latitude (degrees north)'
+        required: true
+        type: string
+        default: '41.18'
+      longitude:
+        description: 'Test sounding longitude (degrees east; negative in Nebraska)'
+        required: true
+        type: string
+        default: '-100.59'
+
+permissions:
+  contents: read
+
+jobs:
+  test-sounding-diagnostics:
+    name: Validate one native HRRR F00 sounding
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_SOUNDINGS_BUCKET: spcoa-mesoanalysis
+      SPCOA_SOUNDINGS_PREFIX: spcoa
+      RUN_ID: ${{ inputs.run_id }}
+      LATITUDE: ${{ inputs.latitude }}
+      LONGITUDE: ${{ inputs.longitude }}
+      PYTHONUNBUFFERED: '1'
+      MPLBACKEND: Agg
+
+    steps:
+      - name: Check out SPCOA repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements_spcoa_sounding_diagnostics.txt
+
+      - name: Check required backend files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in spcoa_soundings.py spcoa_sounding_diagnostics.py requirements_spcoa_sounding_diagnostics.txt; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required file missing from repository root: $file"
+              exit 1
+            fi
+          done
+          python -m py_compile spcoa_soundings.py spcoa_sounding_diagnostics.py
+
+      - name: Install diagnostics dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements_spcoa_sounding_diagnostics.txt
+          # SHARPpy has old dependency pins; install its calculation code
+          # without replacing the compatible scientific stack above.
+          python -m pip install --no-deps 'SHARPpy==1.4.0a5'
+          python - <<'PY'
+          import boto3, metpy
+          from sharppy.sharptab import params, profile
+          from ecape_parcel.ecape_calc import calc_ecape
+          print('Imports OK: boto3, MetPy, SHARPpy, ecape-parcel')
+          PY
+
+      - name: Run offline sounding-data self-test
+        run: python spcoa_sounding_diagnostics.py selftest
+
+      - name: Compare native SHARPpy and pressure-integrated 100-hPa ML parcels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test_outputs
+          for mode in sharppy_default pressure_integrated; do
+            echo "=== ML averaging mode: $mode ==="
+            python spcoa_sounding_diagnostics.py point \
+              --run "$RUN_ID" \
+              --lat "$LATITUDE" \
+              --lon "$LONGITUDE" \
+              --ml-method "$mode" \
+              --no-ecape \
+              --save "test_outputs/diagnostics_${mode}.json"
+          done
+
+      - name: Build comparison report and GitHub summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          from pathlib import Path
+          import json, os
+          base=Path('test_outputs')
+          a=json.loads((base/'diagnostics_sharppy_default.json').read_text())
+          b=json.loads((base/'diagnostics_pressure_integrated.json').read_text())
+          if a['location']!=b['location'] or a['run_id']!=b['run_id']:
+              raise RuntimeError('A/B test used mismatched sounding locations/runs')
+          fields=['cape_jkg','cin_jkg','lcl_m_agl','lfc_m_agl','el_m_agl','starting_temp_c','starting_dewpoint_c']
+          ma=a['parcels']['ML'];mb=b['parcels']['ML']
+          reference={'cape_jkg':160.0,'cin_jkg':-167.0,'lcl_m_agl':477.0,'lfc_m_agl':3890.0,'el_m_agl':8825.0}
+          diff=lambda x,y:round(x-y,3) if x is not None and y is not None else None
+          report={'run_id':a['run_id'],'location':a['location'],
+                  'sharppy_default':ma,'pressure_integrated':mb,
+                  'pivotal_screenshot_reference':reference,
+                  'difference_integrated_minus_standard':{k:diff(mb.get(k),ma.get(k)) for k in fields},
+                  'difference_integrated_minus_pivotal':{k:diff(mb.get(k),reference.get(k)) for k in reference},
+                  'notes':['Pivotal figures were transcribed from screenshot, no raw Pivotal profile available',
+                           'A/B uses same native grid cell, same moisture QC and same SHARPpy lift',
+                           'Only ML parcel-origin averaging differs. No method is assumed to match Pivotal.']}
+          (base/'ml_method_comparison.json').write_text(json.dumps(report,indent=2)+'\n')
+          lines=['## ML parcel method A/B test','',f"Run: `{a['run_id']}`",f"Grid: `{a['location']}`",'',
+                 '| ML field | SHARPpy default | Pressure-integrated | Pivotal screenshot |',
+                 '|---|---:|---:|---:|']
+          for k in fields:
+              lines.append(f"| {k} | {ma.get(k)} | {mb.get(k)} | {reference.get(k,'—')} |")
+          lines+=['','**Note:** This is a controlled method comparison, not proof of the Pivotal implementation.',
+                  '','### Pressure-integrated parcel metadata',
+                  '```json',json.dumps(mb.get('mixing_method'),indent=2),'```','',
+                  '### Calculation warnings',
+                  '\n'.join(f'- {w}' for w in b.get('warnings',[])) or '- None']
+          message='\n'.join(lines)+'\n'
+          print(message)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write(message)
+          if ma.get('cape_jkg') is None or mb.get('cape_jkg') is None:
+              raise RuntimeError('One or both ML CAPE tests returned null')
+          PYCODE
+
+      - name: Save method-comparison JSON and both sounding results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spcoa-ml-averaging-ab-test
+          path: test_outputs/*.json
+          if-no-files-found: warn
+          retention-days: 7
