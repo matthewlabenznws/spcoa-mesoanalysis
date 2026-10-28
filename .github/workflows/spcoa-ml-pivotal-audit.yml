@@ -1,0 +1,109 @@
+name: SPCOA - ML CAPE Pivotal Comparison (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Completed HRRR F00 sounding run YYYYMMDD_HH'
+        required: true
+        type: string
+        default: '20261028_06'
+      pivotal_lat:
+        description: 'Pivotal screenshot requested latitude'
+        required: true
+        type: string
+        default: '41.18'
+      pivotal_lon:
+        description: 'Pivotal screenshot requested longitude'
+        required: true
+        type: string
+        default: '-100.59'
+      spcoa_lat:
+        description: 'Previous SPCOA diagnostic latitude'
+        required: true
+        type: string
+        default: '41.18'
+      spcoa_lon:
+        description: 'Previous SPCOA diagnostic longitude'
+        required: true
+        type: string
+        default: '-100.69'
+
+permissions:
+  contents: read
+
+jobs:
+  compare-ml:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_SOUNDINGS_BUCKET: spcoa-mesoanalysis
+      SPCOA_SOUNDINGS_PREFIX: spcoa
+      RUN_ID: ${{ inputs.run_id }}
+      PIVOTAL_LAT: ${{ inputs.pivotal_lat }}
+      PIVOTAL_LON: ${{ inputs.pivotal_lon }}
+      SPCOA_LAT: ${{ inputs.spcoa_lat }}
+      SPCOA_LON: ${{ inputs.spcoa_lon }}
+      PYTHONUNBUFFERED: '1'
+      MPLBACKEND: Agg
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements_spcoa_sounding_diagnostics.txt
+      - name: Verify scripts
+        run: |
+          set -euo pipefail
+          for f in spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_ml_pivotal_audit.py requirements_spcoa_sounding_diagnostics.txt; do
+            test -f "$f" || { echo "Missing repository-root file: $f"; exit 1; }
+          done
+          python -m py_compile spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_ml_pivotal_audit.py
+      - name: Install scientific stack
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements_spcoa_sounding_diagnostics.txt
+          python -m pip install --no-deps 'SHARPpy==1.4.0a5'
+          python - <<'PY'
+          import numpy, metpy, boto3
+          from sharppy.sharptab import params, profile
+          print('SHARPpy / MetPy / boto3 imports passed')
+          PY
+      - name: Recheck original diagnostics selftest
+        run: python spcoa_sounding_diagnostics.py selftest
+      - name: Compare both HRRR gridpoints and ML definitions
+        run: |
+          set -euo pipefail
+          python spcoa_ml_pivotal_audit.py \
+            --run "$RUN_ID" \
+            --pivotal-lat "$PIVOTAL_LAT" --pivotal-lon "$PIVOTAL_LON" \
+            --spcoa-lat "$SPCOA_LAT" --spcoa-lon "$SPCOA_LON" \
+            --out-dir ml_audit_output
+      - name: Show ML comparison in Actions Summary
+        if: always()
+        run: |
+          if [[ -f ml_audit_output/ML_AUDIT_SUMMARY.txt ]]; then
+            {
+              echo '## HRRR mixed-layer diagnostic audit'
+              echo ''
+              echo '```text'
+              cat ml_audit_output/ML_AUDIT_SUMMARY.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Save JSON report and 100-hPa profile CSVs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spcoa-ml-pivotal-audit
+          path: ml_audit_output/
+          if-no-files-found: warn
+          retention-days: 10
