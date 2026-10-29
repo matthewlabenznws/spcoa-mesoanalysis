@@ -1,10 +1,38 @@
-# Copy to repository ROOT as template.sounding-api.yaml
-# AWS SAM / CloudFormation. Manual GitHub Actions deployment; no cron.
+
+# ============================================================
+# SPCOA Native HRRR F00 Sounding Diagnostics API
+#
+# AWS SAM / CloudFormation template
+#
+# Components:
+#   - Lambda container (SHARPpy / MetPy / Peters ECAPE)
+#   - S3 native HRRR sounding archive
+#   - S3 calculated diagnostics cache
+#   - SQS FIFO processing queue
+#   - SQS dead-letter queue
+#   - API Gateway HTTP API
+#
+# Corrections:
+#   - Removed ReservedConcurrentExecutions
+#   - Added s3:ListBucket to Lambda execution role
+#
+# Deployment: GitHub Actions (manual)
+# Region: us-east-2
+# ============================================================
+
 AWSTemplateFormatVersion: '2010-09-09'
+
 Transform: AWS::Serverless-2016-10-31
+
 Description: SPCOA native HRRR F00 sounding on-demand diagnostics with S3 cache
 
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+
 Parameters:
+
   SoundingsBucket:
     Type: String
     Default: spcoa-mesoanalysis
@@ -15,116 +43,271 @@ Parameters:
 
   AllowedOrigin:
     Type: String
-    Default: 'https://example.invalid'
-    Description: Replace the Default value with the exact GitHub Pages site origin BEFORE deployment; CORS is not authentication
+    Default: 'https://matthewlabenznws.github.io'
+    Description: GitHub Pages origin for CORS
+
+
+# ============================================================
+# RESOURCES
+# ============================================================
 
 Resources:
+
+  # ----------------------------------------------------------
+  # Dead-letter queue
+  # ----------------------------------------------------------
+
   SoundingDeadLetterQueue:
     Type: AWS::SQS::Queue
+
     Properties:
       FifoQueue: true
+
       QueueName: !Sub '${AWS::StackName}-dead.fifo'
+
       ContentBasedDeduplication: true
+
       MessageRetentionPeriod: 1209600
+
+
+  # ----------------------------------------------------------
+  # Sounding calculation work queue
+  # ----------------------------------------------------------
 
   SoundingWorkQueue:
     Type: AWS::SQS::Queue
+
     Properties:
       FifoQueue: true
+
       QueueName: !Sub '${AWS::StackName}-work.fifo'
+
       VisibilityTimeout: 1500
+
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt SoundingDeadLetterQueue.Arn
         maxReceiveCount: 3
 
+
+  # ----------------------------------------------------------
+  # API Gateway HTTP API
+  # ----------------------------------------------------------
+
   SoundingHttpApi:
     Type: AWS::ApiGatewayV2::Api
+
     Properties:
       Name: spcoa-sounding-diagnostics
+
       ProtocolType: HTTP
+
       CorsConfiguration:
-        AllowOrigins: [!Ref AllowedOrigin]
-        AllowMethods: [GET, OPTIONS]
-        AllowHeaders: [content-type]
+        AllowOrigins:
+          - !Ref AllowedOrigin
+
+        AllowMethods:
+          - GET
+          - OPTIONS
+
+        AllowHeaders:
+          - content-type
+
         MaxAge: 3600
+
+
+  # ----------------------------------------------------------
+  # Lambda sounding diagnostics
+  # ----------------------------------------------------------
 
   SoundingFunction:
     Type: AWS::Serverless::Function
+
     Metadata:
       DockerContext: .
       Dockerfile: Dockerfile.sounding-api
       DockerTag: soundings-v1
+
     Properties:
+
       PackageType: Image
+
       MemorySize: 3008
+
       Timeout: 240
+
+      # ReservedConcurrentExecutions intentionally omitted.
+      # This avoids the account concurrency quota error.
+
       Environment:
         Variables:
+
           SPCOA_SOUNDINGS_BUCKET: !Ref SoundingsBucket
+
           SPCOA_SOUNDINGS_PREFIX: !Ref SoundingsPrefix
+
           SPCOA_SOUNDING_QUEUE_URL: !Ref SoundingWorkQueue
+
+
+      # ------------------------------------------------------
+      # Lambda execution permissions
+      # ------------------------------------------------------
 
       Policies:
         - Statement:
-            - Effect: Allow
-              Action: s3:GetObject
-              Resource: !Sub 'arn:${AWS::Partition}:s3:::${SoundingsBucket}/${SoundingsPrefix}/runs/*/soundings/v1/*'
+
+            # Allow S3 to report missing cache files as 404.
+            # Without ListBucket, S3 may return AccessDenied
+            # when the requested diagnostics JSON is absent.
 
             - Effect: Allow
-              Action: s3:PutObject
-              Resource: !Sub 'arn:${AWS::Partition}:s3:::${SoundingsBucket}/${SoundingsPrefix}/runs/*/soundings/v1/diagnostics/*'
+              Action:
+                - s3:ListBucket
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:s3:::${SoundingsBucket}'
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - !Sub '${SoundingsPrefix}/runs/*/soundings/v1/*'
+
+
+            # Read archived native HRRR sounding files
+            # and existing cached diagnostics.
 
             - Effect: Allow
-              Action: sqs:SendMessage
-              Resource: !GetAtt SoundingWorkQueue.Arn
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:s3:::${SoundingsBucket}/${SoundingsPrefix}/runs/*/soundings/v1/*'
+
+
+            # Write newly calculated diagnostics to S3.
+
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:s3:::${SoundingsBucket}/${SoundingsPrefix}/runs/*/soundings/v1/diagnostics/*'
+
+
+            # Submit sounding calculation requests to SQS.
+
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt SoundingWorkQueue.Arn
+
+
+      # ------------------------------------------------------
+      # SQS background processing event
+      # ------------------------------------------------------
 
       Events:
+
         Worker:
           Type: SQS
+
           Properties:
+
             Queue: !GetAtt SoundingWorkQueue.Arn
+
             BatchSize: 1
+
             ScalingConfig:
               MaximumConcurrency: 2
 
+
+  # ----------------------------------------------------------
+  # API Gateway / Lambda integration
+  # ----------------------------------------------------------
+
   SoundingApiIntegration:
     Type: AWS::ApiGatewayV2::Integration
+
     Properties:
+
       ApiId: !Ref SoundingHttpApi
+
       IntegrationType: AWS_PROXY
+
       IntegrationUri: !GetAtt SoundingFunction.Arn
+
       PayloadFormatVersion: '2.0'
+
+
+  # ----------------------------------------------------------
+  # Diagnostics endpoint
+  # ----------------------------------------------------------
 
   SoundingApiRoute:
     Type: AWS::ApiGatewayV2::Route
+
     Properties:
+
       ApiId: !Ref SoundingHttpApi
+
       RouteKey: 'GET /diagnostics'
+
       Target: !Sub 'integrations/${SoundingApiIntegration}'
+
+
+  # ----------------------------------------------------------
+  # API Gateway default stage
+  # ----------------------------------------------------------
 
   SoundingApiStage:
     Type: AWS::ApiGatewayV2::Stage
+
     Properties:
+
       ApiId: !Ref SoundingHttpApi
+
       StageName: '$default'
+
       AutoDeploy: true
+
       DefaultRouteSettings:
+
         ThrottlingBurstLimit: 2
+
         ThrottlingRateLimit: 1
+
+
+  # ----------------------------------------------------------
+  # Allow API Gateway to invoke Lambda
+  # ----------------------------------------------------------
 
   SoundingApiPermission:
     Type: AWS::Lambda::Permission
+
     Properties:
+
       Action: lambda:InvokeFunction
+
       FunctionName: !Ref SoundingFunction
+
       Principal: apigateway.amazonaws.com
+
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${SoundingHttpApi}/*/GET/diagnostics'
 
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+
 Outputs:
+
   DiagnosticsApiUrl:
-    Description: Put this URL in spcoa_sounding_config.json
+
+    Description: URL for SPCOA sounding diagnostics
+
     Value: !Sub 'https://${SoundingHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/diagnostics'
 
+
   WorkerQueueUrl:
+
+    Description: SQS queue for sounding calculations
+
     Value: !Ref SoundingWorkQueue
+
 
