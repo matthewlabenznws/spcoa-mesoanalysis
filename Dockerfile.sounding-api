@@ -1,20 +1,18 @@
-# SPCOA V50 sounding diagnostics API
-# Copy this ENTIRE file to the repository root as: Dockerfile.sounding-api
-# No .txt extension in GitHub.
 FROM public.ecr.aws/lambda/python:3.11
 
-# Build tools for any dependency requiring compilation.
 RUN yum install -y gcc gcc-c++ make && yum clean all
 
 COPY spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_sounding_api.py ${LAMBDA_TASK_ROOT}/
 
-# Amazon Linux 2 (Lambda Python 3.11) cannot use newer NumPy wheels built
-# against newer glibc. NumPy 2.2.6 has a CPython 3.11 manylinux2014 wheel.
-# Keep NumPy pinned in the SAME resolver invocation so other dependencies
-# cannot replace it with a newer source-only release.
+# Install compatible scientific packages first
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && python -m pip install --no-cache-dir --only-binary=numpy \
-       "numpy==2.2.6" "scipy==1.15.3" metpy "SHARPpy==1.4.0a5" ecape boto3 \
-    && python -c "import numpy, scipy, metpy, sharppy, ecape, boto3; print('SPCOA dependencies OK; NumPy', numpy.__version__, 'SciPy', scipy.__version__)"
+    && python -m pip install --no-cache-dir --only-binary=:all: \
+       "numpy==1.26.4" "scipy==1.13.1" \
+    && python -m pip install --no-cache-dir \
+       "numpy==1.26.4" "scipy==1.13.1" "metpy==1.6.3" \
+       ecape boto3 requests python-dateutil \
+    && python -m pip install --no-cache-dir --no-deps "SHARPpy==1.4.0a5" \
+    && python -c "import numpy, scipy, metpy, ecape, boto3; from sharppy.sharptab import params, profile, thermo, winds; print('SPCOA IMPORT OK', 'NumPy', numpy.__version__, 'SciPy', scipy.__version__, 'MetPy', metpy.__version__)" \
+    && python spcoa_sounding_diagnostics.py selftest
 
 CMD ["spcoa_sounding_api.lambda_handler"]
