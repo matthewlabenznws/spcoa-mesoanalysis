@@ -18975,7 +18975,7 @@ async function spcoaSndFetchDiagnostic(run,profile) {
         if(r.ok && r.status===200)
             return spcoaSndVerifyDiagnostic(body,run,profile);
         if(r.status===202) {
-            if(attempt===0)spcoaSndStatus('HRRR profile loaded — calculating this native grid point (SHARPpy / Peters ECAPE)…');
+            if(attempt===0)spcoaSndStatus('Loading sounding');
             const delay=Math.max(4000,Math.min(12000,Number(body.retry_after_seconds||7)*1000));
             await new Promise(resolve=>setTimeout(resolve,delay));
             continue;
@@ -19178,9 +19178,10 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         spcoaSndTrace(ctx,trace(current,'td'),'#169915',3.45);
         spcoaSndTrace(ctx,trace(current,'t'),'#ff3038',3.65);
     }
-    // V54: short pressure-level guides placed just RIGHT of the environmental
-    // temperature/dewpoint profiles, not in the middle of the profile traces.
-    // Values and vertical positions come exclusively from SHARPpy parcels.
+    // V55: all three parcel level markers share ONE horizontal anchor.
+    // The anchor is calculated from the rightmost environmental temperature
+    // at the three parcel pressure levels. Labels are always vertically
+    // positioned by their own SHARPpy-derived pressure.
     if(parcel){
         const pCape=Number(parcel.cape_jkg);
         const hasPositiveCape=Number.isFinite(pCape)&&pCape>0;
@@ -19189,39 +19190,43 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
             {key:'lfc_hpa',label:'LFC',color:'#e3d137',enabled:hasPositiveCape,below:false},
             {key:'el_hpa',label:'EL',color:'#91a5b5',enabled:hasPositiveCape,below:false}
         ];
-        const markerWidth=clamp((R-L)*0.041,22,29); // much shorter: 22–29 px
-        for(const level of levels){
-            if(!level.enabled)continue;
+        const markerWidth=clamp((R-L)*0.041,22,29);
+        const marked=levels.filter(level=>level.enabled).map(level=>{
             const raw=parcel[level.key];
             const pressure=(raw===null||raw===undefined)?NaN:Number(raw);
-            if(!(Number.isFinite(pressure)&&pressure>=top&&pressure<=bottom))continue;
+            if(!(Number.isFinite(pressure)&&pressure>=top&&pressure<=bottom))return null;
             const py=y(pressure);
-            if(!(py>=T+3&&py<=B-3))continue;
-            // Use interpolated native HRRR temperature at this pressure to keep
-            // the marker to the right of the actual drawn sounding profile,
-            // independent of the Skew-T tilt and selected parcel.
+            if(!(py>=T+3&&py<=B-3))return null;
             const env=spcoaSndAtPressure(current||[],pressure);
             const envX=env&&Number.isFinite(env.t)?x(env.t,pressure):NaN;
-            const centerX=clamp(Number.isFinite(envX)?envX+62:L+(R-L)*0.76,
-                                L+(R-L)*0.51,R-markerWidth/2-12);
-            ctx.save();
-            ctx.strokeStyle=level.color;
-            ctx.fillStyle=level.color;
-            ctx.lineWidth=1.0;
-            ctx.beginPath();
-            ctx.moveTo(centerX-markerWidth/2,py);
-            ctx.lineTo(centerX+markerWidth/2,py);
-            ctx.stroke();
-            ctx.font='bold 11px Arial,sans-serif';
-            ctx.textAlign='center';
-            // Keep the label orientation WeatherFront-style: LCL BELOW its
-            // guide; LFC/EL ABOVE; all positioned right of profile traces.
-            const labelY=level.below?py+14:py-6;
-            ctx.lineWidth=2.5;
-            ctx.strokeStyle='#080b0e';
-            ctx.strokeText(level.label,centerX,labelY);
-            ctx.fillText(level.label,centerX,labelY);
-            ctx.restore();
+            return {...level,pressure,py,envX};
+        }).filter(Boolean);
+        if(marked.length){
+            const maxProfileX=Math.max(L, ...marked.map(level=>
+                Number.isFinite(level.envX)?level.envX:L));
+            // Right-of-profile position is the SAME for LCL, LFC and EL.
+            // The right guard leaves a little space before the wind-barb gutter.
+            const commonX=clamp(Math.max(L+(R-L)*0.73,maxProfileX+42),
+                                L+(R-L)*0.67,R-markerWidth/2-12);
+            for(const level of marked){
+                ctx.save();
+                ctx.strokeStyle=level.color;
+                ctx.fillStyle=level.color;
+                ctx.lineWidth=1.0;
+                ctx.beginPath();
+                ctx.moveTo(commonX-markerWidth/2,level.py);
+                ctx.lineTo(commonX+markerWidth/2,level.py);
+                ctx.stroke();
+                ctx.font='bold 11px Arial,sans-serif';
+                ctx.textAlign='center';
+                // LCL below green line; LFC and EL above their lines.
+                const labelY=level.below?level.py+14:level.py-6;
+                ctx.lineWidth=2.5;
+                ctx.strokeStyle='#080b0e';
+                ctx.strokeText(level.label,commonX,labelY);
+                ctx.fillText(level.label,commonX,labelY);
+                ctx.restore();
+            }
         }
     }
     ctx.restore();
@@ -19450,6 +19455,21 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));max-height:calc(100vh - 38px);overflow:auto;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
 #spcoa-sounding-panel *{box-sizing:border-box}
 #spcoa-sounding-panel .ss-head{display:flex;gap:9px;align-items:center;justify-content:space-between;padding:4px 9px;border-bottom:1px solid #737373;background:#050506;position:sticky;top:0;z-index:3}
+#spcoa-sounding-panel .ss-heading{flex:1 1 auto;min-width:260px}
+#spcoa-sounding-panel .ss-locrow{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:3px}
+#spcoa-sounding-panel #ss-hrrr-note{font-size:10px;color:#a6b2be}
+#spcoa-sounding-panel .ss-meta-row{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 8px;border-bottom:1px solid #3f444a}
+#spcoa-sounding-panel #ss-credit{color:#8cc8ef;font-size:11px}
+#spcoa-sounding-panel #ss-status{color:#f2f4f6;font-size:11px;margin:0;min-height:0;display:inline-flex;align-items:center;gap:8px}
+#spcoa-sounding-panel #ss-status:empty{display:none}
+#spcoa-sounding-panel #ss-status.is-loading::after{content:'';display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,.24);border-top-color:#fff;border-radius:50%;animation:spcoa-snd-white-spin .75s linear infinite;flex:none}
+@keyframes spcoa-snd-white-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#spcoa-sounding-panel #ss-status.is-loading::after{animation:none}}
+#spcoa-sounding-panel .ss-advanced{position:relative;font:11px Arial,sans-serif}
+#spcoa-sounding-panel .ss-advanced summary{cursor:pointer;list-style:auto;border:1px solid #777;padding:5px 8px;background:#161616;white-space:nowrap}
+#spcoa-sounding-panel .ss-advanced[open] summary{background:#282828}
+#spcoa-sounding-panel .ss-advanced button{position:absolute;right:0;top:calc(100% + 4px);white-space:nowrap;z-index:7;padding:7px 9px;background:#222;border:1px solid #777;box-shadow:0 4px 12px #000}
+
 #spcoa-sounding-panel .ss-title{font-weight:600;font-size:14px;line-height:1.2}
 #spcoa-sounding-panel .ss-sub{font-size:11px;color:#c7c7c7}
 #spcoa-sounding-panel .ss-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
@@ -19497,7 +19517,7 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-mini{padding:3px 1px 2px!important}
 #spcoa-sounding-panel .ss-mini h3{padding:0 3px;margin:2px 0 0;font:700 10px Arial,sans-serif;text-align:center;white-space:nowrap}
 #spcoa-sounding-panel .ss-mini canvas{width:100%;height:167px;display:block}
-#spcoa-sounding-panel #ss-status{color:#cad8e2;margin:3px 8px;min-height:17px}
+
 #spcoa-sounding-panel .ss-note{color:#aaa;margin:6px 4px 2px;font-size:10px;line-height:1.4}
 #spcoa-sounding-panel .ss-compare{white-space:nowrap;display:flex;align-items:center;gap:5px;font-size:11px;color:#cbd1de}
 #spcoa-sounding-panel .ss-missing{color:#f6ca83}
@@ -19512,12 +19532,12 @@ function spcoaSndBuildPanel() {
     spcoaSndInjectStyles();
     const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
     panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
-    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F000 | WeatherFront-style Sounding</div><div class="ss-sub" id="ss-location">Select native HRRR grid point</div></div>
+    panel.innerHTML=`<div class="ss-head"><div class="ss-heading"><div class="ss-title" id="ss-title">HRRR F00 | Valid: —</div><div class="ss-locrow"><span class="ss-sub" id="ss-location">Select native HRRR grid point</span><span id="ss-hrrr-note">Native HRRR F00 values may differ slightly from SPCOA map fields</span></div></div>
       <div class="ss-actions"><label>Parcel <select id="ss-parcel-mode"><option value="ml" selected>Mixed Layer (Method B)</option><option value="sb">Surface Based</option><option value="mu">Most Unstable</option></select></label>
       <label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
-      <button type="button" id="ss-load-json">Load diagnostic JSON</button><input type="file" id="ss-json-file" accept=".json,application/json" style="display:none">
+      <details class="ss-advanced"><summary>Advanced</summary><button type="button" id="ss-load-json">Load diagnostic JSON</button></details><input type="file" id="ss-json-file" accept=".json,application/json" style="display:none">
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
-      <div class="ss-body"><div id="ss-status" role="status">Press and hold the map with Sounding enabled.</div>
+      <div class="ss-body"><div class="ss-meta-row"><span id="ss-credit">Sounding created by: Matthew Labenz · NWS North Platte, NE · Built with SHARPpy + Peters ECAPE</span><span id="ss-status" role="status" aria-live="polite"></span></div>
       <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P · Native HRRR F00 · SHARPpy parcel</h3><canvas id="ss-skew"></canvas></div>
       <div class="ss-chart"><h3>Hodograph · Storm motions</h3><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables" aria-label="Compact SPCOA sounding diagnostics">
@@ -19531,7 +19551,7 @@ function spcoaSndBuildPanel() {
         <div class="ss-box ss-mini"><h3>SR Wind (kt)</h3><canvas id="ss-mini-sr" aria-label="Right-moving storm-relative wind by height"></canvas></div>
       </div>
       <div class="ss-diagnostic-info" id="ss-diagnostic-info"></div>
-      <div class="ss-note" id="ss-archive-note">Nearest native HRRR F00 grid point; surface T/q at 2 m, winds at 10 m. Wind barbs remain every 50 hPa on Skew-T. SHARPpy parcel traces, 100-hPa pressure-weighted Method B, SB/ML/MU Peters ECAPE, and LCL–LFC RH require matching per-point V3/V4 diagnostic JSON. Inferring WAA/CAA from vertical wind profiles is not the same as actual gridded temperature advection. Colored CAPE/CIN areas visually compare parcel/environment temperatures; displayed CAPE/CIN come from SHARPpy buoyancy integration. An unavailable value is shown as “—” (never replaced with gridded map values).</div></div>`;
+      <div class="ss-note" id="ss-archive-note">Native HRRR F00 grid point (2-m T/q; 10-m winds). WAA/CAA is inferred from the vertical profile, not actual gridded temperature advection. Missing diagnostics are shown as “—”.</div></div>`;
     document.body.appendChild(panel);
     document.getElementById('ss-close').addEventListener('click',()=>{
         panel.style.display='none';
@@ -19590,15 +19610,19 @@ function spcoaSndOpenAt(lat,lon) {
     if (!panel) return;
     SPCOA_SOUNDING.point={lat,lon};
     panel.style.display='block';
-    spcoaSndStatus('Loading sounding profile for selected HRRR F00 hour…');
+    spcoaSndStatus('Loading sounding');
     if (!currentRun) spcoaSndStatus('No HRRR F00 analysis hour selected yet.');
     void spcoaSndLoadSelection();
 }
 function spcoaSndStatus(text) {
-    const el=document.getElementById('ss-status');if(el)el.textContent=text;
+    const el=document.getElementById('ss-status');
+    if(!el)return;
+    el.textContent=text;
+    el.classList.toggle('is-loading',text==='Loading sounding');
 }
-/* V51: elapsed-time status avoids an unreliable AWS queue/ECAPE ETA.
- * The interval never triggers a chart redraw, only a short status text update.
+/* V56: a small white loading spinner below the blue creator credit.
+ * The label remains visible until profile and diagnostics have finished;
+ * no speculative ETA or repeated technical messages are shown.
  */
 function spcoaSndStopDiagnosticLoading(){
     SPCOA_SOUNDING.loadingDiagnostics=false;
@@ -19610,9 +19634,7 @@ function spcoaSndStopDiagnosticLoading(){
 }
 function spcoaSndUpdateDiagnosticLoading(){
     if(!SPCOA_SOUNDING.loadingDiagnostics || !SPCOA_SOUNDING.current)return;
-    const secs=Math.max(0,Math.floor((Date.now()-SPCOA_SOUNDING.diagnosticsStartedAt)/1000));
-    const compare=SPCOA_SOUNDING.comparing?' · Previous hour requested':'';
-    spcoaSndStatus(`HRRR profile loaded · Calculating SHARPpy / Peters ECAPE · ${secs}s elapsed${compare}`);
+    spcoaSndStatus('Loading sounding');
 }
 function spcoaSndStartDiagnosticLoading(serial){
     spcoaSndStopDiagnosticLoading();
@@ -19635,7 +19657,7 @@ async function spcoaSndLoadSelection() {
     SPCOA_SOUNDING.current=null;SPCOA_SOUNDING.previous=null;
     SPCOA_SOUNDING.diagnostic=null;SPCOA_SOUNDING.previousDiagnostic=null;
     SPCOA_SOUNDING.diagnosticError='';
-    spcoaSndStatus(`Loading native HRRR F00 sounding for ${run}...`);
+    spcoaSndStatus('Loading sounding');
     try {
         const result=await spcoaSndNearest(run,point.lat,point.lon);
         if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
@@ -19659,8 +19681,9 @@ async function spcoaSndLoadSelection() {
             }
         }
         // Draw native T/Td and native wind profiles immediately.
-        spcoaSndRender();
+        // Start the loading flag first to avoid a flash of "Diagnostics unavailable".
         spcoaSndStartDiagnosticLoading(serial);
+        spcoaSndRender();
         const [d1,d2]=await Promise.allSettled([
             spcoaSndFetchDiagnostic(run,result.profile),
             SPCOA_SOUNDING.previous?spcoaSndFetchDiagnostic(prevRun,SPCOA_SOUNDING.previous.profile):Promise.resolve(null)
@@ -19924,13 +19947,21 @@ function spcoaSndRender() {
     const p=spcoaSndProfile(a.profile),q=b?spcoaSndProfile(b.profile):null;
     if(p.length<12){spcoaSndStatus('Sounding contains insufficient vertical data');return;}
     const run=currentRun,diag=SPCOA_SOUNDING.diagnostic,prior=SPCOA_SOUNDING.previousDiagnostic;
-    document.getElementById('ss-title').textContent=`HRRR F000 | Init: ${spcoaSndUtc(run)?.slice(0,16)?.replace('T',' ')} UTC | Valid: ${spcoaSndUtc(run)?.slice(0,16)?.replace('T',' ')} UTC`;
+    const validIso=spcoaSndUtc(run);
+    const validDate=new Date(validIso);
+    const utcDate=Number.isFinite(validDate.getTime())?
+        new Intl.DateTimeFormat('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(validDate):String(run);
+    const validHour=Number.isFinite(validDate.getTime())?String(validDate.getUTCHours()).padStart(2,'0')+'Z':'';
+    document.getElementById('ss-title').textContent=`HRRR F00 | Valid: ${utcDate}${validHour?' · '+validHour:''}`;
     document.getElementById('ss-location').textContent=
-        `${Math.abs(a.profile.lat).toFixed(4)}°${a.profile.lat>=0?'N':'S'}, ${Math.abs(a.profile.lon).toFixed(4)}°${a.profile.lon>=0?'E':'W'} · native i=${a.profile.i}, j=${a.profile.j} · ${a.km.toFixed(2)} km from click`;
-    let status=spcoaSndDiagnosticStatus(diag);
-    if(SPCOA_SOUNDING.comparing)status+=(b?' · Previous native F00 profile loaded':' · Previous hour unavailable');
-    if(SPCOA_SOUNDING.diagnosticError)status+=' · '+SPCOA_SOUNDING.diagnosticError;
-    spcoaSndStatus(status);
+        `${Math.abs(a.profile.lat).toFixed(4)}°${a.profile.lat>=0?'N':'S'}, ${Math.abs(a.profile.lon).toFixed(4)}°${a.profile.lon>=0?'E':'W'}`;
+    // The archive and API already provide diagnostic JSON automatically.
+    // Keep a compact loading/error notice, but remove the persistent,
+    // redundant calculation-status sentence once diagnostics have arrived.
+    const notes=[];
+    if(!diag&&!SPCOA_SOUNDING.loadingDiagnostics)notes.push('Diagnostics unavailable · Advanced → Load diagnostic JSON');
+    if(SPCOA_SOUNDING.diagnosticError)notes.push(SPCOA_SOUNDING.diagnosticError);
+    spcoaSndStatus(notes.join(' · '));
     if(SPCOA_SOUNDING.loadingDiagnostics)spcoaSndUpdateDiagnosticLoading();
     spcoaSndSkew(document.getElementById('ss-skew'),p,q,diag);
     spcoaSndHodo(document.getElementById('ss-hodo'),p,q,diag);
@@ -19969,6 +20000,8 @@ function spcoaSndRender() {
         if(old)old.style.display=legacy?'block':'none';
     }
 }
+/* V56: compact white loading spinner beneath the attribution; error statuses preserved. */
+/* V55: shared parcel-label X and simplified sounding attribution/header. */
 /* V47: PNG export uses the actual plotted canvases and computed HTML tables.
  * Wide horizontal SB/ML/MU table now matches the on-screen layout.
  */
@@ -20087,7 +20120,7 @@ function spcoaSndSetEnabled(enabled) {
     if (canvas) canvas.style.cursor=(spcoaSoundingSelectEnabled || cursorSampleEnabled) ? 'crosshair' : '';
     const status=document.getElementById('ss-status');
     if (spcoaSoundingSelectEnabled && status && !SPCOA_SOUNDING.point) {
-        status.textContent='Sounding enabled: press and hold the map for 0.7 seconds to open an HRRR F00 sounding.';
+        spcoaSndStatus('');
     }
     console.info('SPCOA child sounding mode:',spcoaSoundingSelectEnabled);
 }
