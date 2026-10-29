@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPCOA WeatherFront-style HRRR F00 sounding diagnostic engine.
+"""SPCOA WeatherFront-inspired HRRR F00 sounding diagnostic engine (V4).
 
 Reads native columns from spcoa_soundings.py v1 S3 tiles or a JSON profile.
 Computes thermodynamics and SB/ML/MU Peters ECAPE from the selected profile; never substitutes gridded
@@ -333,11 +333,12 @@ def diagnostics(raw, ecape=True):
     theta_ml=pressure_mean(p,theta,top,p0)
     r_ml=pressure_mean(p,r,top,p0)
     ml_initial=None
-    parcels={}; errors={}
+    parcels={}; parcel_objects={}; errors={}
     for name,flag in [('sb',1),('mu',3)]:
         try:
             parcel=params.parcelx(prof,flag=flag)
             parcels[name]=parcel_report(parcel)
+            parcel_objects[name]=parcel
         except Exception as exc: errors[name]=str(exc);parcels[name]=None
     if np.isfinite(theta_ml) and np.isfinite(r_ml) and r_ml>0:
         t_ml=theta_ml*(p0/1000.)**(287.05/1004.)-273.15
@@ -349,24 +350,31 @@ def diagnostics(raw, ecape=True):
         try:
             pc=params.parcelx(prof,flag=5,pres=p0,tmpc=t_ml,dwpc=td_ml)
             parcels['ml']=parcel_report(pc)
+            parcel_objects['ml']=pc
         except Exception as exc: errors['ml']=str(exc);parcels['ml']=None
     else: errors['ml']='Insufficient complete 100-hPa mixed layer';parcels['ml']=None
     # RH uses each lifted parcel's own LCL and LFC. Undefined LFC stays null.
     lcl_lfc_rh = {kind:lcl_lfc_rh_by_parcel(p,rh,parcels.get(kind))
                   for kind in ('sb','ml','mu')}
 
-    shear={}; meanwinds={}
-    surface=np.asarray([a['u_ms'][0],a['v_ms'][0]])
-    for depth in (500,1000,3000,6000,9000):
-        if z[-1]>=depth:
-            upper=np.asarray([np.interp(depth,z,a['u_ms']),np.interp(depth,z,a['v_ms'])])
-            shear[f'0_{depth}m_kt']=number(np.linalg.norm(upper-surface)*KTS_PER_MS)
-            avg=layer_uv(a,0,depth)
-            meanwinds[f'0_{depth}m']={'u_kt':number(avg[0]*KTS_PER_MS),'v_kt':number(avg[1]*KTS_PER_MS)} if avg is not None else None
-    # Parcel-based Bunkers can be masked when the effective inflow layer fails
-    # the standard 100 J/kg CAPE and -250 J/kg CIN thresholds. Compute a
-    # labeled non-parcel Bunkers motion instead of silently blanking the hodo.
+    # V4: fixed-height BWD / mean SRW / SRH by layer. All heights are AGL.
+    # SRH is computed relative to the selected Bunkers right-moving storm motion;
+    # positive/negative helicity components are preserved by SHARPpy internally.
+    layers=((0,500),(0,1000),(0,3000),(0,6000),(0,9000),
+            (1000,3000),(3000,6000))
+    shear={}; meanwinds={}; srw={}
+    surface=np.asarray([a['u_ms'][0],a['v_ms'][0]],float)
+    for bot,topz in layers:
+        if z[-1] < topz or z[0] > bot: continue
+        wind_bot=np.asarray([np.interp(bot,z,a['u_ms']),np.interp(bot,z,a['v_ms'])])
+        wind_top=np.asarray([np.interp(topz,z,a['u_ms']),np.interp(topz,z,a['v_ms'])])
+        shear[f'{bot}_{topz}m_kt']=number(np.linalg.norm(wind_top-wind_bot)*KTS_PER_MS)
+        avg=layer_uv(a,bot,topz)
+        meanwinds[f'{bot}_{topz}m']={'u_kt':number(avg[0]*KTS_PER_MS),
+                                    'v_kt':number(avg[1]*KTS_PER_MS)} if avg is not None else None
+    # Bunkers parcel-based motion with documented nonparcel fallback.
     motions={};srh={}
+    mr=None
     try:
         from sharppy.sharptab import winds
         bm=params.bunkers_storm_motion(prof)
@@ -374,21 +382,80 @@ def diagnostics(raw, ecape=True):
         if len(bm)<4 or any(scalar(x) is None for x in bm[:4]):
             bm=winds.non_parcel_bunkers_motion(prof)
             motion_method='standard_nonparcel_bunkers_fallback'
-        mr,ml=bm[:2],bm[2:4]
+        rm, lm = bm[:2],bm[2:4]
         motions={'method':motion_method,
-                 'right':{'u_kt':scalar(mr[0]),'v_kt':scalar(mr[1])},
-                 'left':{'u_kt':scalar(ml[0]),'v_kt':scalar(ml[1])}}
-        if all(scalar(x) is not None for x in mr):
-            for depth in (1000,3000):
-                val=winds.helicity(prof,0,depth,stu=mr[0],stv=mr[1])
-                srh[f'0_{depth}m_right_m2s2']=scalar(val[0])
+                 'right':{'u_kt':scalar(rm[0]),'v_kt':scalar(rm[1])},
+                 'left':{'u_kt':scalar(lm[0]),'v_kt':scalar(lm[1])}}
+        if all(scalar(x) is not None for x in rm):
+            mr=(float(rm[0]),float(rm[1]))
+            for bot,topz in layers:
+                if z[-1] < topz: continue
+                val=winds.helicity(prof,bot,topz,stu=rm[0],stv=rm[1])
+                srh[f'{bot}_{topz}m_right_m2s2']=scalar(val[0])
+                avg=meanwinds.get(f'{bot}_{topz}m')
+                if avg and all(avg.get(k) is not None for k in ('u_kt','v_kt')):
+                    srw[f'{bot}_{topz}m_right_kt']=number(math.hypot(avg['u_kt']-mr[0],avg['v_kt']-mr[1]))
         else:
             errors['kinematics']='Both parcel-based and standard Bunkers motions were unavailable'
     except Exception as exc: errors['kinematics']=str(exc)
+    # Pressure-defined effective inflow depth and its true AGL bounds.
+    effective=None;effective_srh=None;effective_bwd_kt=None
     try:
         eff=params.effective_inflow_layer(prof,ecape=100,ecinh=-250)
-        effective={'bottom_hpa':scalar(eff[0]),'top_hpa':scalar(eff[1])}
-    except Exception as exc: effective=None;errors['effective_inflow']=str(exc)
+        eff_pbot=scalar(eff[0]);eff_ptop=scalar(eff[1])
+        if (eff_pbot is not None and eff_ptop is not None and
+                p[-1]<=eff_ptop<eff_pbot<=p[0]):
+            ebot_z=number(np.interp(eff_pbot,p[::-1],z[::-1]))
+            etop_z=number(np.interp(eff_ptop,p[::-1],z[::-1]))
+            effective={'bottom_hpa':eff_pbot,'top_hpa':eff_ptop,
+                       'bottom_m_agl':ebot_z,'top_m_agl':etop_z}
+            if mr and all(x is not None for x in (ebot_z,etop_z)):
+                effective_srh=scalar(winds.helicity(prof,ebot_z,etop_z,
+                                                    stu=mr[0],stv=mr[1])[0])
+                srh['effective_right_m2s2']=effective_srh
+            # Effective BWD uses EIL base to halfway through the MU storm depth.
+            # Define storm depth as EIL base -> MU equilibrium level AGL.
+            mu_el=parcels.get('mu',{}).get('el_m_agl') if parcels.get('mu') else None
+            if mu_el is not None and ebot_z is not None and mu_el>ebot_z:
+                mid_z=ebot_z+.5*(mu_el-ebot_z)
+                if mid_z <= z[-1]:
+                    low_uv=np.asarray([np.interp(ebot_z,z,a['u_ms']),np.interp(ebot_z,z,a['v_ms'])]);
+                    mid_uv=np.asarray([np.interp(mid_z,z,a['u_ms']),np.interp(mid_z,z,a['v_ms'])]);
+                    effective_bwd_kt=number(np.linalg.norm(mid_uv-low_uv)*KTS_PER_MS)
+                    effective['effective_bwd_kt']=effective_bwd_kt
+                    effective['effective_bwd_top_m_agl']=number(mid_z)
+        else:
+            effective={'bottom_hpa':eff_pbot,'top_hpa':eff_ptop,
+                       'bottom_m_agl':None,'top_m_agl':None}
+    except Exception as exc: errors['effective_inflow']=str(exc)
+    # SHARPpy/SPC-style composite indices. No tornado probabilities or
+    # categorical hazards are inferred; missing prerequisites remain null.
+    composites={k:None for k in ('scp','stp_cin','stp_fixed','ehi_0_1km',
+                                  'ehi_0_3km','ship','brn_mu')}
+    def metric(label,callback):
+        try: composites[label]=scalar(callback())
+        except Exception as exc: errors['composite_'+label]=str(exc)
+    sb=parcels.get('sb') or {};ml=parcels.get('ml') or {};mu=parcels.get('mu') or {}
+    composites['brn_mu']=scalar(getattr(parcel_objects.get('mu'),'brn',None))
+    if mu.get('cape_jkg') is not None and mu['cape_jkg']>0:
+        metric('ship',lambda:params.ship(prof,mupcl=parcel_objects['mu']))
+    if mr:
+        if sb.get('cape_jkg') is not None:
+            for topz,label in ((1000,'ehi_0_1km'),(3000,'ehi_0_3km')):
+                hval=srh.get(f'0_{topz}m_right_m2s2')
+                if hval is not None:
+                    composites[label]=number(sb['cape_jkg']*hval/160000.)
+        if all(v is not None for v in (sb.get('cape_jkg'),sb.get('lcl_m_agl'),
+                   srh.get('0_1000m_right_m2s2'),shear.get('0_6000m_kt'))):
+            metric('stp_fixed',lambda:params.stp_fixed(sb['cape_jkg'],sb['lcl_m_agl'],
+                 srh['0_1000m_right_m2s2'],shear['0_6000m_kt']/KTS_PER_MS))
+    if effective_srh is not None and effective_bwd_kt is not None:
+        eff_bwd_ms=effective_bwd_kt/KTS_PER_MS
+        if mu.get('cape_jkg') is not None:
+            metric('scp',lambda:params.scp(mu['cape_jkg'],effective_srh,eff_bwd_ms))
+        if all(ml.get(k) is not None for k in ('cape_jkg','lcl_m_agl','cin_jkg')):
+            metric('stp_cin',lambda:params.stp_cin(ml['cape_jkg'],effective_srh,
+                   eff_bwd_ms,ml['lcl_m_agl'],ml['cin_jkg']))
     # Readout of temperature at specific AGL heights; lapse rates from native profile.
     lapse={}
     for bottom,upper in ((0,1000),(0,3000),(3000,6000),(700,3000)):
@@ -413,6 +480,8 @@ def diagnostics(raw, ecape=True):
                  'ecape':'Peters et al. 2023: SB, 100-hPa Method B ML, MU; SHARPpy parcel CAPE/LFC/EL, ecape package calculation',
                  'lcl_lfc_rh':'pressure-weighted environmental RH from each SB/ML/MU parcel LCL to LFC',
                  'advection':'SHARPpy inferred geostrophic thermal-wind advection (not actual horizontal advection)',
+                 'srh':'SHARPpy right-moving Bunkers storm-relative helicity at fixed AGL layers',
+                 'composites':'SHARPpy-style SCP/STP/SHIP/EHI; effective BWD from EIL base to half MU storm depth',
                  'barbs':'native U/V pressure-interpolated to every 50 hPa'},
       'ml_initial':ml_initial,'parcels':parcels,
       'peters_surface_ecape_jkg':ecape_data['sb']['ecape_jkg'],
@@ -428,7 +497,8 @@ def diagnostics(raw, ecape=True):
       'lcl_lfc_rh_by_parcel':lcl_lfc_rh,
       'wind_barbs_50hpa':wind_barbs(a),'inferred_advection_100hpa':adv,
       'bulk_shear':shear,'mean_winds':meanwinds,'storm_motions':motions,
-      'storm_relative_helicity':srh,'effective_inflow':effective,
+      'storm_relative_helicity':srh,'storm_relative_wind':srw,
+      'effective_inflow':effective,'composites':composites,
       'lapse_rates':lapse,'pwat_inches':pwat,'freezing_level_m_agl':freezing_h,
       'profile':{'pressure_hpa':p.tolist(),'temperature_c':tc.tolist(),
                  'dewpoint_c':dew.tolist(),'relative_humidity_percent':rh.tolist(),
@@ -503,7 +573,7 @@ def selftest():
                                    'missing':np.float64(np.nan),
                                    'barbs':np.array([950,900],dtype=np.int64)}),allow_nan=False)
     assert json.loads(encoded)=={'i':12,'value':1.5,'missing':None,'barbs':[950,900]}
-    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, JSON')
+    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, JSON (V4)')
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__)
