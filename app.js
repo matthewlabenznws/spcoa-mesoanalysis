@@ -18586,7 +18586,7 @@ document.addEventListener("visibilitychange", () => {
     map.once("idle", () => notify("mp-ready"));
     setTimeout(() => notify("mp-ready"), 2500);
 })();
-// V44: Sounding code must run inside mp-child to access currentRun and map state.
+// V46: Sounding code must run inside mp-child to access currentRun and map state.
 
 
 
@@ -18595,7 +18595,7 @@ document.addEventListener("visibilitychange", () => {
 
 
 /* ===============================================================================
-   SPCOA V45 | WEATHERFRONT-STYLE HRRR F00 SOUNDINGS
+   SPCOA V48 | WEATHERFRONT-INSPIRED COMPACT HRRR F00 SOUNDINGS
    Source: spcoa_soundings.py v2: 32x32 binary tiles, int16 quantization,
    manifest.json and geo_index.json, run-specific S3. No new HTML/CSS required.
    No sounding is synthesized from a different hour or interpolated between cells.
@@ -18607,7 +18607,10 @@ const SPCOA_SOUNDING = {
     fields: ['pressure_hpa','temperature_k','specific_humidity_kgkg','height_m_msl','u_ms','v_ms'],
     labels: {sbcape:'SBCAPE',mlcape:'MLCAPE',mucape:'MUCAPE',sbcin:'SBCIN',
              mlcin:'MLCIN',mucin:'MUCIN',ecape:'SBECAPE (Peters)'},
-    currentValues: {}, previousValues: {}, comparing: false
+    // Diagnostics originate ONLY from spcoa_sounding_diagnostics.py V3.
+    // Per-point sidecar JSON is optional until a production publisher is built.
+    diagnostic: null, previousDiagnostic: null, diagnosticError: '',
+    parcelMode: 'ml', comparing: false
 };
 function spcoaSndUrl(run, part) {
     return `${S3_BASE_URL}/runs/${encodeURIComponent(run)}/soundings/v1/${part}`;
@@ -18895,32 +18898,56 @@ function spcoaSndStats(p) {
     return {lclZ,wind,sh01:spcoaSndShear(p,1000),sh03:spcoaSndShear(p,3000),sh06:spcoaSndShear(p,6000),
         srh01:spcoaSndSrh(p,1000,bk?.rm),srh03:spcoaSndSrh(p,3000,bk?.rm),bunkers:bk};
 }
-async function spcoaSndFieldValue(run,field,lat,lon) {
-    let meta;
-    try {
-        if(run===currentRun && fieldMetadata?.[field])meta=fieldMetadata[field];
-        else meta=await fetchJSON(`${S3_BASE_URL}/runs/${run}/${field==='ecape'?'ecape':field}/metadata.json`);
-    } catch (_) {return null;}
-    const zooms=Array.isArray(meta.zoom_levels)?meta.zoom_levels.map(Number).filter(Number.isFinite):[7,6,5,4];
-    if(!zooms.length)return null;
-    const z=Math.max(...zooms.filter(v=>v<=7));
-    const gx=lonToTileX(lon,z)*256,gy=latToTileY(lat,z)*256;
-    const x=Math.floor(gx/256),y=Math.floor(gy/256),px=Math.floor(gx)%256,py=Math.floor(gy)%256;
-    let tile;
-    try {tile=await loadScalarTile(field,z,x,y,run,1);}catch(_){return null;}
-    if(!tile)return null;
-    const raw=tile[py*256+px];
-    const enc=getEncoding(meta);
-    if(raw===65535||raw===enc.nodata)return null;
-    const val=raw*enc.scale+enc.offset;
-    return Number.isFinite(val)?val:null;
+/* Diagnostics are not substituted with gridded scalar overlays or invented values.
+ * Production path: .../soundings/v1/diagnostics/j0630/i0810.json
+ * The optional "Load diagnostic JSON" control supports a local test file for
+ * this exact run and native i/j while full CONUS publishing is developed.
+ */
+function spcoaSndDiagnosticPath(j,i) {
+    return `diagnostics/j${String(j).padStart(4,'0')}/i${String(i).padStart(4,'0')}.json`;
 }
-async function spcoaSndLoadValues(run,lat,lon) {
-    const result={};
-    await Promise.all(Object.keys(SPCOA_SOUNDING.labels).map(async key=> {
-        result[key]=await spcoaSndFieldValue(run,key,lat,lon);
-    }));
-    return result;
+function spcoaSndVerifyDiagnostic(data,run,profile) {
+    if(!data || data.schema !== 'spcoa.hrrr_f00_sounding_diagnostics.v2' ||
+       data.run_id !== run || !data.location ||
+       Number(data.location.i) !== profile.i || Number(data.location.j) !== profile.j ||
+       !data.parcels || !data.profile) {
+        throw new Error(`Diagnostic JSON does not match native HRRR F00 ${run}, i=${profile.i}, j=${profile.j}`);
+    }
+    const km=spcoaSndDistance(profile.lat,profile.lon,Number(data.location.lat),Number(data.location.lon));
+    if(!Number.isFinite(km) || km>0.75)
+        throw new Error(`Diagnostic geolocation differs from selected HRRR grid point by ${km.toFixed(2)} km`);
+    return data;
+}
+async function spcoaSndFetchDiagnostic(run,profile) {
+    const url=spcoaSndUrl(run,spcoaSndDiagnosticPath(profile.j,profile.i));
+    const response=await fetch(url,{cache:'no-store'});
+    if(response.status===404) return null;
+    if(!response.ok) throw new Error(`Diagnostic sidecar HTTP ${response.status}`);
+    return spcoaSndVerifyDiagnostic(await response.json(),run,profile);
+}
+function spcoaSndNum(value) { return Number.isFinite(value)?value:NaN; }
+function spcoaSndVal(data,path) {
+    let v=data;
+    for(const key of path.split('.')) v=v?.[key];
+    return spcoaSndNum(v);
+}
+function spcoaSndDiagnosticStatus(data) {
+    return data ? 'Calculated from this native HRRR F00 profile (SHARPpy / Method B / Peters ECAPE)' :
+      'Native HRRR profile only — diagnostic JSON not published for this grid point. Use “Load diagnostic JSON” to test.';
+}
+async function spcoaSndLoadLocalDiagnostic(file) {
+    if(!file || !SPCOA_SOUNDING.current)return;
+    try {
+        const raw=JSON.parse(await file.text());
+        // Do not accept arbitrary points or older run results in the sounding panel.
+        const verified=spcoaSndVerifyDiagnostic(raw,currentRun,SPCOA_SOUNDING.current.profile);
+        SPCOA_SOUNDING.diagnostic=verified;
+        SPCOA_SOUNDING.diagnosticError='';
+        spcoaSndRender();
+    } catch(error) {
+        spcoaSndStatus(`Diagnostic file rejected: ${error.message}`);
+        console.warn('SPCOA sounding diagnostic file:',error);
+    }
 }
 function spcoaSndTrace(ctx,points,color,width=2,dash=[]) {
     if(points.length<2)return;
@@ -18943,252 +18970,356 @@ function spcoaSndCanvas(canvas) {
     ctx.font='11px ui-monospace,Consolas,monospace';
     return {ctx,w,h};
 }
-function spcoaSndParcel(profile) {
-    const a=profile[0];if(!a||!Number.isFinite(a.td))return [];
-    const t0=a.t+273.15,p0=a.p,tlcl=spcoaSndLcl(profile),plcl=p0*Math.pow(tlcl/t0,1/0.2854);
-    if(!Number.isFinite(plcl))return [];
-    const out=[];let T=tlcl,p=plcl;
-    const rsat=(temp,pressure)=>{
-        const Tc=temp-273.15;
-        const e=611.2*Math.exp(17.67*Tc/(Tc+243.5));
-        return 0.622*e/Math.max(1,pressure-e);
-    };
-    // An approximate pseudo-adiabatic visualization; operational CAPE values
-    // are read from existing SPCOA gridded products, NOT from this trace.
-    for(const lev of [...profile].sort((x,y)=>y.p-x.p)) {
-        if(lev.p>=plcl) {out.push({p:lev.p,t:t0*Math.pow(lev.p/p0,0.2854)-273.15});continue;}
-        while(p>lev.p) {
-            const nextp=Math.max(lev.p,p-1.0),q=rsat(T,p*100),tv=T*(1+0.61*q);
-            const moist=(9.80665/1004)*(1+(2.5e6*q)/(287.05*T)) /
-                (1+(2.5e6*2.5e6*q*0.622)/(1004*287.05*T*T));
-            const dz=287.05*tv/9.80665*Math.log(p/nextp);
-            T-=moist*dz;p=nextp;
-            if(!Number.isFinite(T)||T<170)break;
-        }
-        out.push({p:lev.p,t:T-273.15});
+/* True SHARPpy parcel paths are supplied by the V3 diagnostic JSON.
+ * No approximate dry/moist-lifted "illustrative" parcel is drawn.
+ */
+function spcoaSndParcelPoints(diagnostic,kind) {
+    const v=diagnostic?.parcels?.[kind];
+    if(!v || !Array.isArray(v.trace_pressure_hpa) || !Array.isArray(v.trace_temperature_c))return [];
+    const pts=[];
+    const n=Math.min(v.trace_pressure_hpa.length,v.trace_temperature_c.length);
+    for(let k=0;k<n;k++) {
+        const p=Number(v.trace_pressure_hpa[k]),t=Number(v.trace_temperature_c[k]);
+        if(Number.isFinite(p)&&p>0&&Number.isFinite(t))pts.push({p,t});
     }
-    return out;
+    return pts.sort((a,b)=>b.p-a.p);
 }
-function spcoaSndWindBarb(ctx,x,y,u,v) {
-    if(!Number.isFinite(u+v))return;
-    const kt=Math.round(Math.hypot(u,v)*1.943844/5)*5;
+function spcoaSndAtPressureScalar(rows,p,key) {
+    const value=spcoaSndAtPressure(rows,p);
+    return value&&Number.isFinite(value[key])?value[key]:NaN;
+}
+function spcoaSndShadeParcel(ctx,env,trace,parcel,x,y) {
+    if(trace.length<2 || !(parcel?.cape_jkg>0 || parcel?.cin_jkg<0))return;
+    const lfc=spcoaSndNum(parcel.lfc_hpa),el=spcoaSndNum(parcel.el_hpa);
+    const sfc=env[0]?.p;
+    // Colors show parcel-temperature vs environmental-temperature *difference*.
+    // This shading is illustrative only; V3 SHARPpy values (virtual temperature
+    // and integrated buoyancy) are the numerical source for CAPE and CIN.
+    for(let k=1;k<trace.length;k++) {
+        const a=trace[k-1],b=trace[k],pa=a.p,pb=b.p;
+        if(!(pa>pb) || !Number.isFinite(a.t+b.t))continue;
+        const tEnvA=spcoaSndAtPressureScalar(env,pa,'t'),tEnvB=spcoaSndAtPressureScalar(env,pb,'t');
+        if(!Number.isFinite(tEnvA+tEnvB))continue;
+        const mid=(pa+pb)/2;
+        if(Number.isFinite(el)&&mid<el)continue;
+        if(Number.isFinite(sfc)&&mid>sfc+1)continue;
+        const isCape=Number.isFinite(lfc)&&mid<=lfc && (!Number.isFinite(el)||mid>=el);
+        const isCin=Number.isFinite(lfc)&&mid>lfc;
+        if(!isCape&&!isCin)continue;
+        const avg=((a.t-tEnvA)+(b.t-tEnvB))/2;
+        if(isCape&&avg<=0 || isCin&&avg>=0)continue;
+        ctx.fillStyle=isCape?'rgba(242,77,85,.19)':'rgba(72,135,235,.20)';
+        ctx.beginPath();ctx.moveTo(x(tEnvA,pa),y(pa));ctx.lineTo(x(a.t,pa),y(pa));
+        ctx.lineTo(x(b.t,pb),y(pb));ctx.lineTo(x(tEnvB,pb),y(pb));ctx.closePath();ctx.fill();
+    }
+}
+/* SPCOA V47: genuine northern-hemisphere meteorological wind barbs.
+ * U/V are flow TOWARD; the shaft points 180° opposite, to the wind FROM.
+ * The feathers are drawn on the standard NH side, like Matplotlib/SHARPpy.
+ * In the former V46 glyph, the feathers were on the reversed side AND
+ * angled backwards, producing the inverted-chevron appearance.
+ * Uses 50/10/5 kt pennant/full/half notation; no visual thinning.
+ */
+function spcoaSndWindBarb(ctx,x,y,u,v,size=1) {
+    if(!Number.isFinite(u) || !Number.isFinite(v))return;
+    const speedKt=Math.round(Math.hypot(u,v)*1.943844/5)*5;
     ctx.save();ctx.translate(x,y);
-    // Canvas +y is downward. Staff extends toward where the wind COMES FROM.
-    ctx.rotate(Math.atan2(v,-u));
-    ctx.strokeStyle='#eef4fa';ctx.fillStyle='#eef4fa';ctx.lineWidth=1.3;
-    ctx.lineCap='round';ctx.lineJoin='round';
-    if(kt<5){ctx.beginPath();ctx.arc(0,0,2.5,0,Math.PI*2);ctx.stroke();ctx.restore();return;}
-    const length=24, feather=11;
+    ctx.strokeStyle='#f1f3f5';ctx.fillStyle='#f1f3f5';
+    ctx.lineWidth=1.15;ctx.lineCap='round';ctx.lineJoin='round';
+    if(speedKt<5){
+        ctx.beginPath();ctx.arc(0,0,3.0,0,2*Math.PI);ctx.stroke();
+        ctx.restore();return;
+    }
+    // Meteorological FROM direction, clockwise from north. Canvas y increases down.
+    // e.g. 000° FROM => staff goes up; 090° FROM => staff goes right.
+    const fromDeg=(Math.atan2(-u,-v)*180/Math.PI+360)%360;
+    const theta=(fromDeg-90)*Math.PI/180;
+    ctx.rotate(theta);
+    ctx.scale(size,size);
+    const length=24,barbLen=10.2,dx=2.5;
     ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(length,0);ctx.stroke();
-    let n50=Math.floor(kt/50),remainder=kt%50,n10=Math.floor(remainder/10),n5=(remainder%10)>=5;
-    let position=length;
-    for(let i=0;i<n50;i++) {
-        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-6,-feather);
-        ctx.lineTo(position-6,0);ctx.closePath();ctx.fill();position-=7;
+    let n50=Math.floor(speedKt/50),left=speedKt%50;
+    const n10=Math.floor(left/10),n5=(left%10)>=5;
+    let pos=length;
+    for(let k=0;k<n50;k++){
+        // NH: pennant projects to positive LOCAL y (opposite the old V46 code).
+        ctx.beginPath();ctx.moveTo(pos,0);
+        ctx.lineTo(pos+dx,barbLen);
+        ctx.lineTo(pos-7.2,0);ctx.closePath();ctx.fill();
+        pos-=8.2;
     }
-    for(let i=0;i<n10;i++) {
-        ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-6,-feather);ctx.stroke();position-=5;
+    // A small gap after the last pennant keeps flags distinguishable.
+    if(n50 && (n10 || n5))pos-=2.2;
+    for(let k=0;k<n10;k++){
+        ctx.beginPath();ctx.moveTo(pos,0);
+        ctx.lineTo(pos+dx,barbLen);ctx.stroke();pos-=5.0;
     }
-    if(n5){ctx.beginPath();ctx.moveTo(position,0);ctx.lineTo(position-4,-6);ctx.stroke();}
+    if(n5){
+        // Offset an isolated half barb from the end, per standard convention.
+        if(!n10&&!n50)pos-=4;
+        ctx.beginPath();ctx.moveTo(pos,0);
+        ctx.lineTo(pos+dx*0.5,barbLen*0.55);ctx.stroke();
+    }
     ctx.restore();
 }
-function spcoaSndSkew(canvas,current,previous) {
+function spcoaSndSkew(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
-    const L=50,R=w-46,T=26,B=h-43;
-    const top=100,bottom=1050,lo=-80,hi=83,skew=47;
+    // WeatherFront-inspired geometry: Skew-T + white barb shaft + advection strip.
+    const L=49,R=w-133,T=26,B=h-43;
+    if(R<L+140)return;
+    const top=100,bottom=1050,lo=-85,hi=68,skew=78;
     const logSpan=Math.log(bottom/top);
-    // Correct log-pressure orientation: 100 mb TOP, 1000 mb BOTTOM.
     const y=p=>T+Math.log(p/top)/logSpan*(B-T);
     const x=(tc,p)=>L+(tc+skew*Math.log(1000/p)/Math.LN10-lo)/(hi-lo)*(R-L);
     ctx.save();ctx.beginPath();ctx.rect(L,T,R-L,B-T);ctx.clip();
-    // Pressure isobars at all 50-mb intervals; major isobars emphasized.
     for(let p=100;p<=1000;p+=50) {
         const yy=y(p),major=p%100===0||p===850;
-        ctx.strokeStyle=major?'#3b4758':'#202933';ctx.lineWidth=major?1.0:.6;
+        ctx.strokeStyle=major?'#707070':'#313131';ctx.lineWidth=major?1.05:.55;
         ctx.beginPath();ctx.moveTo(L,yy);ctx.lineTo(R,yy);ctx.stroke();
     }
-    // Standard skewed isotherms (constant Celsius temperatures).
-    for(let t=-120;t<=90;t+=10){
-        ctx.strokeStyle=t===0?'#4f6390':'#343b49';ctx.lineWidth=t===0?1.1:.8;
-        spcoaSndTrace(ctx,[[x(t,bottom),y(bottom)],[x(t,top),y(top)]],ctx.strokeStyle,ctx.lineWidth);
-    }
-    // Dry adiabats from potential temperature.
-    for(let theta=260;theta<=480;theta+=20) {
+    for(let tc=-120;tc<=90;tc+=10)
+        spcoaSndTrace(ctx,[[x(tc,bottom),y(bottom)],[x(tc,top),y(top)]],tc===0?'#6379b7':'#454545',.85);
+    for(let theta=260;theta<=500;theta+=20) {
         const pts=[];
-        for(let p=bottom;p>=top;p-=10)
-            pts.push([x(theta*Math.pow(p/1000,0.2854)-273.15,p),y(p)]);
-        spcoaSndTrace(ctx,pts,'#453c36',.75);
+        for(let p=bottom;p>=top;p-=10)pts.push([x(theta*Math.pow(p/1000,.2854)-273.15,p),y(p)]);
+        spcoaSndTrace(ctx,pts,'#302a25',.75);
     }
-    // Standard mixing-ratio lines below ~550 mb, akin to operational Skew-T guides.
-    for(const gkg of [0.4,1,2,4,7,10,14,18,22,26,30]) {
+    for(const gkg of [.4,1,2,4,7,10,14,18,22,26,30]) {
         const r=gkg/1000,pts=[];
         for(let p=1050;p>=550;p-=10) {
-            const e=r*p/(.622+r),ln=Math.log(e/6.112);
-            const tc=243.5*ln/(17.67-ln);
+            const e=r*p/(.622+r),ln=Math.log(e/6.112),tc=243.5*ln/(17.67-ln);
             if(Number.isFinite(tc))pts.push([x(tc,p),y(p)]);
         }
-        spcoaSndTrace(ctx,pts,'#2f4934',.75);
+        spcoaSndTrace(ctx,pts,'#25432f',.75);
     }
-    // True native hybrid-level temperature/dewpoint traces; no 50mb smoothing.
-    // Missing upper-level humidity is NOT extrapolated or invented.
-    const trace=(prof,name)=>prof.map(a=>Number.isFinite(a[name])?
-        [x(a[name],a.p),y(a.p)]:null);
+    const trace=(prof,name)=>prof.map(a=>Number.isFinite(a[name])?[x(a[name],a.p),y(a.p)]:null);
     if(previous){
-        spcoaSndTrace(ctx,trace(previous,'td'),'#8acda7',1.6,[5,5]);
-        spcoaSndTrace(ctx,trace(previous,'t'),'#ffa29f',1.6,[5,5]);
+        spcoaSndTrace(ctx,trace(previous,'td'),'#68a989',1.4,[5,5]);
+        spcoaSndTrace(ctx,trace(previous,'t'),'#df898c',1.4,[5,5]);
     }
-    if(current)spcoaSndTrace(ctx,spcoaSndParcel(current).map(a=>[x(a.t,a.p),y(a.p)]),
-       '#58bedb',1.5,[7,4]);
-    if(current){
-        spcoaSndTrace(ctx,trace(current,'td'),'#27de57',3.2);
-        spcoaSndTrace(ctx,trace(current,'t'),'#ff343d',3.2);
+    const mode=SPCOA_SOUNDING.parcelMode;
+    const parcel=diagnostic?.parcels?.[mode],parcelPoints=spcoaSndParcelPoints(diagnostic,mode);
+    if(current && parcelPoints.length>1) {
+        spcoaSndShadeParcel(ctx,current,parcelPoints,parcel,x,y);
+        spcoaSndTrace(ctx,parcelPoints.map(a=>[x(a.t,a.p),y(a.p)]),'#63c4eb',2.1,[6,3]);
+    }
+    if(current) {
+        spcoaSndTrace(ctx,trace(current,'td'),'#128c0a',3.5);
+        spcoaSndTrace(ctx,trace(current,'t'),'#fa2528',3.7);
+    }
+    // Explicit parcel-based LCL/LFC/EL markers use SHARPpy outputs only.
+    if(parcel&&parcelPoints.length>1) {
+        for(const [key,label,color] of [['lcl_hpa','LCL','#5aca47'],['lfc_hpa','LFC','#e5c744'],['el_hpa','EL','#9ac8f5']]) {
+            const pressure=parcel[key];
+            if(!Number.isFinite(pressure)||pressure<top||pressure>bottom)continue;
+            const td=parcelPoints.reduce((best,a)=>Math.abs(a.p-pressure)<Math.abs(best.p-pressure)?a:best,parcelPoints[0]);
+            if(!Number.isFinite(td.t))continue;
+            const xx=x(td.t,pressure), yy=y(pressure);
+            ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=1.2;
+            ctx.beginPath();ctx.arc(xx,yy,3.8,0,2*Math.PI);ctx.fill();
+            ctx.font='bold 10px Arial,sans-serif';ctx.fillText(label,Math.min(R-28,xx+6),yy-6);
+        }
     }
     ctx.restore();
-    // Dedicated white wind-barb column. Interpolation is from native HRRR winds;
-    // pressure levels every 50mb, visual thinning only where isobars crowd.
-    ctx.strokeStyle='#47515c';ctx.lineWidth=.85;
-    ctx.beginPath();ctx.moveTo(R+5,T);ctx.lineTo(R+5,B);ctx.stroke();
-    if(current){
-        let lastY=-Infinity;
-        for(const {pressure,sample:a} of spcoaSndPressureLevels(current).reverse()) {
-            if(!a || !Number.isFinite(a.u+a.v))continue;
-            const yy=y(pressure);
-            // Keep barbs separate at the high-pressure end of log-p plot.
-            if(yy-lastY<17)continue;
-            spcoaSndWindBarb(ctx,R+13,yy,a.u,a.v);
-            lastY=yy;
-        }
+    // Barbs: ALWAYS render at every available 50-hPa level, without decluttering.
+    const barbX=R+17,advX=w-36;
+    ctx.strokeStyle='#5f636b';ctx.lineWidth=.9;
+    ctx.beginPath();ctx.moveTo(R+6,T);ctx.lineTo(R+6,B);ctx.stroke();
+    let barbs=Array.isArray(diagnostic?.wind_barbs_50hpa)?diagnostic.wind_barbs_50hpa.map(a=>({
+        pressure:spcoaSndNum(a.pressure_hpa),u:spcoaSndNum(a.u_kt)/1.943844,v:spcoaSndNum(a.v_kt)/1.943844
+    })):spcoaSndPressureLevels(current||[]).map(({pressure,sample:a})=>({pressure,u:a?.u,v:a?.v}));
+    barbs=barbs.filter(b=>b.pressure>=top&&b.pressure<=bottom&&Number.isFinite(b.u+b.v));
+    barbs.sort((a,b)=>a.pressure-b.pressure);
+    for(const a of barbs){
+        // 50-hPa levels crowd in log-p near the surface; shorten glyphs
+        // slightly there instead of dropping any requested pressure level.
+        const scale=a.pressure>=800?.76:a.pressure>=700?.90:1;
+        spcoaSndWindBarb(ctx,barbX,y(a.pressure),a.u,a.v,scale);
     }
-    // Plot labels, including 50-mb pressure grid labels where room allows.
-    ctx.font='11px ui-monospace,Consolas,monospace';ctx.textAlign='right';
-    for(let p=100;p<=1000;p+=50){
-        const yy=y(p),major=(p%100===0||p===850);
-        if(major || (p<650 && p%50===0)) {
-            ctx.fillStyle=major?'#e3eaf2':'#8794a3';
-            ctx.font=major?'bold 10px ui-monospace,Consolas,monospace':'9px ui-monospace,Consolas,monospace';
-            ctx.fillText(String(p),L-7,yy+3);
-        }
+    // SHARPpy inferred geostrophic temperature advection; not actual gridded advection.
+    const strips=diagnostic?.inferred_advection_100hpa;
+    ctx.fillStyle='#0f1012';ctx.fillRect(advX-4,T,15,B-T);
+    ctx.strokeStyle='#686868';ctx.strokeRect(advX-4,T,15,B-T);
+    if(Array.isArray(strips))for(const row of strips) {
+        const value=Number(row.c_per_hr),p1=Number(row.bottom_hpa),p2=Number(row.top_hpa);
+        if(!Number.isFinite(value+p1+p2)||p1<=p2)continue;
+        const y1=Math.min(B,Math.max(T,y(p2))),y2=Math.min(B,Math.max(T,y(p1)));
+        if(y2<=y1)continue;
+        ctx.fillStyle=value>0.05?'rgba(230,35,51,.87)':value<-.05?'rgba(63,119,231,.88)':'#575757';
+        ctx.fillRect(advX-3,y1+1,13,Math.max(1,y2-y1-2));
+        ctx.font='bold 10px ui-monospace,Consolas,monospace';
+        ctx.textAlign='right';ctx.fillStyle='#e4e8ef';
+        const valText=(value>0?'+':'')+value.toFixed(1);
+        ctx.fillText(valText,advX-8,(y1+y2)/2+3);
     }
-    ctx.textAlign='center';ctx.fillStyle='#d0d7df';
-    ctx.font='11px ui-monospace,Consolas,monospace';
-    for(let t=-60;t<=60;t+=20){
-        const xx=x(t,1000);
-        if(xx>L&&xx<R)ctx.fillText(`${t}°`,xx,B+17);
+    ctx.font='9px ui-monospace,Consolas,monospace';ctx.fillStyle='#bfc3cb';
+    ctx.textAlign='center';ctx.fillText('WAA',advX+1,T-12);
+    ctx.fillText('CAA',advX+1,T-2);
+    ctx.fillText('°C/h',advX+1,B+14);
+    ctx.fillStyle='#dce2ea';ctx.textAlign='right';
+    for(let p=100;p<=1000;p+=50) {
+        if(p%100!==0 && p!==850)continue;
+        ctx.font='bold 10px ui-monospace,Consolas,monospace';ctx.fillText(String(p),L-8,y(p)+4);
     }
-    if(current){
+    ctx.textAlign='center';ctx.font='10px ui-monospace,Consolas,monospace';
+    for(let tc=-60;tc<=60;tc+=20) {
+        const xx=x(tc,1000);if(xx>L&&xx<R)ctx.fillText(`${tc}°`,xx,B+17);
+    }
+    if(current) {
         const s=current[0];
-        ctx.textAlign='left';ctx.fillStyle='#e8e8e8';
-        const f=v=>Number.isFinite(v)?`${Math.round(v*9/5+32)}°F`:'—';
-        ctx.fillText(`Sfc ${f(s.t)} / ${f(s.td)}`,L+3,B+30);
-        ctx.font='10px ui-monospace,Consolas,monospace';
-        ctx.fillStyle='#cfb9e7';
-        for(const height of [1,3,6,9,12,15]) {
-            let nearest=null;
-            for(const a of current)if(!nearest||Math.abs(a.z-height*1000)<Math.abs(nearest.z-height*1000))nearest=a;
-            if(nearest&&Math.abs(nearest.z-height*1000)<500&&nearest.p>=top){
-                const yy=y(nearest.p);
-                if(yy>T+8&&yy<B-8)ctx.fillText(`${height}km`,L+3,yy-3);
+        ctx.textAlign='left';ctx.font='bold 11px ui-monospace,Consolas,monospace';
+        ctx.fillStyle='#eeeeee';
+        ctx.fillText(`SFC: ${Number.isFinite(s.t)?Math.round(s.t*1.8+32)+'°F':'—'} / ${Number.isFinite(s.td)?Math.round(s.td*1.8+32)+'°F':'—'}`,L+4,B+31);
+        ctx.fillStyle='#adb5c3';ctx.font='10px ui-monospace,Consolas,monospace';
+        for(const km of [1,3,5,7,9,13]){
+            const nearest=current.reduce((best,a)=>Math.abs(a.z-km*1000)<Math.abs(best.z-km*1000)?a:best,current[0]);
+            if(Math.abs(nearest.z-km*1000)<600){const yy=y(nearest.p);
+                if(yy>T+6&&yy<B-7)ctx.fillText(`${km}km`,L+5,yy-3);
             }
         }
     }
-    ctx.textAlign='left';ctx.font='bold 11px ui-monospace,Consolas,monospace';
-    ctx.fillStyle='#ff454a';ctx.fillText('T',L+4,T+13);
-    ctx.fillStyle='#45e67a';ctx.fillText('Td',L+22,T+13);
-    ctx.fillStyle='#67d6ea';ctx.fillText('Parcel*',L+48,T+13);
-    ctx.fillStyle='#9caabb';ctx.font='9px ui-monospace,Consolas,monospace';
-    ctx.textAlign='right';ctx.fillText('Wind (kt)',w-4,T-8);
+    ctx.font='bold 10px ui-monospace,Consolas,monospace';ctx.textAlign='left';
+    ctx.fillStyle='#f73537';ctx.fillText('T',L+7,T+14);
+    ctx.fillStyle='#31bd32';ctx.fillText('Td',L+24,T+14);
+    ctx.fillStyle='#73c9e8';ctx.fillText(parcelPoints.length?`${mode.toUpperCase()} parcel`:'No parcel JSON',L+51,T+14);
+    ctx.textAlign='center';ctx.fillStyle='#ddd';ctx.fillText('WIND · 50 hPa',barbX+9,T-10);
 }
-function spcoaSndHodo(canvas,current,previous) {
+function spcoaSndHodo(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
-    const cx=w*.50,cy=h*.55;
-    let maxKt=60;
+    const cx=w*.51,cy=h*.53;
+    let maxKt=55;
     for(const prof of [current,previous])if(prof)for(const v of prof)
-        if(v.z<=10000&&Number.isFinite(v.u+v.v))maxKt=Math.max(maxKt,Math.hypot(v.u,v.v)*1.943844);
-    const limit=Math.ceil((maxKt+15)/20)*20;
-    const radius=Math.min(w*.43,h*.43),scale=radius/limit;
+        if(v.z<=9000&&Number.isFinite(v.u+v.v))maxKt=Math.max(maxKt,Math.hypot(v.u,v.v)*1.943844);
+    const motion=diagnostic?.storm_motions;
+    for(const v of [motion?.right,motion?.left])if(Number.isFinite(v?.u_kt+v?.v_kt))
+        maxKt=Math.max(maxKt,Math.hypot(v.u_kt,v.v_kt));
+    const limit=Math.max(60,Math.ceil((maxKt+15)/20)*20);
+    const radius=Math.min(w*.44,h*.43),scale=radius/limit;
     const xy=wind=>[cx+wind.u*1.943844*scale,cy-wind.v*1.943844*scale];
-    for(let r=20;r<=limit;r+=20) {
-        ctx.strokeStyle='#293644';ctx.lineWidth=1;
-        ctx.beginPath();ctx.arc(cx,cy,r*scale,0,2*Math.PI);ctx.stroke();
-        ctx.fillStyle='#7b8b9b';ctx.textAlign='center';ctx.font='10px ui-monospace,Consolas,monospace';
-        ctx.fillText(String(r),cx+r*scale,cy-5);
+    for(let r=10;r<=limit;r+=10) {
+        ctx.strokeStyle=r%20===0?'#5e6064':'#33343b';ctx.lineWidth=r%20===0?1.1:.7;
+        ctx.setLineDash(r%20===0?[]:[3,3]);
+        ctx.beginPath();ctx.arc(cx,cy,r*scale,0,2*Math.PI);ctx.stroke();ctx.setLineDash([]);
+        if(r%20===0){ctx.fillStyle='#9a9a9a';ctx.font='10px ui-monospace,Consolas,monospace';
+            ctx.textAlign='center';ctx.fillText(String(r),cx+r*scale,cy-5);
+        }
     }
-    ctx.strokeStyle='#3c495a';ctx.beginPath();ctx.moveTo(cx-radius,cy);ctx.lineTo(cx+radius,cy);
+    ctx.strokeStyle='#626469';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(cx-radius,cy);ctx.lineTo(cx+radius,cy);
     ctx.moveTo(cx,cy-radius);ctx.lineTo(cx,cy+radius);ctx.stroke();
     const sample=p=>{
         if(!p)return [];
-        const a=[];for(let z=10;z<=Math.min(9000,p.at(-1).z);z+=100) {
+        const a=[];for(let z=10;z<=Math.min(9000,p.at(-1).z);z+=100){
             const v=spcoaSndWindAt(p,z);if(v&&Number.isFinite(v.u+v.v))a.push({z,...v});
-        }return a;
-    };
-    if(previous)spcoaSndTrace(ctx,sample(previous).map(x=>xy(x)),'#a1acbd',1.8,[4,5]);
-    if(current) {
-        const profile=sample(current);
-        const layers=[[0,500,'#e86af9'],[500,3000,'#ff737d'],[3000,6000,'#5de684'],[6000,9000,'#f7d354']];
-        for(const [low,high,color] of layers) {
-            const segment=profile.filter(v=>v.z>=Math.max(10,low)&&v.z<=high);
-            spcoaSndTrace(ctx,segment.map(x=>xy(x)),color,2.8);
         }
-        // WeatherFront-style height markers: numbered km dots on the native wind trace.
-        // A dark outline keeps them readable over all four layer colors.
-        for(const km of [0,1,2,3,4,5,6,7,8,9]) {
+        return a;
+    };
+    if(previous)spcoaSndTrace(ctx,sample(previous).map(a=>xy(a)),'#969696',1.6,[4,6]);
+    if(current){
+        const layers=[[10,500,'#c232b3'],[500,3000,'#e34248'],[3000,6000,'#3acf61'],[6000,9000,'#ffe07b']];
+        for(const [lo,hi,color] of layers){
+            const line=[];
+            for(let z=lo;z<=hi;z+=100){const wind=spcoaSndWindAt(current,z);
+                if(wind && Number.isFinite(wind.u+wind.v))line.push(xy(wind));
+            }
+            const edge=spcoaSndWindAt(current,hi);
+            if(edge&&Number.isFinite(edge.u+edge.v))line.push(xy(edge));
+            spcoaSndTrace(ctx,line,color,4);
+        }
+        for(let km=0;km<=9;km++) {
             const wind=spcoaSndWindAt(current,Math.max(10,km*1000));
-            if(!wind || !Number.isFinite(wind.u+wind.v))continue;
-            const [hx,hy]=xy(wind);
-            if(!Number.isFinite(hx+hy))continue;
-            ctx.fillStyle='#f0f4f9';ctx.strokeStyle='#0a1017';ctx.lineWidth=1.5;
-            ctx.beginPath();ctx.arc(hx,hy,km===0?5:6.5,0,Math.PI*2);
-            ctx.fill();ctx.stroke();
-            ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 9px Arial,sans-serif';
-            ctx.fillStyle='#0c1118';ctx.fillText(String(km),hx,hy+.4);
+            if(!wind||!Number.isFinite(wind.u+wind.v))continue;
+            const [mx,my]=xy(wind);
+            ctx.beginPath();ctx.arc(mx,my,6.5,0,Math.PI*2);
+            ctx.fillStyle='#e7e9ed';ctx.fill();ctx.lineWidth=1.6;ctx.strokeStyle='#030406';ctx.stroke();
+            ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 10px Arial,sans-serif';
+            ctx.fillStyle='#060709';ctx.fillText(String(km),mx,my+.5);
         }
         ctx.textBaseline='alphabetic';
-        const motion=spcoaSndBunkers(current);
-        for(const [key,label,color] of [['rm','RM','#ffbb5a'],['lm','LM','#a7baff']]) {
-            if(!motion?.[key])continue;
-            const [mx,my]=xy(motion[key]);
-            ctx.fillStyle=color;ctx.strokeStyle='#121820';ctx.lineWidth=3;
-            ctx.beginPath();ctx.arc(mx,my,4,0,Math.PI*2);ctx.stroke();ctx.fill();
-            ctx.font='11px ui-monospace,Consolas,monospace';ctx.fillText(label,mx+7,my-4);
+        for(const [key,label,color] of [['right','RM','#ffaa70'],['left','LM','#a7baff']]) {
+            const v=motion?.[key];
+            if(!Number.isFinite(v?.u_kt+v?.v_kt))continue;
+            const [mx,my]=xy({u:v.u_kt/1.943844,v:v.v_kt/1.943844});
+            ctx.beginPath();ctx.arc(mx,my,5,0,2*Math.PI);ctx.fillStyle=color;ctx.fill();
+            ctx.strokeStyle='#08090a';ctx.stroke();ctx.fillStyle='#eee';
+            ctx.font='bold 12px Arial,sans-serif';ctx.textAlign='left';ctx.fillText(label,mx+8,my-6);
         }
     }
-    ctx.font='10px ui-monospace,Consolas,monospace';ctx.textAlign='left';
-    const legend=[['0–0.5 km','#e86af9'],['0.5–3 km','#ff737d'],['3–6 km','#5de684'],['6–9 km','#f7d354']];
-    legend.forEach(([text,color],i)=>{ctx.fillStyle=color;ctx.fillText(text,10,18+i*14);});
-    ctx.fillStyle='#94a3b8';ctx.fillText('Bunkers RM / LM • kt',10,h-12);
+    const vecInfo=(v)=>{
+        if(!Number.isFinite(v?.u_kt+v?.v_kt))return '—';
+        const spd=Math.round(Math.hypot(v.u_kt,v.v_kt));
+        const deg=Math.round((Math.atan2(v.u_kt,v.v_kt)*180/Math.PI+360)%360);
+        return `${deg}° @ ${spd} kt`;
+    };
+    ctx.font='bold 11px Arial,sans-serif';ctx.textAlign='left';ctx.fillStyle='#dadde2';
+    ctx.fillText(`SM: RIGHT MOVING  ${vecInfo(motion?.right)}`,10,16);
+    ctx.font='10px Arial,sans-serif';ctx.fillStyle='#b2b7bf';
+    ctx.fillText(`LM: ${vecInfo(motion?.left)}`,10,30);
+    const mean=diagnostic?.mean_winds?.['0_6000m'];
+    ctx.fillText(`MW (0–6 km): ${vecInfo(mean)}`,10,44);
+    ctx.fillStyle='#878b94';ctx.fillText('Height markers (km) · winds in kt',10,h-12);
 }
 function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
     const css=document.createElement('style');css.id='spcoa-sounding-css';
     css.textContent=`
-#spcoa-sounding-panel{position:fixed;z-index:6100;right:16px;top:54px;width:min(1340px,calc(100vw - 25px));max-height:calc(100vh - 70px);overflow:auto;box-sizing:border-box;background:#07090c;color:#f2f4f6;border:1px solid #526072;border-radius:8px;box-shadow:0 12px 48px #000b;font:12px/1.5 Arial,Helvetica,sans-serif;display:none}
+#spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));max-height:calc(100vh - 38px);overflow:auto;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
 #spcoa-sounding-panel *{box-sizing:border-box}
-#spcoa-sounding-panel .ss-head{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #354253;background:#10151b;position:sticky;top:0;z-index:3}
-#spcoa-sounding-panel .ss-title{font-weight:700;font-size:14px;line-height:1.35}
-#spcoa-sounding-panel .ss-sub{font-size:11px;color:#a8bbcf}
+#spcoa-sounding-panel .ss-head{display:flex;gap:9px;align-items:center;justify-content:space-between;padding:4px 9px;border-bottom:1px solid #737373;background:#050506;position:sticky;top:0;z-index:3}
+#spcoa-sounding-panel .ss-title{font-weight:600;font-size:14px;line-height:1.2}
+#spcoa-sounding-panel .ss-sub{font-size:11px;color:#c7c7c7}
 #spcoa-sounding-panel .ss-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
-#spcoa-sounding-panel button{background:#223142;color:#eff5ff;border:1px solid #546477;padding:5px 9px;border-radius:4px;cursor:pointer}
-#spcoa-sounding-panel button:hover{background:#334961}
-#spcoa-sounding-panel .ss-body{padding:10px}
-#spcoa-sounding-panel .ss-figures{display:grid;grid-template-columns:minmax(0,1.13fr) minmax(0,.87fr);gap:8px}
-#spcoa-sounding-panel .ss-chart{border:1px solid #3e5062;background:#030406;padding:7px 4px 4px}
-#spcoa-sounding-panel .ss-chart h3{color:#cfddec;margin:0 0 3px 9px;font-size:12px}
-#spcoa-sounding-panel canvas{display:block;width:100%;height:545px}
-#spcoa-sounding-panel .ss-tables{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
-#spcoa-sounding-panel .ss-box{background:#0b1118;border:1px solid #34485b;border-radius:4px;padding:8px}
-#spcoa-sounding-panel .ss-box h3{font-size:12px;color:#a8d8f8;margin:0 0 5px}
-#spcoa-sounding-panel table{border-collapse:collapse;width:100%;font:11px ui-monospace,Consolas,monospace;color:#dbe7f6}
-#spcoa-sounding-panel td,#spcoa-sounding-panel th{border-bottom:1px solid #243443;padding:3px 4px;text-align:right}
+#spcoa-sounding-panel button,#spcoa-sounding-panel select{background:#161616;color:#eee;border:1px solid #777;padding:4px 6px;border-radius:2px;cursor:pointer;font:11px Arial,sans-serif}
+#spcoa-sounding-panel button:hover{background:#343434}
+#spcoa-sounding-panel .ss-body{padding:2px}
+#spcoa-sounding-panel .ss-figures{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:2px}
+#spcoa-sounding-panel .ss-chart{border:1px solid #6f6f6f;background:#020203;padding:1px 0 0}
+#spcoa-sounding-panel .ss-chart h3{color:#d0d0d0;margin:2px 7px;font-size:11px;font-weight:500}
+#spcoa-sounding-panel .ss-figures canvas{display:block;width:100%;height:clamp(460px,65vh,710px)}
+#spcoa-sounding-panel .ss-tables{display:grid;grid-template-columns:minmax(455px,3.7fr) minmax(172px,1.35fr) minmax(166px,1.25fr) minmax(127px,1fr) minmax(127px,1fr) minmax(127px,1fr);gap:0;margin-top:2px;overflow-x:auto;background:#020203;border:1px solid #676767}
+#spcoa-sounding-panel .ss-tables>.ss-box{min-width:0;overflow:hidden;border:0;border-right:1px solid #656565;min-height:197px;padding:3px 4px 4px;border-radius:0;background:#030406}
+#spcoa-sounding-panel .ss-tables>.ss-box:last-child{border-right:0}
+#spcoa-sounding-panel .ss-box h3{font:700 11px Arial,sans-serif;color:#dce4ea;margin:1px 0 4px;min-height:13px}
+#spcoa-sounding-panel .ss-box h3.ss-green{color:#96dd9e}
+#spcoa-sounding-panel .ss-box h3.ss-blue{color:#91d6ef}
+#spcoa-sounding-panel .ss-box h3.ss-red{color:#e9938f}
+#spcoa-sounding-panel .ss-thermo-unit{font:9px Arial,sans-serif;color:#8499a8;font-weight:400}
+#spcoa-sounding-panel table{border-collapse:collapse;width:100%;font:10px/1.18 ui-monospace,Consolas,monospace;color:#ededed;font-variant-numeric:tabular-nums}
+#spcoa-sounding-panel td,#spcoa-sounding-panel th{padding:3px 2px;text-align:right;white-space:nowrap;border:0;border-bottom:1px solid #252b30}
+#spcoa-sounding-panel th{font-size:10px;color:#dae4e9;font-weight:600}
 #spcoa-sounding-panel td:first-child,#spcoa-sounding-panel th:first-child{text-align:left}
-#spcoa-sounding-panel th{font-size:10px;color:#8db4d0}
-#spcoa-sounding-panel #ss-status{color:#b8c7d6;margin:5px 0 8px;min-height:17px}
-#spcoa-sounding-panel .ss-note{color:#9aafc6;margin-top:8px;font-size:10px}
-#spcoa-sounding-panel .ss-pressure{margin-top:9px;}
-#spcoa-sounding-panel .ss-pressure-scroll{max-height:270px;overflow:auto;}
-#spcoa-sounding-panel .ss-pressure th{position:sticky;top:0;background:#15202a;}
-#spcoa-sounding-panel .ss-pressure td:first-child{font-weight:700;color:#a3cfef;}
-#spcoa-sounding-panel .ss-compare{white-space:nowrap;display:flex;align-items:center;gap:5px;font-size:11px;color:#c8d7ec}
-@media(max-width:680px){#spcoa-sounding-panel .ss-figures,#spcoa-sounding-panel .ss-tables{grid-template-columns:1fr}#spcoa-sounding-panel canvas{height:330px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
+#spcoa-sounding-panel .ss-thermo-table{table-layout:fixed;font-size:10px}
+#spcoa-sounding-panel .ss-thermo-table th,#spcoa-sounding-panel .ss-thermo-table td{text-align:center;padding:5px 1px;border-bottom:1px solid #30353b;white-space:normal;overflow-wrap:normal}
+#spcoa-sounding-panel .ss-thermo-table td{white-space:nowrap;font-weight:600}
+#spcoa-sounding-panel .ss-thermo-table th:first-child,#spcoa-sounding-panel .ss-thermo-table td:first-child{text-align:left;width:27px;padding-left:3px}
+#spcoa-sounding-panel .ss-thermo-table th small{display:block;font:8px/1.1 Arial,sans-serif;color:#8796a4}
+#spcoa-sounding-panel .ss-thermo-table .ss-ecape{color:#83e5a2!important;font-weight:700}
+#spcoa-sounding-panel .ss-thermo-table .ss-rh{color:#8ddbef!important;font-weight:700}
+#spcoa-sounding-panel .ss-thermo-table .ss-missing{color:#b0a9a5!important;font-weight:400}
+#spcoa-sounding-panel .ss-thermo-table .ss-selected-parcel{background:#152333}
+#spcoa-sounding-panel .ss-thermo-table .ss-selected-parcel th{color:#f3f5f8}
+#spcoa-sounding-panel .ss-thermo-extra{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 8px;margin-top:8px;padding-top:4px;border-top:1px solid #464646;font:10px ui-monospace,Consolas,monospace;color:#cdd8e2}
+#spcoa-sounding-panel .ss-thermo-extra b{color:#f1f2f4}
+#spcoa-sounding-panel .ss-kine-table td:nth-child(n+2),#spcoa-sounding-panel .ss-kine-table th:nth-child(n+2){text-align:right}
+#spcoa-sounding-panel .ss-bottom-note{color:#a3b1bc;font:9px Arial,sans-serif;margin-top:7px;line-height:1.4}
+#spcoa-sounding-panel .ss-environment-table td:first-child{color:#b4c2ce}
+#spcoa-sounding-panel .ss-environment-table td:nth-child(2){color:#f0f3f5;font-weight:600}
+#spcoa-sounding-panel .ss-environment-table .ss-group-severe td:first-child{color:#f6da72}
+#spcoa-sounding-panel .ss-environment-table .ss-group-tornado td:first-child{color:#f59383}
+#spcoa-sounding-panel .ss-environment-table .ss-group-hail td:first-child{color:#91d98a}
+#spcoa-sounding-panel .ss-kine-table .ss-emphasis-row td{color:#b7e1fa;font-weight:700}
+#spcoa-sounding-panel .ss-kine-table td,#spcoa-sounding-panel .ss-kine-table th,
+#spcoa-sounding-panel .ss-environment-table td{padding-top:2px;padding-bottom:2px}
+#spcoa-sounding-panel .ss-mini{padding:3px 1px 2px!important}
+#spcoa-sounding-panel .ss-mini h3{padding:0 3px;margin:2px 0 0;font:700 10px Arial,sans-serif;text-align:center;white-space:nowrap}
+#spcoa-sounding-panel .ss-mini canvas{width:100%;height:167px;display:block}
+#spcoa-sounding-panel #ss-status{color:#cad8e2;margin:3px 8px;min-height:17px}
+#spcoa-sounding-panel .ss-note{color:#aaa;margin:6px 4px 2px;font-size:10px;line-height:1.4}
+#spcoa-sounding-panel .ss-compare{white-space:nowrap;display:flex;align-items:center;gap:5px;font-size:11px;color:#cbd1de}
+#spcoa-sounding-panel .ss-missing{color:#f6ca83}
+#spcoa-sounding-panel .ss-diagnostic-info{color:#c4d6e7;font-size:10px;padding:3px 6px}
+@media(max-width:950px){#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-tables>.ss-box{min-height:197px}}
+@media(max-width:680px){#spcoa-sounding-panel .ss-figures{grid-template-columns:1fr}#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-figures canvas{height:430px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
 `;
     document.head.appendChild(css);
 }
@@ -19197,16 +19328,26 @@ function spcoaSndBuildPanel() {
     spcoaSndInjectStyles();
     const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
     panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
-    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F00 Sounding</div><div class="ss-sub" id="ss-location">Enable Sounding next to Cursor Sample, then press and hold on the map</div></div>
-      <div class="ss-actions"><label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
+    panel.innerHTML=`<div class="ss-head"><div><div class="ss-title" id="ss-title">HRRR F000 | WeatherFront-style Sounding</div><div class="ss-sub" id="ss-location">Select native HRRR grid point</div></div>
+      <div class="ss-actions"><label>Parcel <select id="ss-parcel-mode"><option value="ml" selected>Mixed Layer (Method B)</option><option value="sb">Surface Based</option><option value="mu">Most Unstable</option></select></label>
+      <label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
+      <button type="button" id="ss-load-json">Load diagnostic JSON</button><input type="file" id="ss-json-file" accept=".json,application/json" style="display:none">
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
-      <div class="ss-body"><div id="ss-status" role="status">Enable Sounding next to Cursor Sample, then press and hold on the map.</div>
-      <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P</h3><canvas id="ss-skew"></canvas></div>
-      <div class="ss-chart"><h3>Hodograph (kt)</h3><canvas id="ss-hodo"></canvas></div></div>
-      <div class="ss-tables"><div class="ss-box"><h3>Thermodynamics · SPCOA gridded values</h3><table id="ss-thermo"></table></div>
-      <div class="ss-box"><h3>Kinematics · Native HRRR profile</h3><table id="ss-kinematics"></table></div></div>
-      <div class="ss-box ss-pressure"><h3>Standard Pressure Levels · 50 mb (native HRRR interpolation)</h3><div class="ss-pressure-scroll"><table id="ss-pressure"></table></div></div>
-      <div class="ss-note" id="ss-archive-note">Native F00 profiles are sampled at the nearest HRRR ~3-km grid point. CAPE/CIN and ECAPE (Peters) are retrieved from independent SPCOA scalar fields, which may differ in calculation methods and horizontal sampling. Skew-T parcel path is illustrative; no CAPE is computed from its curve. Surface T/Td use 2 m data, while surface winds use 10 m data. Wind barbs are sampled at standard pressure intervals with visual decluttering. Upper-level Td is shown only where archived HRRR humidity has usable precision. Hourly comparison uses the same native HRRR grid index from the preceding F00 analysis.</div></div>`;
+      <div class="ss-body"><div id="ss-status" role="status">Press and hold the map with Sounding enabled.</div>
+      <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P · Calculated parcel</h3><canvas id="ss-skew"></canvas></div>
+      <div class="ss-chart"><h3>Hodograph · Storm motions</h3><canvas id="ss-hodo"></canvas></div></div>
+      <div class="ss-tables" aria-label="Compact SPCOA sounding diagnostics">
+        <div class="ss-box ss-thermo-box"><h3>Thermodynamics <span class="ss-thermo-unit">SB / ML (Method B) / MU</span></h3>
+          <table class="ss-thermo-table" id="ss-thermo"></table><div id="ss-thermo-extra" class="ss-thermo-extra"></div>
+          <div id="ss-thermo-prev" style="display:none;margin-top:5px"></div></div>
+        <div class="ss-box"><h3>Kinematics <span class="ss-thermo-unit">kt · m²/s²</span></h3><table class="ss-kine-table" id="ss-kinematics"></table><div class="ss-bottom-note" id="ss-eil"></div></div>
+        <div class="ss-box"><h3>General / Severe <span class="ss-thermo-unit">HRRR F00</span></h3><table class="ss-environment-table" id="ss-environment"></table></div>
+        <div class="ss-box ss-mini"><h3 class="ss-blue">RH (%)</h3><canvas id="ss-mini-rh" aria-label="Vertical relative humidity profile"></canvas></div>
+        <div class="ss-box ss-mini"><h3 class="ss-red">WAA / CAA</h3><canvas id="ss-mini-adv" aria-label="Inferred temperature advection by pressure layer"></canvas></div>
+        <div class="ss-box ss-mini"><h3>SR Wind (kt)</h3><canvas id="ss-mini-sr" aria-label="Right-moving storm-relative wind by height"></canvas></div>
+      </div>
+      <div class="ss-diagnostic-info" id="ss-diagnostic-info"></div>
+      <div class="ss-note" id="ss-archive-note">Nearest native HRRR F00 grid point; surface T/q at 2 m, winds at 10 m. Wind barbs remain every 50 hPa on Skew-T. SHARPpy parcel traces, 100-hPa pressure-weighted Method B, SB/ML/MU Peters ECAPE, and LCL–LFC RH require matching per-point V3/V4 diagnostic JSON. Inferring WAA/CAA from vertical wind profiles is not the same as actual gridded temperature advection. Colored CAPE/CIN areas visually compare parcel/environment temperatures; displayed CAPE/CIN come from SHARPpy buoyancy integration. An unavailable value is shown as “—” (never replaced with gridded map values).</div></div>`;
     document.body.appendChild(panel);
     document.getElementById('ss-close').addEventListener('click',()=>{
         panel.style.display='none';
@@ -19218,6 +19359,17 @@ function spcoaSndBuildPanel() {
         if(SPCOA_SOUNDING.point)void spcoaSndLoadSelection();
     });
     document.getElementById('ss-save').addEventListener('click',spcoaSndExportPng);
+    document.getElementById('ss-parcel-mode').addEventListener('change',e=>{
+        SPCOA_SOUNDING.parcelMode=e.target.value;
+        if(SPCOA_SOUNDING.current)spcoaSndRender();
+    });
+    document.getElementById('ss-load-json').addEventListener('click',()=>{
+        document.getElementById('ss-json-file').click();
+    });
+    document.getElementById('ss-json-file').addEventListener('change',async e=>{
+        const file=e.target.files?.[0];e.target.value='';
+        if(file)await spcoaSndLoadLocalDiagnostic(file);
+    });
     // V42: fallback hold gesture for a map panel opened outside the host shell.
     // In normal multipanel use the HOST overlay owns the hold gesture, since
     // an iframe's native DOM events cannot reach the outer document.
@@ -19265,7 +19417,8 @@ async function spcoaSndLoadSelection() {
     if(!point||!run)return;
     const serial=++SPCOA_SOUNDING.serial;
     SPCOA_SOUNDING.current=null;SPCOA_SOUNDING.previous=null;
-    SPCOA_SOUNDING.currentValues={};SPCOA_SOUNDING.previousValues={};
+    SPCOA_SOUNDING.diagnostic=null;SPCOA_SOUNDING.previousDiagnostic=null;
+    SPCOA_SOUNDING.diagnosticError='';
     spcoaSndStatus(`Loading native HRRR F00 sounding for ${run}...`);
     try {
         const result=await spcoaSndNearest(run,point.lat,point.lon);
@@ -19284,23 +19437,30 @@ async function spcoaSndLoadSelection() {
                 const km=spcoaSndDistance(result.profile.lat,result.profile.lon,prev.profile.lat,prev.profile.lon);
                 if(km>1)throw new Error(`Previous-hour grid alignment changed by ${km.toFixed(1)} km`);
                 SPCOA_SOUNDING.previous={...prev,run:prevRun};
-            } catch(e) {
+            } catch(error){
                 SPCOA_SOUNDING.previous=null;
-                spcoaSndStatus(`Previous hour (${prevRun}) is unavailable: ${e.message}`);
+                SPCOA_SOUNDING.diagnosticError=`Previous hour unavailable: ${error.message}`;
             }
         }
+        // Draw native T/Td and native wind profiles immediately.
         spcoaSndRender();
-        const [curr,prev]=await Promise.all([
-            spcoaSndLoadValues(run,result.profile.lat,result.profile.lon),
-            SPCOA_SOUNDING.previous?spcoaSndLoadValues(prevRun,result.profile.lat,result.profile.lon):Promise.resolve({})
+        const [d1,d2]=await Promise.allSettled([
+            spcoaSndFetchDiagnostic(run,result.profile),
+            SPCOA_SOUNDING.previous?spcoaSndFetchDiagnostic(prevRun,SPCOA_SOUNDING.previous.profile):Promise.resolve(null)
         ]);
         if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
-        SPCOA_SOUNDING.currentValues=curr;SPCOA_SOUNDING.previousValues=prev;
+        SPCOA_SOUNDING.diagnostic=d1.status==='fulfilled'?d1.value:null;
+        SPCOA_SOUNDING.previousDiagnostic=d2.status==='fulfilled'?d2.value:null;
+        if(d1.status==='rejected'){
+            SPCOA_SOUNDING.diagnosticError=`Diagnostic loading error: ${d1.reason?.message||d1.reason}`;
+            console.warn('SPCOA diagnostic JSON:',d1.reason);
+        }
+        if(d2.status==='rejected')console.warn('SPCOA previous diagnostic JSON:',d2.reason);
         spcoaSndRender();
-    } catch(e) {
+    } catch(error) {
         if(serial!==SPCOA_SOUNDING.serial)return;
-        console.error('SPCOA native sounding:',e);
-        spcoaSndStatus(`Could not load sounding: ${e.message}`);
+        console.error('SPCOA native sounding:',error);
+        spcoaSndStatus(`Could not load sounding: ${error.message}`);
     }
 }
 function spcoaSndTable(rows,previous) {
@@ -19315,76 +19475,346 @@ function spcoaSndTable(rows,previous) {
     }
     return html;
 }
+/* V47: WeatherFront-density parcel comparison with SPCOA's additional
+ * Peters ECAPE and LCL-LFC RH in their OWN prominent columns. Values all
+ * originate in the matching V3 diagnostic JSON for this native F00 point.
+ */
+function spcoaSndThermoTable(data) {
+    const columns=[
+        ['CAPE','cape_jkg',0],['3CAPE','cape_0_3km_jkg',0],
+        ['6CAPE','cape_0_6km_jkg',0],['CIN','cin_jkg',0],
+        ['Peters ECAPE','ecape_jkg',0],['LCL','lcl_m_agl',0],
+        ['LFC','lfc_m_agl',0],
+        ['LCL–LFC RH','lcl_lfc_rh_percent',1]
+    ];
+    let html='<thead><tr><th>Parcel</th>';
+    for(const [label,key] of columns){
+        const units=key==='lcl_lfc_rh_percent'?'%':
+            ['lcl_m_agl','lfc_m_agl','el_m_agl'].includes(key)?'m AGL':'J/kg';
+        const klass=key==='ecape_jkg'?' class="ss-ecape"':key==='lcl_lfc_rh_percent'?' class="ss-rh"':'';
+        html+=`<th${klass} title="${units}">${label}<small>${units}</small></th>`;
+    }
+    html+='</tr></thead><tbody>';
+    for(const [kind,label] of [['sb','SB'],['ml','ML'],['mu','MU']]){
+        const selected=SPCOA_SOUNDING.parcelMode===kind;
+        html+=`<tr${selected?' class="ss-selected-parcel"':''}><th>${label}</th>`;
+        const parcel=data?.parcels?.[kind];
+        const noLfc=!Number.isFinite(spcoaSndNum(parcel?.lfc_hpa));
+        for(const [,key,digits] of columns){
+            let raw= key==='ecape_jkg' ? data?.ecape_by_parcel?.[kind]?.ecape_jkg:
+                     key==='lcl_lfc_rh_percent' ? data?.lcl_lfc_rh_by_parcel?.[kind]?.percent:
+                     key==='el_m_agl' && noLfc ? null:parcel?.[key];
+            const value=spcoaSndNum(raw),v=spcoaSndFormatted(value,digits);
+            const special=key==='ecape_jkg'?'ss-ecape':key==='lcl_lfc_rh_percent'?'ss-rh':'';
+            html+=`<td class="${special}${!Number.isFinite(value)?' ss-missing':''}">${v}</td>`;
+        }
+        html+='</tr>';
+    }
+    return html+'</tbody>';
+}
+function spcoaSndAdvectionTable(data) {
+    let html='<tr><th>Pressure layer</th><th>°C/hr</th><th>Type</th></tr>';
+    const values=data?.inferred_advection_100hpa;
+    if(!Array.isArray(values)||!values.length)return html+'<tr><td colspan="3">—</td></tr>';
+    for(const v of values){
+        const ad=spcoaSndNum(v.c_per_hr),name=ad>0.05?'WAA':ad<-.05?'CAA':'Neutral';
+        const color=name==='WAA'?'#ff7777':name==='CAA'?'#8fb4ff':'#bbb';
+        html+=`<tr><td>${spcoaSndFormatted(v.bottom_hpa,0)}–${spcoaSndFormatted(v.top_hpa,0)}</td>`+
+              `<td style="color:${color}">${Number.isFinite(ad)?(ad>=0?'+':'')+ad.toFixed(2):'—'}</td><td>${name}</td></tr>`;
+    }
+    return html;
+}
+function spcoaSndKinematicRows(data) {
+    const value=(path)=>spcoaSndVal(data,path);
+    return [
+      ['0–500 m shear (kt)',value('bulk_shear.0_500m_kt'),0],
+      ['0–1 km shear (kt)',value('bulk_shear.0_1000m_kt'),0],
+      ['0–3 km shear (kt)',value('bulk_shear.0_3000m_kt'),0],
+      ['0–6 km shear (kt)',value('bulk_shear.0_6000m_kt'),0],
+      ['0–9 km shear (kt)',value('bulk_shear.0_9000m_kt'),0],
+      ['RM SRH 0–1 km (m²/s²)',value('storm_relative_helicity.0_1000m_right_m2s2'),0],
+      ['RM SRH 0–3 km (m²/s²)',value('storm_relative_helicity.0_3000m_right_m2s2'),0],
+      ['Bunkers RM U (kt)',value('storm_motions.right.u_kt'),0],
+      ['Bunkers RM V (kt)',value('storm_motions.right.v_kt'),0],
+      ['Bunkers LM U (kt)',value('storm_motions.left.u_kt'),0],
+      ['Bunkers LM V (kt)',value('storm_motions.left.v_kt'),0],
+      ['PWAT (in)',value('pwat_inches'),2],
+      ['Freezing level (m AGL)',value('freezing_level_m_agl'),0],
+      ['0–1 km LR (°C/km)',value('lapse_rates.0_1000m_c_km'),1],
+      ['0–3 km LR (°C/km)',value('lapse_rates.0_3000m_c_km'),1],
+      ['3–6 km LR (°C/km)',value('lapse_rates.3000_6000m_c_km'),1],
+      ['Effective inflow base (hPa)',value('effective_inflow.bottom_hpa'),0],
+      ['Effective inflow top (hPa)',value('effective_inflow.top_hpa'),0]
+    ];
+}
+/* V49 adds SPC/SHARPpy-derived SCP, STP, SHIP and EHI when a matching
+ * V4 per-point JSON exists. No invented tornado probabilities or hazards.
+ */
+/* V49: native V4 computed BWD, SRH, SRW by layer, plus documented
+ * SHARPpy composite indices. Unavailable values stay missing (—); an older
+ * V3 diagnostic JSON will continue working with 0–1 and 0–3 km SRH only.
+ */
+function spcoaSndCompactKinematics(data) {
+    const v=(path)=>spcoaSndVal(data,path),fmt=n=>spcoaSndFormatted(n,0);
+    const rm=data?.storm_motions?.right;
+    const rows=[
+        ['0–0.5', '0_500m'],['0–1','0_1000m'],['0–3','0_3000m'],
+        ['0–6','0_6000m'],['1–3','1000_3000m'],['3–6','3000_6000m']
+    ];
+    let html='<tr><th>Layer</th><th>BWD</th><th>SRH</th><th>SRW</th></tr>';
+    for(const [name,layer] of rows){
+        const bwd=v('bulk_shear.'+layer+'_kt');
+        const srh=v('storm_relative_helicity.'+layer+'_right_m2s2');
+        let srw=v('storm_relative_wind.'+layer+'_right_kt');
+        if(!Number.isFinite(srw)){
+            // Older V3 JSON: mean wind + Bunkers motion are still sufficient
+            // for SRW; never use a substituted gridded product.
+            const mean=data?.mean_winds?.[layer];
+            if([mean?.u_kt,mean?.v_kt,rm?.u_kt,rm?.v_kt].every(Number.isFinite))
+                srw=Math.hypot(mean.u_kt-rm.u_kt,mean.v_kt-rm.v_kt);
+        }
+        html+=`<tr><td>${name} km</td><td>${fmt(bwd)}</td><td>${fmt(srh)}</td><td>${fmt(srw)}</td></tr>`;
+    }
+    const e=v('storm_relative_helicity.effective_right_m2s2');
+    const eb=v('effective_inflow.effective_bwd_kt');
+    html+=`<tr class="ss-emphasis-row"><td>Effective</td><td>${fmt(eb)}</td><td>${fmt(e)}</td><td>—</td></tr>`;
+    return html;
+}
+function spcoaSndCompactEnvironment(data){
+    const val=(p)=>spcoaSndVal(data,p),fmt=(p,n=1)=>spcoaSndFormatted(val(p),n);
+    const entries=[
+        ['SCP', 'composites.scp',1,'ss-group-severe'],
+        ['STP (CIN)', 'composites.stp_cin',1,'ss-group-tornado'],
+        ['STP (fixed)', 'composites.stp_fixed',1,'ss-group-tornado'],
+        ['SHIP', 'composites.ship',1,'ss-group-hail'],
+        ['SB EHI 0–1', 'composites.ehi_0_1km',2,''],
+        ['SB EHI 0–3', 'composites.ehi_0_3km',2,''],
+        ['BRN (MU)', 'composites.brn_mu',0,''],
+        ['PWAT', 'pwat_inches',2,''],
+        ['Freezing', 'freezing_level_m_agl',0,'']
+    ];
+    return entries.map(([label,path,n,klass])=>{
+        let unit=path==='pwat_inches'?' in':path==='freezing_level_m_agl'?' m':'';
+        return `<tr class="${klass}"><td>${label}</td><td>${fmt(path,n)}${unit}</td></tr>`;
+    }).join('');
+}
+function spcoaSndCompactExtra(data){
+    const p=data?.parcels||{};
+    const el=(name)=>spcoaSndFormatted(spcoaSndNum(p[name]?.el_m_agl)/1000,1);
+    const eff=data?.effective_inflow||{};
+    const ef=[eff.bottom_m_agl,eff.top_m_agl].every(Number.isFinite)?
+        `${Math.round(eff.bottom_m_agl)}–${Math.round(eff.top_m_agl)} m AGL`:
+        Number.isFinite(eff.bottom_hpa+eff.top_hpa)?
+          `${Math.round(eff.bottom_hpa)}–${Math.round(eff.top_hpa)} hPa`:'—';
+    return `<span>ML EL <b>${el('ml')} km</b></span><span>MU EL <b>${el('mu')} km</b></span>`+
+           `<span style="grid-column:1/-1">Effective inflow: <b>${ef}</b></span>`;
+}
+function spcoaSndMiniPlot(canvas,kind,diag){
+    if(!canvas)return;
+    const cssW=Math.max(95,Math.round(canvas.getBoundingClientRect().width||133));
+    const cssH=Math.max(125,Math.round(canvas.getBoundingClientRect().height||167));
+    const dpr=Math.min(2,window.devicePixelRatio||1);
+    canvas.width=Math.round(cssW*dpr);canvas.height=Math.round(cssH*dpr);
+    const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);
+    const w=cssW,h=cssH,L=30,R=w-8,T=7,B=h-18;
+    ctx.fillStyle='#020305';ctx.fillRect(0,0,w,h);
+    if(!diag){ctx.fillStyle='#8c9ca8';ctx.font='10px Arial';ctx.textAlign='center';ctx.fillText('No diagnostic',w/2,h/2);return;}
+    const line=(pts,color,width=2)=>{
+        if(pts.length<2)return;
+        ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;let started=false;
+        for(const [x,y] of pts){
+            if(!Number.isFinite(x+y)){started=false;continue;}
+            if(!started){ctx.moveTo(x,y);started=true;}else ctx.lineTo(x,y);
+        }
+        ctx.stroke();
+    };
+    let points=[],minX=0,maxX=100,units='%',color='#f45757';
+    const profiles=diag?.profile||{};
+    const z=profiles.height_m_agl||[];
+    const setPts=(xarr,yarr,clipY=3000)=>{
+        points=[];
+        for(let k=0;k<Math.min(xarr.length,yarr.length);k++){
+            const zz=yarr[k],xx=xarr[k];
+            if(Number.isFinite(xx)&&Number.isFinite(zz)&&zz>=0&&zz<=clipY)points.push([xx,zz]);
+        }
+        points.sort((a,b)=>a[1]-b[1]);
+    };
+    if(kind==='rh'){
+        setPts(profiles.relative_humidity_percent||[],z);color='#eb4c4c';maxX=100;
+    }else if(kind==='sr'){
+        const m=diag.storm_motions?.right;
+        if(m && Number.isFinite(m.u_kt+m.v_kt)){
+            const ux=profiles.u_kt||[],vy=profiles.v_kt||[],vals=[];
+            for(let k=0;k<Math.min(ux.length,vy.length);k++){
+                const u=ux[k],v=vy[k];vals.push(Number.isFinite(u)&&Number.isFinite(v)?Math.hypot(u-m.u_kt,v-m.v_kt):NaN);
+            }
+            setPts(vals,z);
+        }
+        maxX=Math.max(30,Math.ceil((Math.max(0,...points.map(p=>p[0]))+5)/10)*10);color='#e94f60';units='kt';
+    }else if(kind==='adv'){
+        color='#ffa1a1';units='°C/h';
+        const adv=diag.inferred_advection_100hpa||[],p=profiles.pressure_hpa||[],height=z;
+        const heightAt=(target)=>{
+            for(let i=0;i<p.length-1;i++){
+                const a=p[i],b=p[i+1];
+                if((a>=target&&target>=b)||(b>=target&&target>=a)){
+                    const f=(Math.log(target)-Math.log(a))/(Math.log(b)-Math.log(a));
+                    return height[i]+f*(height[i+1]-height[i]);
+                }
+            }
+            return NaN;
+        };
+        for(const row of adv){
+            const za=heightAt(row.bottom_hpa),zb=heightAt(row.top_hpa),v=row.c_per_hr;
+            if(Number.isFinite(v)&&Number.isFinite(za)&&Number.isFinite(zb))points.push([v,(za+zb)/2]);
+        }
+        points.sort((a,b)=>a[1]-b[1]);
+        const magnitude=Math.max(1,Math.ceil(Math.max(0,...points.map(p=>Math.abs(p[0])))));
+        minX=-magnitude;maxX=magnitude;
+    }
+    const xx=v=>L+(v-minX)/(maxX-minX)*(R-L);
+    const yy=z=>B-(z/3000)*(B-T);
+    // Reference-style 0–3 km vertical coordinate grid.
+    ctx.strokeStyle='#343b42';ctx.lineWidth=.75;
+    for(const km of [0,1,2,3]){
+        const y=yy(km*1000);ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(R,y);ctx.stroke();
+        if(km<3){ctx.fillStyle='#a5adb9';ctx.font='9px Arial';ctx.textAlign='right';ctx.fillText(`${km}km`,L-3,y+3);}
+    }
+    for(let i=0;i<=2;i++){
+        const x=L+(R-L)*i/2;ctx.beginPath();ctx.moveTo(x,T);ctx.lineTo(x,B);ctx.stroke();
+    }
+    if(kind==='adv'){
+        const zline=xx(0);ctx.strokeStyle='#97a0ad';ctx.beginPath();ctx.moveTo(zline,T);ctx.lineTo(zline,B);ctx.stroke();
+        // Continuous inferred layer segments, red WAA and blue CAA.
+        for(const [v,zval] of points){
+            const px=xx(v),py=yy(zval);if(py<T||py>B)continue;
+            ctx.strokeStyle=v>=0?'#f25b60':'#83b6ff';ctx.lineWidth=2.7;
+            ctx.beginPath();ctx.moveTo(zline,py);ctx.lineTo(px,py);ctx.stroke();
+        }
+    }else line(points.map(p=>[xx(p[0]),yy(p[1])]),color,2.6);
+    ctx.font='9px Arial';ctx.textAlign='left';ctx.fillStyle='#d9e2eb';
+    ctx.fillText(String(minX),L,B+12);
+    ctx.textAlign='right';ctx.fillText(String(maxX),R,B+12);
+    ctx.textAlign='center';ctx.fillStyle='#7e919f';ctx.font='8px Arial';ctx.fillText(units,w/2,h-2);
+    if(points.length<1){ctx.font='10px Arial';ctx.fillStyle='#a6b4c0';ctx.fillText('—',w/2,h/2);}
+}
+
 function spcoaSndRender() {
     const a=SPCOA_SOUNDING.current,b=SPCOA_SOUNDING.previous;
     if(!a)return;
     const p=spcoaSndProfile(a.profile),q=b?spcoaSndProfile(b.profile):null;
-    if(p.length<12) {spcoaSndStatus('Sounding contains insufficient vertical data');return;}
-    const run=currentRun;
-    document.getElementById('ss-title').textContent=`HRRR F00 · ${run?.slice(-2)}Z ${spcoaSndUtc(run)?.slice(0,10)}`;
+    if(p.length<12){spcoaSndStatus('Sounding contains insufficient vertical data');return;}
+    const run=currentRun,diag=SPCOA_SOUNDING.diagnostic,prior=SPCOA_SOUNDING.previousDiagnostic;
+    document.getElementById('ss-title').textContent=`HRRR F000 | Init: ${spcoaSndUtc(run)?.slice(0,16)?.replace('T',' ')} UTC | Valid: ${spcoaSndUtc(run)?.slice(0,16)?.replace('T',' ')} UTC`;
     document.getElementById('ss-location').textContent=
-        `${Math.abs(a.profile.lat).toFixed(3)}°${a.profile.lat>=0?'N':'S'}, ${Math.abs(a.profile.lon).toFixed(3)}°${a.profile.lon>=0?'E':'W'} · native i=${a.profile.i}, j=${a.profile.j} · ${a.km.toFixed(1)} km from click`;
-    const text=SPCOA_SOUNDING.comparing?
-        (b?`Comparing ${b.run.slice(-2)}Z → ${run.slice(-2)}Z at identical native grid point`:
-            `Previous-hour sounding unavailable; displaying ${run.slice(-2)}Z only`):
-        `Current HRRR F00 analysis ${run}`;
-    spcoaSndStatus(text);
-    spcoaSndSkew(document.getElementById('ss-skew'),p,q);
-    spcoaSndHodo(document.getElementById('ss-hodo'),p,q);
-    const cv=SPCOA_SOUNDING.currentValues,pv=SPCOA_SOUNDING.previousValues;
-    const thermos=Object.keys(SPCOA_SOUNDING.labels).map(key=>[
-        SPCOA_SOUNDING.labels[key]+' (J/kg)',cv[key]??NaN,pv[key]??NaN,'J/kg',0]);
-    const s1=spcoaSndStats(p),s2=q?spcoaSndStats(q):{};
-    thermos.push(['LCL est. (m AGL)',s1.lclZ,s2.lclZ,'m',0],
-        ['Sfc T (°C)',p[0]?.t,q?.[0]?.t,'°C',1],['Sfc Td (°C)',p[0]?.td,q?.[0]?.td,'°C',1]);
-    document.getElementById('ss-thermo').innerHTML=spcoaSndTable(thermos,!!b);
-    const kinetic=[['0–1 km shear (kt)',s1.sh01,s2.sh01,'kt',0],
-        ['0–3 km shear (kt)',s1.sh03,s2.sh03,'kt',0],
-        ['0–6 km shear (kt)',s1.sh06,s2.sh06,'kt',0],
-        ['0–1 km RM SRH (m²/s²)',s1.srh01,s2.srh01,'',0],
-        ['0–3 km RM SRH (m²/s²)',s1.srh03,s2.srh03,'',0],
-        ['Bunkers RM U (kt)',s1.bunkers?.rm.u*1.943844,s2.bunkers?.rm?.u*1.943844,'',0],
-        ['Bunkers RM V (kt)',s1.bunkers?.rm.v*1.943844,s2.bunkers?.rm?.v*1.943844,'',0]];
-    document.getElementById('ss-kinematics').innerHTML=spcoaSndTable(kinetic,!!b);
-    const table=document.getElementById('ss-pressure');
-    if(table)table.innerHTML=spcoaSndLevelTable(p);
+        `${Math.abs(a.profile.lat).toFixed(4)}°${a.profile.lat>=0?'N':'S'}, ${Math.abs(a.profile.lon).toFixed(4)}°${a.profile.lon>=0?'E':'W'} · native i=${a.profile.i}, j=${a.profile.j} · ${a.km.toFixed(2)} km from click`;
+    let status=spcoaSndDiagnosticStatus(diag);
+    if(SPCOA_SOUNDING.comparing)status+=(b?' · Previous native F00 profile loaded':' · Previous hour unavailable');
+    if(SPCOA_SOUNDING.diagnosticError)status+=' · '+SPCOA_SOUNDING.diagnosticError;
+    spcoaSndStatus(status);
+    spcoaSndSkew(document.getElementById('ss-skew'),p,q,diag);
+    spcoaSndHodo(document.getElementById('ss-hodo'),p,q,diag);
+    document.getElementById('ss-thermo').innerHTML=spcoaSndThermoTable(diag);
+    const prevTable=document.getElementById('ss-thermo-prev');
+    if(prevTable){
+        prevTable.style.display=prior?'block':'none';
+        prevTable.innerHTML=prior?`<h3>Previous hour (SB / ML / MU)</h3><table class="ss-thermo-table">${spcoaSndThermoTable(prior)}</table>`:'';
+    }
+    document.getElementById('ss-thermo-extra').innerHTML=spcoaSndCompactExtra(diag);
+    document.getElementById('ss-kinematics').innerHTML=spcoaSndCompactKinematics(diag);
+    document.getElementById('ss-environment').innerHTML=spcoaSndCompactEnvironment(diag);
+    const eff=diag?.effective_inflow;
+    document.getElementById('ss-eil').textContent=[eff?.bottom_m_agl,eff?.top_m_agl].every(Number.isFinite)?
+        `EIL: ${Math.round(eff.bottom_m_agl)}–${Math.round(eff.top_m_agl)} m AGL`:
+        Number.isFinite(eff?.bottom_hpa+eff?.top_hpa)?
+        `EIL: ${Math.round(eff.bottom_hpa)}–${Math.round(eff.top_hpa)} hPa`:'EIL: —';
+    for(const [id,kind] of [['ss-mini-rh','rh'],['ss-mini-adv','adv'],['ss-mini-sr','sr']])
+        spcoaSndMiniPlot(document.getElementById(id),kind,diag);
+    const info=document.getElementById('ss-diagnostic-info');
+    if(info)info.textContent=diag?
+        `Method B: pressure-weighted 100-hPa ML; SHARPpy profiles + Peters ECAPE · ${Object.keys(diag.calculation_errors||{}).length} calculation errors · ${diag.storm_motions?.method||'storm motion not available'}`:
+        `No per-point diagnostic sidecar found at ${spcoaSndDiagnosticPath(a.profile.j,a.profile.i)}. Upload a diagnostic JSON for this precise grid point or use “Load diagnostic JSON”.`;
     const note=document.getElementById('ss-archive-note');
     if(note){
         const legacy=a.manifest?.quantization?.specific_humidity_kgkg?.transform!=='log10';
-        note.dataset.legacyHumidity=legacy?'yes':'no';
-        if(legacy && !note.querySelector('.ss-humidity-warning')){
-            note.insertAdjacentHTML('beforeend',
-                '<span class="ss-humidity-warning" style="display:block;color:#ffd291;margin-top:4px">This is an older sounding archive: very dry upper-level specific humidity was rounded to zero by the original compression. Reprocess this hour with the updated sounding backend to extend upper-level dewpoint where valid HRRR moisture exists.</span>');
+        let old=note.querySelector('.ss-humidity-warning');
+        if(legacy&&!old){
+            old=document.createElement('span');old.className='ss-humidity-warning';
+            old.style.cssText='display:block;color:#ffd291;margin-top:4px';
+            old.textContent='Older sounding archive: very dry upper-level humidity may be quantized to zero. Reprocess with the updated archive backend for better high-level dewpoints.';
+            note.appendChild(old);
         }
-        const warning=note.querySelector('.ss-humidity-warning');
-        if(warning)warning.style.display=legacy?'block':'none';
+        if(old)old.style.display=legacy?'block':'none';
     }
 }
+/* V47: PNG export uses the actual plotted canvases and computed HTML tables.
+ * Wide horizontal SB/ML/MU table now matches the on-screen layout.
+ */
+/* V49: Export real Skew-T, hodograph, compact diagnostic strip, and
+ * actual computed mini-profile canvases. No synthesized placeholder values.
+ */
 function spcoaSndExportPng() {
     if(!SPCOA_SOUNDING.current)return;
-    const c=document.createElement('canvas');c.width=1460;c.height=1040;
-    const ctx=c.getContext('2d');ctx.fillStyle='#0b1017';ctx.fillRect(0,0,c.width,c.height);
-    ctx.fillStyle='#e7f1ff';ctx.font='bold 24px Arial';
-    ctx.fillText(document.getElementById('ss-title').textContent,30,40);
-    ctx.fillStyle='#b8cbe0';ctx.font='16px Arial';
-    ctx.fillText(document.getElementById('ss-location').textContent,30,68);
-    for(const [id,x] of [['ss-skew',20],['ss-hodo',740]]) {
+    const c=document.createElement('canvas');c.width=1720;c.height=1110;
+    const ctx=c.getContext('2d');ctx.fillStyle='#020304';ctx.fillRect(0,0,c.width,c.height);
+    ctx.fillStyle='#f0f2f3';ctx.font='bold 21px Arial,sans-serif';ctx.textAlign='left';
+    ctx.fillText(document.getElementById('ss-title')?.textContent||'HRRR F00 Sounding',20,32);
+    ctx.font='13px Arial,sans-serif';ctx.fillStyle='#bdcbd6';
+    ctx.fillText(document.getElementById('ss-location')?.textContent||'',20,52);
+    for(const [id,x,width] of [['ss-skew',12,900],['ss-hodo',918,790]]){
         const source=document.getElementById(id);
-        ctx.drawImage(source,x,88,700,610);
+        if(source)ctx.drawImage(source,x,62,width,765);
     }
-    const tables=[document.getElementById('ss-thermo'),document.getElementById('ss-kinematics')];
-    tables.forEach((table,i)=>{
-        const rows=[...table.querySelectorAll('tr')];let y=730;
-        ctx.font='bold 17px Arial';ctx.fillStyle='#a7d9fa';
-        ctx.fillText(i?'Kinematics':'Thermodynamics',i?745:30,y);y+=26;
-        for(const row of rows) {
-            const cells=[...row.children].map(e=>e.textContent.trim());
-            ctx.font='14px monospace';ctx.fillStyle='#e5edf8';
-            ctx.fillText(cells[0]||'',i?745:30,y);
-            ctx.textAlign='right';ctx.fillText(cells.slice(1).join('  |  '),i?1430:718,y);
-            ctx.textAlign='left';y+=22;if(y>1010)break;
+    const layout=[
+      ['ss-thermo','THERMODYNAMICS · ECAPE / LCL–LFC RH',13,835,550],
+      ['ss-kinematics','KINEMATICS',563,835,215],
+      ['ss-environment','GENERAL / SEVERE',778,835,210],
+      ['ss-mini-rh','RH (%)',988,835,240],
+      ['ss-mini-adv','WAA / CAA',1228,835,240],
+      ['ss-mini-sr','SR WIND (kt)',1468,835,240]
+    ];
+    for(const [id,title,x,y,width] of layout){
+        ctx.fillStyle='#050607';ctx.fillRect(x,y,width,246);
+        ctx.strokeStyle='#666';ctx.lineWidth=1;ctx.strokeRect(x,y,width,246);
+        ctx.font='bold 14px Arial,sans-serif';ctx.fillStyle='#dfe7eb';ctx.textAlign='left';
+        ctx.fillText(title,x+7,y+20);
+        const el=document.getElementById(id);if(!el)continue;
+        if(el instanceof HTMLCanvasElement){ctx.drawImage(el,x+2,y+27,width-4,201);continue;}
+        const rows=[...el.querySelectorAll('tr')];
+        const lineH=id==='ss-thermo'?29:19;
+        const totalColumns=id==='ss-thermo'?9:id==='ss-kinematics'?4:2;
+        const usable=width-18;
+        for(let ri=0;ri<rows.length;ri++){
+            const cells=[...rows[ri].children];
+            const yy=y+48+ri*lineH;if(yy>y+227)break;
+            let column=0;
+            for(const cell of cells){
+                const span=Math.min(totalColumns-column,Math.max(1,cell.colSpan||1));
+                if(span<=0)break;
+                const label=(cell.childNodes[0]?.textContent||cell.textContent).trim();
+                const left=x+9+column/totalColumns*usable;
+                const spanWidth=span/totalColumns*usable;
+                ctx.textAlign=column===0?'left':'center';
+                const isHeader=ri===0;
+                ctx.font=(isHeader?'bold 10px':'11px')+' Arial,sans-serif';
+                ctx.fillStyle=(id==='ss-thermo'&&column===5)?'#88e8a2':
+                    (id==='ss-thermo'&&column===8)?'#8edcf4':isHeader?'#acbac6':'#e9eff2';
+                const tx=column===0?left+2:left+spanWidth/2;
+                ctx.fillText(label,tx,yy,Math.max(17,spanWidth-5));
+                column+=span;
+            }
         }
-    });
+        if(id==='ss-thermo'){
+            const spans=[...document.querySelectorAll('#ss-thermo-extra span')];
+            ctx.fillStyle='#9db5c4';ctx.textAlign='left';ctx.font='11px Arial,sans-serif';
+            ctx.fillText(spans.slice(0,2).map(e=>e.textContent.trim()).join('     '),x+8,y+184,width-16);
+            ctx.fillText(spans[2]?.textContent.trim()||'',x+8,y+205,width-16);
+        }
+    }
+    const diag=SPCOA_SOUNDING.diagnostic;
+    ctx.font='11px Arial';ctx.fillStyle='#b7c2cf';ctx.textAlign='left';
+    ctx.fillText(diag?'Native HRRR F00 · SHARPpy / Method B / Peters ECAPE · WAA/CAA inferred, not gridded':
+        'Native HRRR F00 · matching diagnostic JSON unavailable',16,1100);
     c.toBlob(blob=>{
         if(!blob)return;
         const url=URL.createObjectURL(blob),link=document.createElement('a');
