@@ -19527,10 +19527,13 @@ function spcoaSndHodo(canvas,current,previous,diagnostic) {
     labelledVector(motion?.left,'LM','#a7baff',9,-11);
     labelledVector(mean,'MW','#e2bf6b',9,13);
 
-    // 0.5 km matters meteorologically, and is the end of the MAGENTA part.
-    // Give it an explicit 0.5 label, avoiding two different '5' markers.
-    const heights=[{z:0,label:'0'}, {z:500,label:'0.5'}];
-    for(let km=1;km<=9;km++)heights.push({z:km*1000,label:String(km)});
+    // V59: only five operationally useful height labels. Their sampled wind
+    // positions are unchanged; interpolation and the colored traces are intact.
+    // Keeping just these levels avoids the 0/2/4/5/7/8 clutter seen in V58.
+    const heights=[
+        {z:500,label:'0.5'}, {z:1000,label:'1'},
+        {z:3000,label:'3'}, {z:6000,label:'6'}, {z:9000,label:'9'}
+    ];
     const markers=[];
     for(const marker of heights){
         if(marker.z>current.at(-1).z)continue;
@@ -19548,7 +19551,9 @@ function spcoaSndHodo(canvas,current,previous,diagnostic) {
         const angles=[theta,theta+.45,theta-.45,theta+1.0,theta-1.0,
             theta+1.57,theta-1.57,theta+Math.PI,0,Math.PI/2,Math.PI,3*Math.PI/2];
         let choice=null, bestScore=Infinity;
-        for(const distance of [0,16,25,35,46,59,75,94]){
+        // Try the exact point FIRST. Only displace an overlapping disc,
+        // preserving a tiny white anchor and leader at the real wind position.
+        for(const distance of [0,12,19,27,36,49]){
             for(const angle of angles){
                 const px=marker.px+Math.cos(angle)*distance;
                 const py=marker.py+Math.sin(angle)*distance;
@@ -19600,8 +19605,8 @@ function spcoaSndHodo(canvas,current,previous,diagnostic) {
         7,48,'#abb0bb','12px Arial,sans-serif','left');
     drawText(`MW (0–6 km): ${directionSpeed(mean)}`,
         7,64,'#abb0bb','12px Arial,sans-serif','left');
-    drawText(shaded?'Effective inflow shaded · Height markers 0–9 km AGL · kt':
-        'Height markers 0–9 km AGL · Wind speed (kt)',
+    drawText(shaded?'Effective inflow shaded · 0.5, 1, 3, 6, 9 km AGL · kt':
+        'Height markers: 0.5, 1, 3, 6, 9 km AGL · Wind speed (kt)',
         9,h-11,'#959da5','10px Arial,sans-serif','left');
     ctx.restore();
 }
