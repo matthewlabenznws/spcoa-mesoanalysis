@@ -19370,182 +19370,239 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     }
     // Plot is intentionally uncluttered; diagnostic-loading status is already
     // displayed above the canvas in the existing sounding header.
-    ctx.textAlign='center';ctx.font='bold 10px '+fontMono;
-    ctx.fillStyle='#cfd5db';ctx.fillText('WIND · 50 hPa',(stripL+stripR)/2,T-10);
+    // V58: omit the 'WIND · 50 hPa' heading; the plotted white wind barbs
+    // and gray shaft already identify this column visually.
 }
 /* SPCOA V57: WeatherFront-proportioned hodograph, with SPCOA layer colors.
  * All velocities derive from the native HRRR profile; effective inflow,
  * Bunkers storm motions and mean wind come from matching SHARPpy diagnostics.
  */
+/* SPCOA V58 - full-panel WeatherFront-style hodograph with the SAME colors
+ * as the SPC map hodograph overlays. Preserve original u/v, storm motions,
+ * effective inflow diagnostics and 0-9 km layer boundaries. */
 function spcoaSndHodo(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
-    // Near-black canvas and large, centered polar grid, similar to the
-    // WeatherFront reference. Nothing in this drawing changes meteorology.
     ctx.fillStyle='#020304';ctx.fillRect(0,0,w,h);
+    if(!current?.length)return;
+    const kt=1.943844;
     const motion=diagnostic?.storm_motions;
     const mean=diagnostic?.mean_winds?.['0_6000m'];
-    const valid=v=>v && Number.isFinite(v.u_kt)&&Number.isFinite(v.v_kt);
-    const toMps=v=>({u:v.u_kt/1.943844,v:v.v_kt/1.943844});
-    const kt=1.943844;
-    let maxKt=0;
-    for(const prof of [current,previous]) {
-        if(!prof)continue;
-        for(const a of prof)if(a.z<=9000 && Number.isFinite(a.u) && Number.isFinite(a.v))
-            maxKt=Math.max(maxKt,Math.hypot(a.u,a.v)*kt);
-    }
-    for(const v of [motion?.right,motion?.left,mean])if(valid(v))
-        maxKt=Math.max(maxKt,Math.hypot(v.u_kt,v.v_kt));
-    // WeatherFront-like 10,30,50,70,90-kt solid rings; preserve data beyond
-    // 90 kt by expanding the scale instead of clipping stronger winds.
-    const limit=Math.max(90,Math.ceil((maxKt+5)/10)*10);
-    const cx=w*.50,cy=h*.505;
-    const radius=Math.min(w*.488,h*.482);
-    const scale=radius/limit;
-    const xy=a=>[cx+a.u*kt*scale,cy-a.v*kt*scale];
-    const xyKt=a=>[cx+a.u_kt*scale,cy-a.v_kt*scale];
-    const drawText=(txt,x,y,fill,font='10px Arial,sans-serif',align='center')=>{
-        ctx.font=font;ctx.textAlign=align;ctx.textBaseline='middle';
-        ctx.lineJoin='round';ctx.lineWidth=2.4;ctx.strokeStyle='#020304';
-        ctx.strokeText(txt,x,y);ctx.fillStyle=fill;ctx.fillText(txt,x,y);
-    };
-    ctx.save();
-    for(let r=10;r<=limit;r+=10){
-        const major=(r%20===10),rad=r*scale;
-        ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);
-        ctx.strokeStyle=major?'#696b70':'#373a40';
-        ctx.lineWidth=major?1.05:.7;
-        ctx.setLineDash(major?[]:[2.8,3.5]);ctx.stroke();ctx.setLineDash([]);
-    }
-    ctx.strokeStyle='#6c6f76';ctx.lineWidth=1.05;
-    ctx.beginPath();ctx.moveTo(cx-radius,cy);ctx.lineTo(cx+radius,cy);
-    ctx.moveTo(cx,cy-radius);ctx.lineTo(cx,cy+radius);ctx.stroke();
-    // Wind-speed axes labelled in knots on both sides, plus top/bottom.
-    // Tuck labels slightly inside their rings so they remain fully visible.
-    for(let r=10;r<=limit;r+=20){
-        const d=r*scale,shade='#777d86';
-        drawText(String(r),cx+d-3,cy-7,shade,'9px Arial,sans-serif');
-        drawText(String(r),cx-d+3,cy-7,shade,'9px Arial,sans-serif');
-        if(r>=30){
-            drawText(String(r),cx+9,cy-d+5,shade,'9px Arial,sans-serif','left');
-            drawText(String(r),cx+9,cy+d-5,shade,'9px Arial,sans-serif','left');
-        }
-    }
-    function at(z){
-        if(!current?.length)return null;
-        return spcoaSndWindAt(current,z);
-    }
-    function series(profile,zStart,zEnd,step=80){
-        if(!profile?.length)return [];
-        const top=Math.min(zEnd,profile.at(-1).z);
-        if(top<zStart)return [];
-        const result=[];
-        for(let z=zStart;z<top;z+=step){
-            const v=spcoaSndWindAt(profile,z);
-            if(v && Number.isFinite(v.u)&&Number.isFinite(v.v))result.push({z,u:v.u,v:v.v});
-        }
-        const edge=spcoaSndWindAt(profile,top);
-        if(edge && Number.isFinite(edge.u)&&Number.isFinite(edge.v))
-            result.push({z:top,u:edge.u,v:edge.v});
-        return result;
-    }
-    // Effective storm-relative helicity polygon: storm motion -> effective
-    // inflow-base wind -> winds within the effective inflow layer -> storm motion.
-    // This is only displayed when matching SHARPpy effective layer & RM exist.
-    const eil=diagnostic?.effective_inflow;
-    const z0=eil?.bottom_m_agl,z1=eil?.top_m_agl;
-    let shaded=false;
-    if(valid(motion?.right) && Number.isFinite(z0)&&Number.isFinite(z1) &&
-       z1>z0 && z1>=0 && z0<=9000 && current?.length){
-        const layer=series(current,Math.max(0,z0),Math.min(9000,z1),70);
-        if(layer.length>=2){
-            const [mx,my]=xyKt(motion.right);
-            ctx.beginPath();ctx.moveTo(mx,my);
-            for(const wind of layer){const [px,py]=xy(wind);ctx.lineTo(px,py);}
-            ctx.closePath();
-            ctx.fillStyle='rgba(90,120,143,.29)';ctx.fill();
-            ctx.strokeStyle='rgba(125,154,178,.48)';ctx.lineWidth=.85;ctx.stroke();
-            shaded=true;
-        }
-    }
-    if(previous){
-        const prevSeries=series(previous,0,9000,100);
-        spcoaSndTrace(ctx,prevSeries.map(xy),'#858a90',1.7,[5,5]);
-    }
-    // Storm-motion vectors are drawn UNDER the hodograph. Keep the familiar
-    // orange RM / periwinkle LM identification from the previous SPCOA plot.
-    function drawMotion(v,color,dashed=false){
-        if(!valid(v))return;
-        const [px,py]=xyKt(v);
-        ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(px,py);
-        ctx.setLineDash(dashed?[4,4]:[]);ctx.strokeStyle=color;
-        ctx.lineWidth=1.45;ctx.stroke();ctx.setLineDash([]);
-    }
-    drawMotion(motion?.right,'#a6acb4');
-    drawMotion(motion?.left,'#787e8c',true);
-    drawMotion(mean,'#a18d60',true);
-    if(current?.length){
-        // Keep ALL original layer colors and boundaries; smooth rounded joins
-        // make their shapes read like the WeatherFront reference.
-        const layers=[
-            [0,500,'#c232b3'],
-            [500,3000,'#e34248'],
-            [3000,6000,'#3acf61'],
-            [6000,9000,'#ffe07b']
-        ];
-        ctx.lineCap='round';ctx.lineJoin='round';
-        for(const [lower,upper,color] of layers){
-            const pts=series(current,lower,upper,75).map(xy);
-            spcoaSndTrace(ctx,pts,color,4.3);
-        }
-        // Distinct numbered 0–9 km markers; do not generate synthetic
-        // winds above the actual available native profile.
-        for(let km=0;km<=9;km++){
-            if(km*1000>current.at(-1).z)break;
-            const wind=at(km*1000);
-            if(!wind || !Number.isFinite(wind.u)||!Number.isFinite(wind.v))continue;
-            const [px,py]=xy(wind);
-            if(px<6||px>w-6||py<6||py>h-6)continue;
-            ctx.beginPath();ctx.arc(px,py,6.1,0,Math.PI*2);
-            ctx.fillStyle='#f4f4f3';ctx.fill();ctx.lineWidth=1.4;
-            ctx.strokeStyle='#07090a';ctx.stroke();
-            drawText(String(km),px,py+.45,'#121317','bold 9.4px Arial,sans-serif');
-        }
-    }
-    function labelledVector(v,label,color,dx,dy){
-        if(!valid(v))return;
-        const [px,py]=xyKt(v);
-        ctx.beginPath();ctx.arc(px,py,5.1,0,Math.PI*2);
-        ctx.fillStyle=color;ctx.fill();ctx.lineWidth=1.2;
-        ctx.strokeStyle='#050608';ctx.stroke();
-        const tx=Math.max(20,Math.min(w-20,px+dx));
-        const ty=Math.max(14,Math.min(h-14,py+dy));
-        drawText(label,tx,ty,'#e7e9eb','bold 11px Arial,sans-serif',dx<0?'right':'left');
-    }
-    labelledVector(motion?.right,'RM','#ffaa70',8,-10);
-    labelledVector(motion?.left,'LM','#a7baff',8,-10);
-    labelledVector(mean,'MW','#e2bf6b',7,12);
+    const valid=v=>v && Number.isFinite(v.u_kt) && Number.isFinite(v.v_kt);
     const directionSpeed=v=>{
         if(!valid(v))return '—';
         const speed=Math.round(Math.hypot(v.u_kt,v.v_kt));
         const deg=(Math.atan2(v.u_kt,v.v_kt)*180/Math.PI+360)%360;
-        const compass=['N','NNE','NE','ENE','E','ESE','SE','SSE',
+        const names=['N','NNE','NE','ENE','E','ESE','SE','SSE',
             'S','SSW','SW','WSW','W','WNW','NW','NNW'];
-        const heading=compass[Math.round(deg/22.5)%16];
-        return `${heading} @ ${speed} kt`;
+        return names[Math.round(deg/22.5)%16]+' @ '+speed+' kt';
     };
-    // WeatherFront-style storm motion summary in the upper-left. Draw after
-    // the rings, using a thin near-black outline for legibility.
+    let maxKt=0;
+    for(const prof of [current,previous]) {
+        if(!prof)continue;
+        for(const a of prof){
+            if(a.z<=9000 && Number.isFinite(a.u) && Number.isFinite(a.v))
+                maxKt=Math.max(maxKt,Math.hypot(a.u,a.v)*kt);
+        }
+    }
+    for(const v of [motion?.right,motion?.left,mean])
+        if(valid(v))maxKt=Math.max(maxKt,Math.hypot(v.u_kt,v.v_kt));
+    const limit=Math.max(90,Math.ceil((maxKt+5)/10)*10);
+    const cx=w*.50,cy=h*.505;
+    // Purposefully extend the outer rings beyond the short canvas edges.
+    // The full-width reference spans nearly the whole right-hand panel,
+    // rather than floating as a small circle in a rectangular black field.
+    // Equal x/y scale is retained: wind direction and speed are not distorted.
+    const radius=Math.min(w*.507,h*.67);
+    const scale=radius/limit;
+    const xy=a=>[cx+a.u*kt*scale,cy-a.v*kt*scale];
+    const xyKt=a=>[cx+a.u_kt*scale,cy-a.v_kt*scale];
+    const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+    const drawText=(txt,x,y,fill,font='11px Arial,sans-serif',align='center')=>{
+        ctx.font=font;ctx.textAlign=align;ctx.textBaseline='middle';
+        ctx.lineJoin='round';ctx.lineWidth=2.6;ctx.strokeStyle='#020304';
+        ctx.strokeText(txt,x,y);ctx.fillStyle=fill;ctx.fillText(txt,x,y);
+    };
+    ctx.save();
+    // Concentric gridlines and bilateral u/v reference axes.
+    for(let r=10;r<=limit;r+=10){
+        const major=r%20===10,rad=r*scale;
+        ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);
+        ctx.strokeStyle=major?'#71747a':'#363b42';
+        ctx.lineWidth=major?1.15:.75;
+        ctx.setLineDash(major?[]:[3.5,4]);ctx.stroke();ctx.setLineDash([]);
+    }
+    ctx.strokeStyle='#7a7e84';ctx.lineWidth=1.08;
+    ctx.beginPath();ctx.moveTo(0,cy);ctx.lineTo(w,cy);
+    ctx.moveTo(cx,0);ctx.lineTo(cx,h);ctx.stroke();
+    // Wind rings are still in true kt units; visible axes label both sides.
+    for(let r=10;r<=limit;r+=20){
+        const d=r*scale;
+        const shade='#858c95';
+        if(d<=w/2+6){
+            drawText(String(r),clamp(cx+d-3,12,w-12),cy-9,shade,'10px Arial,sans-serif');
+            drawText(String(r),clamp(cx-d+3,12,w-12),cy-9,shade,'10px Arial,sans-serif');
+        }
+        if(r>=30&&d<h/2+9){
+            drawText(String(r),cx+11,clamp(cy-d+6,10,h-10),shade,'10px Arial,sans-serif','left');
+            drawText(String(r),cx+11,clamp(cy+d-6,10,h-10),shade,'10px Arial,sans-serif','left');
+        }
+    }
+    function series(profile,zStart,zEnd,step=60){
+        if(!profile?.length)return [];
+        const upper=Math.min(zEnd,profile.at(-1).z);
+        if(upper<zStart)return [];
+        const result=[];
+        for(let z=zStart;z<upper;z+=step){
+            const wind=spcoaSndWindAt(profile,z);
+            if(wind&&Number.isFinite(wind.u)&&Number.isFinite(wind.v))
+                result.push({z,u:wind.u,v:wind.v});
+        }
+        const edge=spcoaSndWindAt(profile,upper);
+        if(edge&&Number.isFinite(edge.u)&&Number.isFinite(edge.v))
+            result.push({z:upper,u:edge.u,v:edge.v});
+        return result;
+    }
+    // Effective storm-relative helicity polygon: right-moving storm motion,
+    // actual effective-layer wind curve, then back to the storm motion point.
+    const eil=diagnostic?.effective_inflow;
+    const z0=eil?.bottom_m_agl,z1=eil?.top_m_agl;
+    let shaded=false;
+    if(valid(motion?.right)&&Number.isFinite(z0)&&Number.isFinite(z1)&&
+       z1>z0&&z1>=0&&z0<=9000){
+        const layer=series(current,Math.max(0,z0),Math.min(9000,z1),55);
+        if(layer.length>=2){
+            const [mx,my]=xyKt(motion.right);
+            ctx.beginPath();ctx.moveTo(mx,my);
+            for(const wind of layer){const [px,py]=xy(wind);ctx.lineTo(px,py);}
+            ctx.closePath();ctx.fillStyle='rgba(88,120,151,.30)';ctx.fill();
+            ctx.strokeStyle='rgba(132,162,187,.55)';ctx.lineWidth=1;ctx.stroke();
+            shaded=true;
+        }
+    }
+    if(previous){
+        spcoaSndTrace(ctx,series(previous,0,9000,80).map(xy),'#959a9f',1.8,[5,5]);
+    }
+    // Draw storm-motion vectors under the colored traces and marker discs.
+    function drawMotion(v,color,dashed=false){
+        if(!valid(v))return;
+        const [px,py]=xyKt(v);
+        ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(px,py);
+        ctx.setLineDash(dashed?[5,4]:[]);ctx.strokeStyle=color;
+        ctx.lineWidth=1.5;ctx.stroke();ctx.setLineDash([]);
+    }
+    drawMotion(motion?.right,'#a9b2be');
+    drawMotion(motion?.left,'#7e8696',true);
+    drawMotion(mean,'#baa36b',true);
+
+    // This is the exact palette already used by the SPCOA map overlay.
+    // Do not substitute the older V57, less-matched sounding colors.
+    const bands=typeof HODO_BANDS!=='undefined' ? HODO_BANDS : [
+        {min:0,max:500,color:'#e17bda'},
+        {min:500,max:3000,color:'#e52b2b'},
+        {min:3000,max:6000,color:'#1ba93f'},
+        {min:6000,max:9000,color:'#e3bf16'}
+    ];
+    ctx.lineJoin='round';ctx.lineCap='round';
+    for(const band of bands){
+        const pts=series(current,band.min,band.max,55).map(xy);
+        // Dark edge separates thick colored trace from white axes and rings.
+        spcoaSndTrace(ctx,pts,'rgba(0,0,0,.73)',7.8);
+        spcoaSndTrace(ctx,pts,band.color,5.8);
+    }
+
+    // Storm-vector labels (RM, LM, MW), retained from the original plot.
+    // Reserve their displayed boxes when placing crowded height markers.
+    const reserved=[];
+    function labelledVector(v,label,color,dx,dy){
+        if(!valid(v))return;
+        const [px,py]=xyKt(v);
+        ctx.beginPath();ctx.arc(px,py,5.4,0,Math.PI*2);
+        ctx.fillStyle=color;ctx.fill();ctx.lineWidth=1.3;
+        ctx.strokeStyle='#050608';ctx.stroke();
+        const tx=clamp(px+dx,20,w-20),ty=clamp(py+dy,14,h-14);
+        drawText(label,tx,ty,'#f2f2f2','bold 12px Arial,sans-serif',dx<0?'right':'left');
+        reserved.push({x:tx+(dx<0?-8:8),y:ty,r:14});
+    }
+    labelledVector(motion?.right,'RM','#ffaa70',8,-11);
+    labelledVector(motion?.left,'LM','#a7baff',9,-11);
+    labelledVector(mean,'MW','#e2bf6b',9,13);
+
+    // 0.5 km matters meteorologically, and is the end of the MAGENTA part.
+    // Give it an explicit 0.5 label, avoiding two different '5' markers.
+    const heights=[{z:0,label:'0'}, {z:500,label:'0.5'}];
+    for(let km=1;km<=9;km++)heights.push({z:km*1000,label:String(km)});
+    const markers=[];
+    for(const marker of heights){
+        if(marker.z>current.at(-1).z)continue;
+        const wind=spcoaSndWindAt(current,marker.z);
+        if(!wind||!Number.isFinite(wind.u)||!Number.isFinite(wind.v))continue;
+        const [px,py]=xy(wind);
+        if(px<0||px>w||py<0||py>h)continue;
+        markers.push({...marker,px,py,r:marker.label==='0.5'?11:8.9});
+    }
+    // Adaptive placement: nearby labels move apart without moving their
+    // actual wind sample. Short leaders connect displaced discs to the curve.
+    const placed=[];
+    for(const marker of markers){
+        const theta=Math.atan2(marker.py-cy,marker.px-cx);
+        const angles=[theta,theta+.45,theta-.45,theta+1.0,theta-1.0,
+            theta+1.57,theta-1.57,theta+Math.PI,0,Math.PI/2,Math.PI,3*Math.PI/2];
+        let choice=null, bestScore=Infinity;
+        for(const distance of [0,16,25,35,46,59,75,94]){
+            for(const angle of angles){
+                const px=marker.px+Math.cos(angle)*distance;
+                const py=marker.py+Math.sin(angle)*distance;
+                const r=marker.r;
+                if(px-r<6||px+r>w-6||py-r<76||py+r>h-25)continue;
+                const obstacle=[...placed,...reserved].reduce((penalty,other)=>{
+                    const delta=Math.hypot(px-other.x,py-other.y);
+                    const minGap=r+other.r+3;
+                    return penalty+Math.max(0,minGap-delta)**2;
+                },0);
+                const score=distance+obstacle*40;
+                if(score<bestScore){bestScore=score;choice={x:px,y:py};}
+                if(obstacle===0&&distance===0)break;
+            }
+            if(choice&&bestScore<=distance+0.01)break;
+        }
+        if(!choice)choice={x:clamp(marker.px,14,w-14),
+                            y:clamp(marker.py,88,h-36)};
+        placed.push({...marker,...choice});
+    }
+    for(const marker of placed){
+        const length=Math.hypot(marker.x-marker.px,marker.y-marker.py);
+        // Mark the authentic wind position whenever the number is offset.
+        if(length>10){
+            ctx.beginPath();ctx.arc(marker.px,marker.py,2.8,0,Math.PI*2);
+            ctx.fillStyle='#ffffff';ctx.fill();
+            ctx.strokeStyle='rgba(235,240,246,.65)';ctx.lineWidth=.85;
+            ctx.beginPath();ctx.moveTo(marker.px,marker.py);
+            const fraction=Math.max(0,1-marker.r/length);
+            ctx.lineTo(marker.px+(marker.x-marker.px)*fraction,
+                       marker.py+(marker.y-marker.py)*fraction);
+            ctx.stroke();
+        }
+        ctx.beginPath();ctx.arc(marker.x,marker.y,marker.r,0,2*Math.PI);
+        ctx.fillStyle='#f5f5f4';ctx.fill();
+        ctx.strokeStyle='#0b0d11';ctx.lineWidth=1.6;ctx.stroke();
+        ctx.font=marker.label==='0.5'?'bold 9px Arial,sans-serif':'bold 11px Arial,sans-serif';
+        ctx.fillStyle='#101114';ctx.textAlign='center';ctx.textBaseline='middle';
+        ctx.fillText(marker.label,marker.x,marker.y+.45);
+    }
+
+    // WeatherFront-style text INSIDE the upper-left canvas, not as a
+    // separate chart heading; maintain sufficient contrast over rings.
     drawText(`SM: RIGHT MOVING | ${directionSpeed(motion?.right)}`,
-        7,14,'#bec1c6','bold 13px Arial,sans-serif','left');
+        7,14,'#cdd1d6','bold 14px Arial,sans-serif','left');
     drawText(`RM: ${directionSpeed(motion?.right)}`,
-        7,31,'#9198a4','11px Arial,sans-serif','left');
+        7,32,'#abb0bb','12px Arial,sans-serif','left');
     drawText(`LM: ${directionSpeed(motion?.left)}`,
-        7,46,'#9198a4','11px Arial,sans-serif','left');
+        7,48,'#abb0bb','12px Arial,sans-serif','left');
     drawText(`MW (0–6 km): ${directionSpeed(mean)}`,
-        7,61,'#9198a4','11px Arial,sans-serif','left');
-    drawText(shaded?'Effective inflow shaded · Heights AGL (km) · kt':
-        'Height markers AGL (km) · Wind speed (kt)',
-        9,h-10,'#8b9199','10px Arial,sans-serif','left');
+        7,64,'#abb0bb','12px Arial,sans-serif','left');
+    drawText(shaded?'Effective inflow shaded · Height markers 0–9 km AGL · kt':
+        'Height markers 0–9 km AGL · Wind speed (kt)',
+        9,h-11,'#959da5','10px Arial,sans-serif','left');
     ctx.restore();
 }
 function spcoaSndInjectStyles() {
