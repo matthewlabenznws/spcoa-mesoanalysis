@@ -1,9 +1,20 @@
-# Copy to repository ROOT as Dockerfile.sounding-api (remove .txt suffix).
+# SPCOA V50 sounding diagnostics API
+# Copy this ENTIRE file to the repository root as: Dockerfile.sounding-api
+# No .txt extension in GitHub.
 FROM public.ecr.aws/lambda/python:3.11
 
-# SHARPpy / scientific packages may need a C/C++ compiler for wheel builds.
+# Build tools for any dependency requiring compilation.
 RUN yum install -y gcc gcc-c++ make && yum clean all
+
 COPY spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_sounding_api.py ${LAMBDA_TASK_ROOT}/
-RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir numpy metpy sharppy ecape boto3
+
+# Amazon Linux 2 (Lambda Python 3.11) cannot use newer NumPy wheels built
+# against newer glibc. NumPy 2.2.6 has a CPython 3.11 manylinux2014 wheel.
+# Keep NumPy pinned in the SAME resolver invocation so other dependencies
+# cannot replace it with a newer source-only release.
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir --only-binary=numpy \
+       "numpy==2.2.6" "scipy==1.15.3" metpy "SHARPpy==1.4.0a5" ecape boto3 \
+    && python -c "import numpy, scipy, metpy, sharppy, ecape, boto3; print('SPCOA dependencies OK; NumPy', numpy.__version__, 'SciPy', scipy.__version__)"
+
 CMD ["spcoa_sounding_api.lambda_handler"]
