@@ -19178,19 +19178,18 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         spcoaSndTrace(ctx,trace(current,'td'),'#169915',3.45);
         spcoaSndTrace(ctx,trace(current,'t'),'#ff3038',3.65);
     }
-    // V53: compact, CENTERED WeatherFront-style LCL/LFC/EL guides.
-    // Each horizontal tick stays at its exact SHARPpy parcel pressure. Only
-    // annotations move; parcel levels, shading and thermodynamics do not.
+    // V54: short pressure-level guides placed just RIGHT of the environmental
+    // temperature/dewpoint profiles, not in the middle of the profile traces.
+    // Values and vertical positions come exclusively from SHARPpy parcels.
     if(parcel){
         const pCape=Number(parcel.cape_jkg);
-        const hasPositiveCape=Number.isFinite(pCape) && pCape>0;
+        const hasPositiveCape=Number.isFinite(pCape)&&pCape>0;
         const levels=[
             {key:'lcl_hpa',label:'LCL',color:'#39b52f',enabled:true,below:true},
             {key:'lfc_hpa',label:'LFC',color:'#e3d137',enabled:hasPositiveCape,below:false},
             {key:'el_hpa',label:'EL',color:'#91a5b5',enabled:hasPositiveCape,below:false}
         ];
-        const midX=(L+R)/2;
-        const markerWidth=clamp((R-L)*0.095,52,68); // short: 52–68 px
+        const markerWidth=clamp((R-L)*0.041,22,29); // much shorter: 22–29 px
         for(const level of levels){
             if(!level.enabled)continue;
             const raw=parcel[level.key];
@@ -19198,47 +19197,62 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
             if(!(Number.isFinite(pressure)&&pressure>=top&&pressure<=bottom))continue;
             const py=y(pressure);
             if(!(py>=T+3&&py<=B-3))continue;
+            // Use interpolated native HRRR temperature at this pressure to keep
+            // the marker to the right of the actual drawn sounding profile,
+            // independent of the Skew-T tilt and selected parcel.
+            const env=spcoaSndAtPressure(current||[],pressure);
+            const envX=env&&Number.isFinite(env.t)?x(env.t,pressure):NaN;
+            const centerX=clamp(Number.isFinite(envX)?envX+62:L+(R-L)*0.76,
+                                L+(R-L)*0.51,R-markerWidth/2-12);
             ctx.save();
             ctx.strokeStyle=level.color;
             ctx.fillStyle=level.color;
             ctx.lineWidth=1.0;
             ctx.beginPath();
-            ctx.moveTo(midX-markerWidth/2,py);
-            ctx.lineTo(midX+markerWidth/2,py);
+            ctx.moveTo(centerX-markerWidth/2,py);
+            ctx.lineTo(centerX+markerWidth/2,py);
             ctx.stroke();
             ctx.font='bold 11px Arial,sans-serif';
             ctx.textAlign='center';
-            // LCL below its green line, LFC above its yellow line,
-            // and EL above its blue-gray line, all at the same central x.
+            // Keep the label orientation WeatherFront-style: LCL BELOW its
+            // guide; LFC/EL ABOVE; all positioned right of profile traces.
             const labelY=level.below?py+14:py-6;
             ctx.lineWidth=2.5;
             ctx.strokeStyle='#080b0e';
-            ctx.strokeText(level.label,midX,labelY);
-            ctx.fillText(level.label,midX,labelY);
+            ctx.strokeText(level.label,centerX,labelY);
+            ctx.fillText(level.label,centerX,labelY);
             ctx.restore();
         }
     }
     ctx.restore();
 
-    // WeatherFront-style effective inflow marker on the *left pressure axis*.
-    // EIL is parcel-independent, sourced from SHARPpy diagnostics, not guessed.
+    // V54: subdued WeatherFront-style effective inflow bracket INSIDE the
+    // Skew-T, left of the thermodynamic traces (not on the pressure axis).
+    // The SHARPpy diagnostic supplies the true pressure bounds.
     const eTop=Number(diagnostic?.effective_inflow?.top_hpa);
     const eBottom=Number(diagnostic?.effective_inflow?.bottom_hpa);
-    if(Number.isFinite(eTop) && Number.isFinite(eBottom) && eBottom>eTop &&
-       eBottom>=top && eTop<=bottom){
+    if(Number.isFinite(eTop)&&Number.isFinite(eBottom)&&eBottom>eTop &&
+       eBottom>=top&&eTop<=bottom){
         const yt=clamp(y(Math.max(top,eTop)),T,B);
         const yb=clamp(y(Math.min(bottom,eBottom)),T,B);
         if(yb-yt>3){
-            const axisX=L-34;
-            ctx.fillStyle='#a549ba';ctx.fillRect(axisX,yt,3,yb-yt);
-            ctx.strokeStyle='#b87ecb';ctx.lineWidth=1.2;
-            ctx.beginPath();ctx.moveTo(axisX-3,yt);ctx.lineTo(axisX+9,yt);
-            ctx.moveTo(axisX-3,yb);ctx.lineTo(axisX+9,yb);ctx.stroke();
-            if(yb-yt>30){
-                ctx.save();ctx.translate(axisX-5,(yt+yb)/2);ctx.rotate(-Math.PI/2);
-                ctx.font='bold 9px '+fontMono;ctx.textAlign='center';ctx.fillStyle='#c79ad4';
-                ctx.fillText('EIL',0,0);ctx.restore();
+            // The ~20% position reproduces the inset EIL marker placement
+            // seen on WeatherFront without obstructing the T/Td curves.
+            const eilX=L+(R-L)*0.195;
+            ctx.save();
+            ctx.fillStyle='#454b52';
+            ctx.fillRect(eilX-2,yt,4,yb-yt);
+            ctx.strokeStyle='#757d86';ctx.lineWidth=1;
+            ctx.beginPath();
+            ctx.moveTo(eilX-7,yt+.5);ctx.lineTo(eilX+7,yt+.5);
+            ctx.moveTo(eilX-7,yb-.5);ctx.lineTo(eilX+7,yb-.5);
+            ctx.stroke();
+            if(yb-yt>19){
+                ctx.font='bold 10px Arial,sans-serif';
+                ctx.textAlign='center';ctx.fillStyle='#858d96';
+                ctx.fillText('EIL',eilX,Math.max(T+10,yt-6));
             }
+            ctx.restore();
         }
     }
 
