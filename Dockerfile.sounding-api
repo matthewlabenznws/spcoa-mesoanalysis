@@ -1,0 +1,9 @@
+# Copy to repository ROOT as Dockerfile.sounding-api (remove .txt suffix).
+FROM public.ecr.aws/lambda/python:3.11
+
+# SHARPpy / scientific packages may need a C/C++ compiler for wheel builds.
+RUN yum install -y gcc gcc-c++ make && yum clean all
+COPY spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_sounding_api.py ${LAMBDA_TASK_ROOT}/
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir numpy metpy sharppy ecape boto3
+CMD ["spcoa_sounding_api.lambda_handler"]
