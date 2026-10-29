@@ -18610,7 +18610,8 @@ const SPCOA_SOUNDING = {
     // Diagnostics originate ONLY from spcoa_sounding_diagnostics.py V3.
     // Per-point sidecar JSON is optional until a production publisher is built.
     diagnostic: null, previousDiagnostic: null, diagnosticError: '',
-    parcelMode: 'ml', comparing: false
+    parcelMode: 'ml', comparing: false,
+    loadingDiagnostics: false, diagnosticsStartedAt: 0, diagnosticsTimer: null
 };
 function spcoaSndUrl(run, part) {
     return `${S3_BASE_URL}/runs/${encodeURIComponent(run)}/soundings/v1/${part}`;
@@ -19067,7 +19068,7 @@ function spcoaSndShadeParcel(ctx,env,trace,parcel,x,y) {
         if(!isCape&&!isCin)continue;
         const avg=((a.t-tEnvA)+(b.t-tEnvB))/2;
         if(isCape&&avg<=0 || isCin&&avg>=0)continue;
-        ctx.fillStyle=isCape?'rgba(242,77,85,.19)':'rgba(72,135,235,.20)';
+        ctx.fillStyle=isCape?'rgba(242,77,85,.24)':'rgba(72,135,235,.24)';
         ctx.beginPath();ctx.moveTo(x(tEnvA,pa),y(pa));ctx.lineTo(x(a.t,pa),y(pa));
         ctx.lineTo(x(b.t,pb),y(pb));ctx.lineTo(x(tEnvB,pb),y(pb));ctx.closePath();ctx.fill();
     }
@@ -19121,27 +19122,35 @@ function spcoaSndWindBarb(ctx,x,y,u,v,size=1) {
     }
     ctx.restore();
 }
+/* SPCOA V51: WeatherFront-style Skew-T visual refinements only.
+ * Native HRRR thermodynamics, 50-hPa barbs, SHARPpy parcel paths, and
+ * inferred (not gridded) advection all retain their original provenance.
+ */
 function spcoaSndSkew(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
-    // WeatherFront-inspired geometry: Skew-T + white barb shaft + advection strip.
+    // Preserve V50 chart geometry and the full 50-hPa wind/advection columns.
     const L=49,R=w-133,T=26,B=h-43;
     if(R<L+140)return;
     const top=100,bottom=1050,lo=-85,hi=68,skew=78;
     const logSpan=Math.log(bottom/top);
     const y=p=>T+Math.log(p/top)/logSpan*(B-T);
     const x=(tc,p)=>L+(tc+skew*Math.log(1000/p)/Math.LN10-lo)/(hi-lo)*(R-L);
+    const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+    const fontMono='ui-monospace,Consolas,monospace';
     ctx.save();ctx.beginPath();ctx.rect(L,T,R-L,B-T);ctx.clip();
+    // Pressure, temperature, dry adiabat, and mixing ratio guides.
     for(let p=100;p<=1000;p+=50) {
         const yy=y(p),major=p%100===0||p===850;
-        ctx.strokeStyle=major?'#707070':'#313131';ctx.lineWidth=major?1.05:.55;
+        ctx.strokeStyle=major?'#666d74':'#323b43';ctx.lineWidth=major?1.05:.55;
         ctx.beginPath();ctx.moveTo(L,yy);ctx.lineTo(R,yy);ctx.stroke();
     }
     for(let tc=-120;tc<=90;tc+=10)
-        spcoaSndTrace(ctx,[[x(tc,bottom),y(bottom)],[x(tc,top),y(top)]],tc===0?'#6379b7':'#454545',.85);
+        spcoaSndTrace(ctx,[[x(tc,bottom),y(bottom)],[x(tc,top),y(top)]],
+            tc===0?'#789be8':'#45494e',tc===0?1.55:.8);
     for(let theta=260;theta<=500;theta+=20) {
         const pts=[];
         for(let p=bottom;p>=top;p-=10)pts.push([x(theta*Math.pow(p/1000,.2854)-273.15,p),y(p)]);
-        spcoaSndTrace(ctx,pts,'#302a25',.75);
+        spcoaSndTrace(ctx,pts,'#322b28',.7);
     }
     for(const gkg of [.4,1,2,4,7,10,14,18,22,26,30]) {
         const r=gkg/1000,pts=[];
@@ -19160,76 +19169,166 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     const parcel=diagnostic?.parcels?.[mode],parcelPoints=spcoaSndParcelPoints(diagnostic,mode);
     if(current && parcelPoints.length>1) {
         spcoaSndShadeParcel(ctx,current,parcelPoints,parcel,x,y);
-        spcoaSndTrace(ctx,parcelPoints.map(a=>[x(a.t,a.p),y(a.p)]),'#63c4eb',2.1,[6,3]);
+        spcoaSndTrace(ctx,parcelPoints.map(a=>[x(a.t,a.p),y(a.p)]),'#70c8f4',2.15,[6,3]);
     }
     if(current) {
-        spcoaSndTrace(ctx,trace(current,'td'),'#128c0a',3.5);
-        spcoaSndTrace(ctx,trace(current,'t'),'#fa2528',3.7);
+        spcoaSndTrace(ctx,trace(current,'td'),'#169915',3.45);
+        spcoaSndTrace(ctx,trace(current,'t'),'#ff3038',3.65);
     }
-    // Explicit parcel-based LCL/LFC/EL markers use SHARPpy outputs only.
-    if(parcel&&parcelPoints.length>1) {
-        for(const [key,label,color] of [['lcl_hpa','LCL','#5aca47'],['lfc_hpa','LFC','#e5c744'],['el_hpa','EL','#9ac8f5']]) {
-            const pressure=parcel[key];
-            if(!Number.isFinite(pressure)||pressure<top||pressure>bottom)continue;
-            const td=parcelPoints.reduce((best,a)=>Math.abs(a.p-pressure)<Math.abs(best.p-pressure)?a:best,parcelPoints[0]);
-            if(!Number.isFinite(td.t))continue;
-            const xx=x(td.t,pressure), yy=y(pressure);
-            ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=1.2;
-            ctx.beginPath();ctx.arc(xx,yy,3.8,0,2*Math.PI);ctx.fill();
-            ctx.font='bold 10px Arial,sans-serif';ctx.fillText(label,Math.min(R-28,xx+6),yy-6);
+    // Actual SHARPpy parcel pressure levels: never use approximated LCL/LFC/EL.
+    // Interpolate *only* the drawn trace temperature at the exact diagnostic
+    // pressure; this does not change the pressure or the parcel calculation.
+    const parcelTempAt=p=>{
+        for(let k=1;k<parcelPoints.length;k++){
+            const a=parcelPoints[k-1],b=parcelPoints[k];
+            if(a.p>=p && b.p<=p && a.p>b.p)
+                return a.t+(b.t-a.t)*(a.p-p)/(a.p-b.p);
+        }
+        const near=parcelPoints.find(a=>Math.abs(a.p-p)<.75);
+        return near?.t ?? NaN;
+    };
+    if(parcel && parcelPoints.length>1){
+        const levels=[
+            ['lcl_hpa','LCL','#5edd56'],
+            ['lfc_hpa','LFC','#f0d447'],
+            ['el_hpa','EL','#9bb8c8']
+        ].map(([key,label,color])=>({pressure:Number(parcel[key]),label,color}))
+         .filter(level=>Number.isFinite(level.pressure) && level.pressure>=top && level.pressure<=bottom)
+         .map(level=>({...level,tc:parcelTempAt(level.pressure),py:y(level.pressure)}))
+         .filter(level=>Number.isFinite(level.tc) && level.py>=T && level.py<=B)
+         .sort((a,b)=>a.py-b.py);
+        let lastLabelY=T-17;
+        for(const level of levels){
+            const xx=x(level.tc,level.pressure),py=level.py;
+            if(xx<L || xx>R)continue;
+            const labelY=clamp(Math.max(py,lastLabelY+14),T+12,B-11);
+            lastLabelY=labelY;
+            const leadEnd=R-68;
+            ctx.save();
+            ctx.strokeStyle=level.color;ctx.fillStyle=level.color;ctx.lineWidth=1.55;
+            ctx.beginPath();ctx.arc(xx,py,3.7,0,Math.PI*2);ctx.fill();
+            ctx.beginPath();ctx.moveTo(xx+(xx<leadEnd?5:-5),py);
+            ctx.lineTo(leadEnd,labelY);ctx.stroke();
+            // Dark backing keeps each colored annotation distinct from traces.
+            ctx.fillStyle='rgba(7,12,17,.91)';
+            ctx.fillRect(R-65,labelY-11,59,15);
+            ctx.font='bold 11px Arial,sans-serif';ctx.fillStyle=level.color;
+            ctx.textAlign='right';ctx.fillText(level.label,R-10,labelY);
+            ctx.restore();
         }
     }
     ctx.restore();
-    // Barbs: ALWAYS render at every available 50-hPa level, without decluttering.
+
+    // WeatherFront-style effective inflow marker on the *left pressure axis*.
+    // EIL is parcel-independent, sourced from SHARPpy diagnostics, not guessed.
+    const eTop=Number(diagnostic?.effective_inflow?.top_hpa);
+    const eBottom=Number(diagnostic?.effective_inflow?.bottom_hpa);
+    if(Number.isFinite(eTop) && Number.isFinite(eBottom) && eBottom>eTop &&
+       eBottom>=top && eTop<=bottom){
+        const yt=clamp(y(Math.max(top,eTop)),T,B);
+        const yb=clamp(y(Math.min(bottom,eBottom)),T,B);
+        if(yb-yt>3){
+            const axisX=L-35;
+            ctx.fillStyle='#52d4e9';ctx.fillRect(axisX,yt,5,yb-yt);
+            ctx.strokeStyle='#b7eefa';ctx.lineWidth=1.3;
+            ctx.beginPath();ctx.moveTo(axisX-3,yt);ctx.lineTo(axisX+9,yt);
+            ctx.moveTo(axisX-3,yb);ctx.lineTo(axisX+9,yb);ctx.stroke();
+            if(yb-yt>30){
+                ctx.save();ctx.translate(axisX-5,(yt+yb)/2);ctx.rotate(-Math.PI/2);
+                ctx.font='bold 9px '+fontMono;ctx.textAlign='center';ctx.fillStyle='#b8eff8';
+                ctx.fillText('EIL',0,0);ctx.restore();
+            }
+        }
+    }
+
+    // WeatherFront-style restrained slate-gray wind-barb shaft.
+    // The original full set of 50-hPa barbs is NOT thinned.
     const barbX=R+17,advX=w-36;
-    ctx.strokeStyle='#5f636b';ctx.lineWidth=.9;
-    ctx.beginPath();ctx.moveTo(R+6,T);ctx.lineTo(R+6,B);ctx.stroke();
+    const stripL=R+5,stripR=R+75;
+    ctx.fillStyle='#1b1f26';ctx.fillRect(stripL,T,stripR-stripL,B-T);
+    ctx.strokeStyle='#65717c';ctx.lineWidth=1;
+    ctx.strokeRect(stripL+.5,T+.5,stripR-stripL-1,B-T-1);
+    ctx.strokeStyle='rgba(184,197,209,.13)';ctx.lineWidth=.75;
+    ctx.beginPath();ctx.moveTo(barbX,T+1);ctx.lineTo(barbX,B-1);ctx.stroke();
     let barbs=Array.isArray(diagnostic?.wind_barbs_50hpa)?diagnostic.wind_barbs_50hpa.map(a=>({
         pressure:spcoaSndNum(a.pressure_hpa),u:spcoaSndNum(a.u_kt)/1.943844,v:spcoaSndNum(a.v_kt)/1.943844
     })):spcoaSndPressureLevels(current||[]).map(({pressure,sample:a})=>({pressure,u:a?.u,v:a?.v}));
     barbs=barbs.filter(b=>b.pressure>=top&&b.pressure<=bottom&&Number.isFinite(b.u+b.v));
     barbs.sort((a,b)=>a.pressure-b.pressure);
     for(const a of barbs){
-        // 50-hPa levels crowd in log-p near the surface; shorten glyphs
-        // slightly there instead of dropping any requested pressure level.
+        // Preserve every level; short glyphs avoid lower-level visual crowding.
         const scale=a.pressure>=800?.76:a.pressure>=700?.90:1;
         spcoaSndWindBarb(ctx,barbX,y(a.pressure),a.u,a.v,scale);
     }
-    // SHARPpy inferred geostrophic temperature advection; not actual gridded advection.
+    // SHARPpy-inferred geostrophic advection, NOT actual gridded advection.
     const strips=diagnostic?.inferred_advection_100hpa;
     ctx.fillStyle='#0f1012';ctx.fillRect(advX-4,T,15,B-T);
     ctx.strokeStyle='#686868';ctx.strokeRect(advX-4,T,15,B-T);
-    if(Array.isArray(strips))for(const row of strips) {
+    if(Array.isArray(strips))for(const row of strips){
         const value=Number(row.c_per_hr),p1=Number(row.bottom_hpa),p2=Number(row.top_hpa);
         if(!Number.isFinite(value+p1+p2)||p1<=p2)continue;
         const y1=Math.min(B,Math.max(T,y(p2))),y2=Math.min(B,Math.max(T,y(p1)));
         if(y2<=y1)continue;
         ctx.fillStyle=value>0.05?'rgba(230,35,51,.87)':value<-.05?'rgba(63,119,231,.88)':'#575757';
         ctx.fillRect(advX-3,y1+1,13,Math.max(1,y2-y1-2));
-        ctx.font='bold 10px ui-monospace,Consolas,monospace';
+        ctx.font='bold 10px '+fontMono;
         ctx.textAlign='right';ctx.fillStyle='#e4e8ef';
         const valText=(value>0?'+':'')+value.toFixed(1);
         ctx.fillText(valText,advX-8,(y1+y2)/2+3);
     }
-    ctx.font='9px ui-monospace,Consolas,monospace';ctx.fillStyle='#bfc3cb';
+    ctx.font='9px '+fontMono;ctx.fillStyle='#bfc3cb';
     ctx.textAlign='center';ctx.fillText('WAA',advX+1,T-12);
     ctx.fillText('CAA',advX+1,T-2);
     ctx.fillText('°C/h',advX+1,B+14);
     ctx.fillStyle='#dce2ea';ctx.textAlign='right';
-    for(let p=100;p<=1000;p+=50) {
-        if(p%100!==0 && p!==850)continue;
-        ctx.font='bold 10px ui-monospace,Consolas,monospace';ctx.fillText(String(p),L-8,y(p)+4);
+    for(let p=100;p<=1000;p+=50){
+        if(p%100!==0&&p!==850)continue;
+        ctx.font='bold 10px '+fontMono;ctx.fillText(String(p),L-8,y(p)+4);
     }
-    ctx.textAlign='center';ctx.font='10px ui-monospace,Consolas,monospace';
-    for(let tc=-60;tc<=60;tc+=20) {
+    ctx.textAlign='center';ctx.font='10px '+fontMono;
+    for(let tc=-60;tc<=60;tc+=20){
         const xx=x(tc,1000);if(xx>L&&xx<R)ctx.fillText(`${tc}°`,xx,B+17);
     }
-    if(current) {
+    if(current?.length){
         const s=current[0];
-        ctx.textAlign='left';ctx.font='bold 11px ui-monospace,Consolas,monospace';
-        ctx.fillStyle='#eeeeee';
-        ctx.fillText(`SFC: ${Number.isFinite(s.t)?Math.round(s.t*1.8+32)+'°F':'—'} / ${Number.isFinite(s.td)?Math.round(s.td*1.8+32)+'°F':'—'}`,L+4,B+31);
-        ctx.fillStyle='#adb5c3';ctx.font='10px ui-monospace,Consolas,monospace';
+        // Surface T/Td callouts reference the actual native surface sample.
+        // Keep the underlying traces and temperature mapping unchanged.
+        const sY=y(s.p);
+        if(Number.isFinite(sY) && sY>=T && sY<=B &&
+           Number.isFinite(s.t) && Number.isFinite(s.td)){
+            const tx=clamp(x(s.t,s.p),L+23,R-23);
+            const dx=clamp(x(s.td,s.p),L+23,R-23);
+            let labelTd=dx,labelT=tx;
+            if(Math.abs(labelT-labelTd)<56){
+                const mid=(labelT+labelTd)/2;
+                labelTd=mid-29;labelT=mid+29;
+                const shift=labelTd<L+21?L+21-labelTd:labelT>R-21?R-21-labelT:0;
+                labelTd+=shift;labelT+=shift;
+            }
+            const calloutY=clamp(sY+18,T+19,B-12);
+            for(const callout of [
+                {realX:dx,cx:labelTd,tc:s.td,color:'#57e35c'},
+                {realX:tx,cx:labelT,tc:s.t,color:'#ff4c54'}
+            ]){
+                const label=Math.round(callout.tc*9/5+32)+'°F';
+                ctx.save();ctx.font='bold 12px Arial,sans-serif';
+                const boxW=Math.max(39,ctx.measureText(label).width+10);
+                const cx=clamp(callout.cx,L+boxW/2+2,R-boxW/2-2);
+                ctx.strokeStyle=callout.color;ctx.lineWidth=1;
+                ctx.beginPath();ctx.moveTo(callout.realX,sY);ctx.lineTo(cx,calloutY-12);ctx.stroke();
+                ctx.beginPath();ctx.arc(callout.realX,sY,2.6,0,2*Math.PI);ctx.fillStyle=callout.color;ctx.fill();
+                ctx.fillStyle='rgba(7,12,17,.93)';ctx.fillRect(cx-boxW/2,calloutY-12,boxW,17);
+                ctx.strokeStyle=callout.color;ctx.globalAlpha=.65;
+                ctx.strokeRect(cx-boxW/2+.5,calloutY-11.5,boxW-1,16);
+                ctx.globalAlpha=1;ctx.fillStyle=callout.color;ctx.textAlign='center';
+                ctx.fillText(label,cx,calloutY);ctx.restore();
+            }
+        }
+        // Keep surface information available in exports even at narrow widths.
+        ctx.textAlign='left';ctx.font='bold 10px '+fontMono;
+        ctx.fillStyle='#d6dde4';
+        ctx.fillText(`SFC ${Number.isFinite(s.z)?Math.round(s.z)+' m MSL':'height unavailable'} · T / Td`,L+4,B+31);
+        ctx.fillStyle='#adb5c3';ctx.font='10px '+fontMono;
         for(const km of [1,3,5,7,9,13]){
             const nearest=current.reduce((best,a)=>Math.abs(a.z-km*1000)<Math.abs(best.z-km*1000)?a:best,current[0]);
             if(Math.abs(nearest.z-km*1000)<600){const yy=y(nearest.p);
@@ -19237,11 +19336,15 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
             }
         }
     }
-    ctx.font='bold 10px ui-monospace,Consolas,monospace';ctx.textAlign='left';
-    ctx.fillStyle='#f73537';ctx.fillText('T',L+7,T+14);
-    ctx.fillStyle='#31bd32';ctx.fillText('Td',L+24,T+14);
-    ctx.fillStyle='#73c9e8';ctx.fillText(parcelPoints.length?`${mode.toUpperCase()} parcel`:'No parcel JSON',L+51,T+14);
-    ctx.textAlign='center';ctx.fillStyle='#ddd';ctx.fillText('WIND · 50 hPa',barbX+9,T-10);
+    ctx.font='bold 10px '+fontMono;ctx.textAlign='left';
+    ctx.fillStyle='#ff4c54';ctx.fillText('T',L+7,T+14);
+    ctx.fillStyle='#57e35c';ctx.fillText('Td',L+24,T+14);
+    ctx.fillStyle='#84d5f7';
+    const parcelMessage=parcelPoints.length?`${mode.toUpperCase()} parcel`:
+        diagnostic?`${mode.toUpperCase()} trace unavailable`:'Parcel diagnostics loading…';
+    ctx.fillText(parcelMessage,L+51,T+14);
+    ctx.textAlign='center';ctx.fillStyle='#dce4ed';
+    ctx.fillText('WIND · 50 hPa',(stripL+stripR)/2,T-10);
 }
 function spcoaSndHodo(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
@@ -19393,7 +19496,7 @@ function spcoaSndBuildPanel() {
       <button type="button" id="ss-load-json">Load diagnostic JSON</button><input type="file" id="ss-json-file" accept=".json,application/json" style="display:none">
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
       <div class="ss-body"><div id="ss-status" role="status">Press and hold the map with Sounding enabled.</div>
-      <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P · Calculated parcel</h3><canvas id="ss-skew"></canvas></div>
+      <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P · Native HRRR F00 · SHARPpy parcel</h3><canvas id="ss-skew"></canvas></div>
       <div class="ss-chart"><h3>Hodograph · Storm motions</h3><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables" aria-label="Compact SPCOA sounding diagnostics">
         <div class="ss-box ss-thermo-box"><h3>Thermodynamics <span class="ss-thermo-unit">SB / ML (Method B) / MU</span></h3>
@@ -19411,6 +19514,7 @@ function spcoaSndBuildPanel() {
     document.getElementById('ss-close').addEventListener('click',()=>{
         panel.style.display='none';
         SPCOA_SOUNDING.point=null;SPCOA_SOUNDING.serial++;
+        spcoaSndStopDiagnosticLoading();
         if(SPCOA_SOUNDING.marker){SPCOA_SOUNDING.marker.remove();SPCOA_SOUNDING.marker=null;}
     });
     document.getElementById('ss-compare').addEventListener('change',e=>{
@@ -19471,10 +19575,41 @@ function spcoaSndOpenAt(lat,lon) {
 function spcoaSndStatus(text) {
     const el=document.getElementById('ss-status');if(el)el.textContent=text;
 }
+/* V51: elapsed-time status avoids an unreliable AWS queue/ECAPE ETA.
+ * The interval never triggers a chart redraw, only a short status text update.
+ */
+function spcoaSndStopDiagnosticLoading(){
+    SPCOA_SOUNDING.loadingDiagnostics=false;
+    SPCOA_SOUNDING.diagnosticsStartedAt=0;
+    if(SPCOA_SOUNDING.diagnosticsTimer!==null){
+        clearInterval(SPCOA_SOUNDING.diagnosticsTimer);
+        SPCOA_SOUNDING.diagnosticsTimer=null;
+    }
+}
+function spcoaSndUpdateDiagnosticLoading(){
+    if(!SPCOA_SOUNDING.loadingDiagnostics || !SPCOA_SOUNDING.current)return;
+    const secs=Math.max(0,Math.floor((Date.now()-SPCOA_SOUNDING.diagnosticsStartedAt)/1000));
+    const compare=SPCOA_SOUNDING.comparing?' · Previous hour requested':'';
+    spcoaSndStatus(`HRRR profile loaded · Calculating SHARPpy / Peters ECAPE · ${secs}s elapsed${compare}`);
+}
+function spcoaSndStartDiagnosticLoading(serial){
+    spcoaSndStopDiagnosticLoading();
+    SPCOA_SOUNDING.loadingDiagnostics=true;
+    SPCOA_SOUNDING.diagnosticsStartedAt=Date.now();
+    spcoaSndUpdateDiagnosticLoading();
+    SPCOA_SOUNDING.diagnosticsTimer=setInterval(()=>{
+        if(serial!==SPCOA_SOUNDING.serial ||
+           document.getElementById('spcoa-sounding-panel')?.style.display!=='block'){
+            spcoaSndStopDiagnosticLoading();return;
+        }
+        spcoaSndUpdateDiagnosticLoading();
+    },1000);
+}
 async function spcoaSndLoadSelection() {
     const point=SPCOA_SOUNDING.point,run=currentRun;
     if(!point||!run)return;
     const serial=++SPCOA_SOUNDING.serial;
+    spcoaSndStopDiagnosticLoading();
     SPCOA_SOUNDING.current=null;SPCOA_SOUNDING.previous=null;
     SPCOA_SOUNDING.diagnostic=null;SPCOA_SOUNDING.previousDiagnostic=null;
     SPCOA_SOUNDING.diagnosticError='';
@@ -19503,11 +19638,13 @@ async function spcoaSndLoadSelection() {
         }
         // Draw native T/Td and native wind profiles immediately.
         spcoaSndRender();
+        spcoaSndStartDiagnosticLoading(serial);
         const [d1,d2]=await Promise.allSettled([
             spcoaSndFetchDiagnostic(run,result.profile),
             SPCOA_SOUNDING.previous?spcoaSndFetchDiagnostic(prevRun,SPCOA_SOUNDING.previous.profile):Promise.resolve(null)
         ]);
         if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
+        spcoaSndStopDiagnosticLoading();
         SPCOA_SOUNDING.diagnostic=d1.status==='fulfilled'?d1.value:null;
         SPCOA_SOUNDING.previousDiagnostic=d2.status==='fulfilled'?d2.value:null;
         if(d1.status==='rejected'){
@@ -19518,6 +19655,7 @@ async function spcoaSndLoadSelection() {
         spcoaSndRender();
     } catch(error) {
         if(serial!==SPCOA_SOUNDING.serial)return;
+        spcoaSndStopDiagnosticLoading();
         console.error('SPCOA native sounding:',error);
         spcoaSndStatus(`Could not load sounding: ${error.message}`);
     }
@@ -19771,6 +19909,7 @@ function spcoaSndRender() {
     if(SPCOA_SOUNDING.comparing)status+=(b?' · Previous native F00 profile loaded':' · Previous hour unavailable');
     if(SPCOA_SOUNDING.diagnosticError)status+=' · '+SPCOA_SOUNDING.diagnosticError;
     spcoaSndStatus(status);
+    if(SPCOA_SOUNDING.loadingDiagnostics)spcoaSndUpdateDiagnosticLoading();
     spcoaSndSkew(document.getElementById('ss-skew'),p,q,diag);
     spcoaSndHodo(document.getElementById('ss-hodo'),p,q,diag);
     document.getElementById('ss-thermo').innerHTML=spcoaSndThermoTable(diag);
@@ -19792,7 +19931,9 @@ function spcoaSndRender() {
     const info=document.getElementById('ss-diagnostic-info');
     if(info)info.textContent=diag?
         `Method B: pressure-weighted 100-hPa ML; SHARPpy profiles + Peters ECAPE · ${Object.keys(diag.calculation_errors||{}).length} calculation errors · ${diag.storm_motions?.method||'storm motion not available'}`:
-        `Native HRRR profile loaded. Automatic per-point SB/ML/MU diagnostics require the configured calculation API; until then, you can use “Load diagnostic JSON”.`;
+        SPCOA_SOUNDING.loadingDiagnostics?
+            `Native HRRR profile ready; SHARPpy and Peters ECAPE calculations are in progress for this grid point.`:
+            `Native HRRR profile loaded; matching per-point SB/ML/MU diagnostic JSON is not currently available.`;
     const note=document.getElementById('ss-archive-note');
     if(note){
         const legacy=a.manifest?.quantization?.specific_humidity_kgkg?.transform!=='log10';
