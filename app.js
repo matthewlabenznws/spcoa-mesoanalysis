@@ -19125,7 +19125,7 @@ function spcoaSndWindBarb(ctx,x,y,u,v,size=1) {
     }
     ctx.restore();
 }
-/* SPCOA V52: WeatherFront-reference Skew-T annotations and native MSL terrain.
+/* SPCOA V53: centered level ticks, real SFC-pressure alignment, and left-shifted barbs.
  * Native HRRR thermodynamics, 50-hPa barbs, SHARPpy parcel paths, and
  * inferred (not gridded) advection all retain their original provenance.
  */
@@ -19178,54 +19178,43 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         spcoaSndTrace(ctx,trace(current,'td'),'#169915',3.45);
         spcoaSndTrace(ctx,trace(current,'t'),'#ff3038',3.65);
     }
-    // WeatherFront-style level ticks: short HORIZONTAL guides at the actual
-    // SHARPpy pressures. Never join a parcel point to a far-away label with a
-    // diagonal leader. LFC/EL are omitted when no positive CAPE is available.
+    // V53: compact, CENTERED WeatherFront-style LCL/LFC/EL guides.
+    // Each horizontal tick stays at its exact SHARPpy parcel pressure. Only
+    // annotations move; parcel levels, shading and thermodynamics do not.
     if(parcel){
         const pCape=Number(parcel.cape_jkg);
-        const canUseBuoyancyLevels=Number.isFinite(pCape) && pCape>0;
+        const hasPositiveCape=Number.isFinite(pCape) && pCape>0;
         const levels=[
-            {key:'lcl_hpa',label:'LCL',color:'#39b52f',enabled:true},
-            {key:'lfc_hpa',label:'LFC',color:'#e3d137',enabled:canUseBuoyancyLevels},
-            {key:'el_hpa', label:'EL', color:'#91a5b5',enabled:canUseBuoyancyLevels}
-        ].filter(level=>level.enabled).map(level=>{
+            {key:'lcl_hpa',label:'LCL',color:'#39b52f',enabled:true,below:true},
+            {key:'lfc_hpa',label:'LFC',color:'#e3d137',enabled:hasPositiveCape,below:false},
+            {key:'el_hpa',label:'EL',color:'#91a5b5',enabled:hasPositiveCape,below:false}
+        ];
+        const midX=(L+R)/2;
+        const markerWidth=clamp((R-L)*0.095,52,68); // short: 52–68 px
+        for(const level of levels){
+            if(!level.enabled)continue;
             const raw=parcel[level.key];
-            const pressure=raw===null || raw===undefined ? NaN : Number(raw);
-            return {...level,pressure};
-        }).filter(level=>Number.isFinite(level.pressure) && level.pressure>=top && level.pressure<=bottom);
-        // Draw actual pressure markers; never shift a marker off its true level.
-        // If two text labels crowd, put the labels on alternate sides instead.
-        levels.sort((a,b)=>a.pressure-b.pressure);
-        for(let idx=0;idx<levels.length;idx++){
-            const level=levels[idx],py=y(level.pressure);
-            if(!(py>=T+3 && py<=B-3))continue;
+            const pressure=(raw===null||raw===undefined)?NaN:Number(raw);
+            if(!(Number.isFinite(pressure)&&pressure>=top&&pressure<=bottom))continue;
+            const py=y(pressure);
+            if(!(py>=T+3&&py<=B-3))continue;
             ctx.save();
-            ctx.strokeStyle=level.color;ctx.fillStyle=level.color;
-            ctx.lineWidth=1.5;
-            if(level.label==='EL'){
-                // EL is usually far aloft: an unobtrusive short tick is easier
-                // to read next to its parcel trace, as on the reference plot.
-                const near=parcelPoints.find(a=>Math.abs(a.p-level.pressure)<1)
-                    || parcelPoints.reduce((best,a)=>
-                        Math.abs(a.p-level.pressure)<Math.abs(best.p-level.pressure)?a:best,
-                        parcelPoints[0]);
-                if(near && Number.isFinite(near.t)){
-                    const xx=clamp(x(near.t,level.pressure),L+34,R-44);
-                    ctx.beginPath();ctx.moveTo(xx-12,py);ctx.lineTo(xx+12,py);ctx.stroke();
-                    ctx.textAlign='right';ctx.font='bold 11px Arial,sans-serif';
-                    ctx.fillText('EL',xx-15,py-5);
-                }
-            }else{
-                // Right-aligned LCL/LFC labels and short level ticks, all at
-                // the true pressure, WITHOUT stretching back across the Skew-T.
-                const edge=R-13;
-                ctx.beginPath();ctx.moveTo(edge-50,py);ctx.lineTo(edge,py);ctx.stroke();
-                ctx.textAlign='right';ctx.font='bold 11px Arial,sans-serif';
-                // Dark stroke lets the word remain legible without a box.
-                ctx.lineWidth=2.5;ctx.strokeStyle='#080b0e';
-                ctx.strokeText(level.label,edge,py-5);
-                ctx.fillText(level.label,edge,py-5);
-            }
+            ctx.strokeStyle=level.color;
+            ctx.fillStyle=level.color;
+            ctx.lineWidth=1.0;
+            ctx.beginPath();
+            ctx.moveTo(midX-markerWidth/2,py);
+            ctx.lineTo(midX+markerWidth/2,py);
+            ctx.stroke();
+            ctx.font='bold 11px Arial,sans-serif';
+            ctx.textAlign='center';
+            // LCL below its green line, LFC above its yellow line,
+            // and EL above its blue-gray line, all at the same central x.
+            const labelY=level.below?py+14:py-6;
+            ctx.lineWidth=2.5;
+            ctx.strokeStyle='#080b0e';
+            ctx.strokeText(level.label,midX,labelY);
+            ctx.fillText(level.label,midX,labelY);
             ctx.restore();
         }
     }
@@ -19253,10 +19242,11 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         }
     }
 
-    // WeatherFront reference: narrow CHARCOAL wind-barb gutter, distinct
-    // bright vertical axis, and every native 50-hPa barb. No framed card.
-    const barbX=R+54,advX=w-36;
-    const stripL=R+7,stripR=R+63;
+    // V53: move the shaft, every barb and the charcoal gutter together
+    // approximately 18 pixels LEFT, away from WAA/CAA numeric labels.
+    // Keep the 50-hPa density and physical pressure alignment unchanged.
+    const barbX=R+36,advX=w-36;
+    const stripL=R+3,stripR=R+49;
     ctx.fillStyle='#111419';ctx.fillRect(stripL,T,stripR-stripL,B-T);
     ctx.strokeStyle='#555a60';ctx.lineWidth=.8;
     ctx.beginPath();ctx.moveTo(stripL+.5,T);ctx.lineTo(stripL+.5,B);ctx.stroke();
@@ -19311,8 +19301,15 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
             ctx.save();
             const groundHeight=Number.isFinite(s.z_msl)?`${Math.round(s.z_msl)}m`:'—';
             ctx.fillStyle='#a8afb8';ctx.font='10px '+fontMono;ctx.textAlign='left';
-            // A single quiet label at actual model surface pressure.
-            ctx.fillText(`SFC (${groundHeight})`,L+4,clamp(sY-6,T+12,B-6));
+            // Surface pressure defines the starting Y of *both* native T/Td
+            // traces. Canvas textBaseline='middle' aligns the surface-label
+            // center EXACTLY with those profile endpoints, not 6 px above.
+            ctx.textBaseline='middle';
+            ctx.fillText(`SFC (${groundHeight})`,L+4,sY);
+            // Small surface-level tick: same y-coordinate as the trace bases.
+            ctx.strokeStyle='#8a949d';ctx.lineWidth=0.9;
+            ctx.beginPath();ctx.moveTo(L-3,sY);ctx.lineTo(L+2,sY);ctx.stroke();
+            ctx.textBaseline='alphabetic';
             // Simple WeatherFront surface temperature and dewpoint labels,
             // directly under their corresponding traces: NO boxes or leaders.
             const vals=[
