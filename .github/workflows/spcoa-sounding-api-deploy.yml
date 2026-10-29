@@ -1,0 +1,50 @@
+name: SPCOA Sounding Diagnostics API - Deploy
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AWS_DEFAULT_REGION: us-east-2
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install/build AWS SAM
+        uses: aws-actions/setup-sam@v2
+      - name: Check inputs
+        run: |
+          test -f spcoa_soundings.py
+          test -f spcoa_sounding_diagnostics.py
+          test -f spcoa_sounding_api.py
+          test -f Dockerfile.sounding-api
+          test -f template.sounding-api.yaml
+          python -m py_compile spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_sounding_api.py
+      - name: Build Lambda image
+        run: sam build --template-file template.sounding-api.yaml --use-container
+      - name: Deploy queue, Lambda, HTTP API
+        run: |
+          sam deploy \
+            --template-file .aws-sam/build/template.yaml \
+            --stack-name spcoa-sounding-diagnostics \
+            --region "$AWS_DEFAULT_REGION" \
+            --resolve-image-repos \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset
+      - name: Show endpoint
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name spcoa-sounding-diagnostics \
+            --query "Stacks[0].Outputs[?OutputKey=='DiagnosticsApiUrl'].OutputValue" \
+            --output text
