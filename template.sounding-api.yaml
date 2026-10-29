@@ -1,0 +1,113 @@
+# Copy to repository ROOT as template.sounding-api.yaml
+# AWS SAM / CloudFormation. Manual GitHub Actions deployment; no cron.
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SPCOA native HRRR F00 sounding on-demand diagnostics with S3 cache
+Parameters:
+  SoundingsBucket:
+    Type: String
+    Default: spcoa-mesoanalysis
+  SoundingsPrefix:
+    Type: String
+    Default: spcoa
+  AllowedOrigin:
+    Type: String
+    Default: '*'
+    Description: Set to the exact site origin (for example https://example.github.io) after testing
+Resources:
+  SoundingDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub '${AWS::StackName}-dead.fifo'
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600
+  SoundingWorkQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub '${AWS::StackName}-work.fifo'
+      VisibilityTimeout: 900
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SoundingDeadLetterQueue.Arn
+        maxReceiveCount: 3
+  SoundingHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: spcoa-sounding-diagnostics
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowMethods: [GET, OPTIONS]
+        AllowHeaders: [content-type]
+        MaxAge: 3600
+  SoundingFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerContext: .
+      Dockerfile: Dockerfile.sounding-api
+      DockerTag: soundings-v1
+    Properties:
+      PackageType: Image
+      MemorySize: 3008
+      Timeout: 240
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          SPCOA_SOUNDINGS_BUCKET: !Ref SoundingsBucket
+          SPCOA_SOUNDINGS_PREFIX: !Ref SoundingsPrefix
+          SPCOA_SOUNDING_QUEUE_URL: !Ref SoundingWorkQueue
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub 'arn:${AWS::Partition}:s3:::${SoundingsBucket}/${SoundingsPrefix}/runs/*/soundings/v1/*'
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub 'arn:${AWS::Partition}:s3:::${SoundingsBucket}/${SoundingsPrefix}/runs/*/soundings/v1/diagnostics/*'
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt SoundingWorkQueue.Arn
+      Events:
+        Worker:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SoundingWorkQueue.Arn
+            BatchSize: 1
+            ScalingConfig:
+              MaximumConcurrency: 2
+  SoundingApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SoundingHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SoundingFunction.Arn
+      PayloadFormatVersion: '2.0'
+  SoundingApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SoundingHttpApi
+      RouteKey: 'GET /diagnostics'
+      Target: !Sub 'integrations/${SoundingApiIntegration}'
+  SoundingApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref SoundingHttpApi
+      StageName: '$default'
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 2
+        ThrottlingRateLimit: 1
+  SoundingApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SoundingFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${SoundingHttpApi}/*/GET/diagnostics'
+Outputs:
+  DiagnosticsApiUrl:
+    Description: Put this URL in spcoa_sounding_config.json
+    Value: !Sub 'https://${SoundingHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/diagnostics'
+  WorkerQueueUrl:
+    Value: !Ref SoundingWorkQueue
