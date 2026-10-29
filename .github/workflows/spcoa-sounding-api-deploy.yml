@@ -4,25 +4,48 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+concurrency:
+  group: spcoa-sounding-api-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       AWS_DEFAULT_REGION: us-east-2
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      ECR_REPOSITORY: 723468358419.dkr.ecr.us-east-2.amazonaws.com/spcoasoundingdiagnostics63cafd0d/soundingfunction0f6728a1repo
+      CFN_EXECUTION_ROLE: arn:aws:iam::723468358419:role/SPCOA-Sounding-CloudFormationExecution
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
       - name: Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install/build AWS SAM
+
+      - name: Authenticate with AWS using GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-region: us-east-2
+          role-to-assume: arn:aws:iam::723468358419:role/SPCOASoundingGitHubDeploy
+          role-session-name: SPCOASounding-${{ github.run_id }}
+
+      - name: Verify AWS account and existing ECR repository
+        run: |
+          aws sts get-caller-identity
+          aws ecr describe-repositories \
+            --region "$AWS_DEFAULT_REGION" \
+            --repository-names spcoasoundingdiagnostics63cafd0d/soundingfunction0f6728a1repo \
+            --query 'repositories[0].repositoryUri' --output text
+
+      - name: Install AWS SAM
         uses: aws-actions/setup-sam@v2
-      - name: Check inputs
+
+      - name: Check Python and template files
         run: |
           test -f spcoa_soundings.py
           test -f spcoa_sounding_diagnostics.py
@@ -30,9 +53,11 @@ jobs:
           test -f Dockerfile.sounding-api
           test -f template.sounding-api.yaml
           python -m py_compile spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_sounding_api.py
-      - name: Build Lambda image
+
+      - name: Build sounding Lambda image
         run: sam build --template-file template.sounding-api.yaml --use-container
-      - name: Deploy queue, Lambda, HTTP API
+
+      - name: Deploy sounding API (existing ECR repository, CloudFormation role)
         run: |
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
@@ -40,13 +65,17 @@ jobs:
             --region "$AWS_DEFAULT_REGION" \
             --s3-bucket spcoa-mesoanalysis \
             --s3-prefix sam-deploy/spcoa-sounding-api \
-            --resolve-image-repos \
+            --image-repositories "SoundingFunction=$ECR_REPOSITORY" \
+            --parameter-overrides "ParameterKey=AllowedOrigin,ParameterValue=https://matthewlabenznws.github.io" \
+            --role-arn "$CFN_EXECUTION_ROLE" \
             --capabilities CAPABILITY_IAM \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset
-      - name: Show endpoint
+
+      - name: Show diagnostics endpoint
         run: |
           aws cloudformation describe-stacks \
             --stack-name spcoa-sounding-diagnostics \
+            --region "$AWS_DEFAULT_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='DiagnosticsApiUrl'].OutputValue" \
             --output text
