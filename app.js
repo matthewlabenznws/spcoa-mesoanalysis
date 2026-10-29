@@ -19957,13 +19957,3 @@ spcoaSndBuildPanel();
 spcoaSndInstallCursorSelector();
 
 } // End multi-panel mp-child branch (V44 sounding scope correction)
-
-
-
-
-
-
-
-
-
-
