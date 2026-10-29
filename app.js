@@ -19373,80 +19373,180 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     ctx.textAlign='center';ctx.font='bold 10px '+fontMono;
     ctx.fillStyle='#cfd5db';ctx.fillText('WIND · 50 hPa',(stripL+stripR)/2,T-10);
 }
+/* SPCOA V57: WeatherFront-proportioned hodograph, with SPCOA layer colors.
+ * All velocities derive from the native HRRR profile; effective inflow,
+ * Bunkers storm motions and mean wind come from matching SHARPpy diagnostics.
+ */
 function spcoaSndHodo(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
-    const cx=w*.51,cy=h*.53;
-    let maxKt=55;
-    for(const prof of [current,previous])if(prof)for(const v of prof)
-        if(v.z<=9000&&Number.isFinite(v.u+v.v))maxKt=Math.max(maxKt,Math.hypot(v.u,v.v)*1.943844);
+    // Near-black canvas and large, centered polar grid, similar to the
+    // WeatherFront reference. Nothing in this drawing changes meteorology.
+    ctx.fillStyle='#020304';ctx.fillRect(0,0,w,h);
     const motion=diagnostic?.storm_motions;
-    for(const v of [motion?.right,motion?.left])if(Number.isFinite(v?.u_kt+v?.v_kt))
-        maxKt=Math.max(maxKt,Math.hypot(v.u_kt,v.v_kt));
-    const limit=Math.max(60,Math.ceil((maxKt+15)/20)*20);
-    const radius=Math.min(w*.44,h*.43),scale=radius/limit;
-    const xy=wind=>[cx+wind.u*1.943844*scale,cy-wind.v*1.943844*scale];
-    for(let r=10;r<=limit;r+=10) {
-        ctx.strokeStyle=r%20===0?'#5e6064':'#33343b';ctx.lineWidth=r%20===0?1.1:.7;
-        ctx.setLineDash(r%20===0?[]:[3,3]);
-        ctx.beginPath();ctx.arc(cx,cy,r*scale,0,2*Math.PI);ctx.stroke();ctx.setLineDash([]);
-        if(r%20===0){ctx.fillStyle='#9a9a9a';ctx.font='10px ui-monospace,Consolas,monospace';
-            ctx.textAlign='center';ctx.fillText(String(r),cx+r*scale,cy-5);
-        }
+    const mean=diagnostic?.mean_winds?.['0_6000m'];
+    const valid=v=>v && Number.isFinite(v.u_kt)&&Number.isFinite(v.v_kt);
+    const toMps=v=>({u:v.u_kt/1.943844,v:v.v_kt/1.943844});
+    const kt=1.943844;
+    let maxKt=0;
+    for(const prof of [current,previous]) {
+        if(!prof)continue;
+        for(const a of prof)if(a.z<=9000 && Number.isFinite(a.u) && Number.isFinite(a.v))
+            maxKt=Math.max(maxKt,Math.hypot(a.u,a.v)*kt);
     }
-    ctx.strokeStyle='#626469';ctx.lineWidth=1;
+    for(const v of [motion?.right,motion?.left,mean])if(valid(v))
+        maxKt=Math.max(maxKt,Math.hypot(v.u_kt,v.v_kt));
+    // WeatherFront-like 10,30,50,70,90-kt solid rings; preserve data beyond
+    // 90 kt by expanding the scale instead of clipping stronger winds.
+    const limit=Math.max(90,Math.ceil((maxKt+5)/10)*10);
+    const cx=w*.50,cy=h*.505;
+    const radius=Math.min(w*.488,h*.482);
+    const scale=radius/limit;
+    const xy=a=>[cx+a.u*kt*scale,cy-a.v*kt*scale];
+    const xyKt=a=>[cx+a.u_kt*scale,cy-a.v_kt*scale];
+    const drawText=(txt,x,y,fill,font='10px Arial,sans-serif',align='center')=>{
+        ctx.font=font;ctx.textAlign=align;ctx.textBaseline='middle';
+        ctx.lineJoin='round';ctx.lineWidth=2.4;ctx.strokeStyle='#020304';
+        ctx.strokeText(txt,x,y);ctx.fillStyle=fill;ctx.fillText(txt,x,y);
+    };
+    ctx.save();
+    for(let r=10;r<=limit;r+=10){
+        const major=(r%20===10),rad=r*scale;
+        ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);
+        ctx.strokeStyle=major?'#696b70':'#373a40';
+        ctx.lineWidth=major?1.05:.7;
+        ctx.setLineDash(major?[]:[2.8,3.5]);ctx.stroke();ctx.setLineDash([]);
+    }
+    ctx.strokeStyle='#6c6f76';ctx.lineWidth=1.05;
     ctx.beginPath();ctx.moveTo(cx-radius,cy);ctx.lineTo(cx+radius,cy);
     ctx.moveTo(cx,cy-radius);ctx.lineTo(cx,cy+radius);ctx.stroke();
-    const sample=p=>{
-        if(!p)return [];
-        const a=[];for(let z=10;z<=Math.min(9000,p.at(-1).z);z+=100){
-            const v=spcoaSndWindAt(p,z);if(v&&Number.isFinite(v.u+v.v))a.push({z,...v});
-        }
-        return a;
-    };
-    if(previous)spcoaSndTrace(ctx,sample(previous).map(a=>xy(a)),'#969696',1.6,[4,6]);
-    if(current){
-        const layers=[[10,500,'#c232b3'],[500,3000,'#e34248'],[3000,6000,'#3acf61'],[6000,9000,'#ffe07b']];
-        for(const [lo,hi,color] of layers){
-            const line=[];
-            for(let z=lo;z<=hi;z+=100){const wind=spcoaSndWindAt(current,z);
-                if(wind && Number.isFinite(wind.u+wind.v))line.push(xy(wind));
-            }
-            const edge=spcoaSndWindAt(current,hi);
-            if(edge&&Number.isFinite(edge.u+edge.v))line.push(xy(edge));
-            spcoaSndTrace(ctx,line,color,4);
-        }
-        for(let km=0;km<=9;km++) {
-            const wind=spcoaSndWindAt(current,Math.max(10,km*1000));
-            if(!wind||!Number.isFinite(wind.u+wind.v))continue;
-            const [mx,my]=xy(wind);
-            ctx.beginPath();ctx.arc(mx,my,6.5,0,Math.PI*2);
-            ctx.fillStyle='#e7e9ed';ctx.fill();ctx.lineWidth=1.6;ctx.strokeStyle='#030406';ctx.stroke();
-            ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 10px Arial,sans-serif';
-            ctx.fillStyle='#060709';ctx.fillText(String(km),mx,my+.5);
-        }
-        ctx.textBaseline='alphabetic';
-        for(const [key,label,color] of [['right','RM','#ffaa70'],['left','LM','#a7baff']]) {
-            const v=motion?.[key];
-            if(!Number.isFinite(v?.u_kt+v?.v_kt))continue;
-            const [mx,my]=xy({u:v.u_kt/1.943844,v:v.v_kt/1.943844});
-            ctx.beginPath();ctx.arc(mx,my,5,0,2*Math.PI);ctx.fillStyle=color;ctx.fill();
-            ctx.strokeStyle='#08090a';ctx.stroke();ctx.fillStyle='#eee';
-            ctx.font='bold 12px Arial,sans-serif';ctx.textAlign='left';ctx.fillText(label,mx+8,my-6);
+    // Wind-speed axes labelled in knots on both sides, plus top/bottom.
+    // Tuck labels slightly inside their rings so they remain fully visible.
+    for(let r=10;r<=limit;r+=20){
+        const d=r*scale,shade='#777d86';
+        drawText(String(r),cx+d-3,cy-7,shade,'9px Arial,sans-serif');
+        drawText(String(r),cx-d+3,cy-7,shade,'9px Arial,sans-serif');
+        if(r>=30){
+            drawText(String(r),cx+9,cy-d+5,shade,'9px Arial,sans-serif','left');
+            drawText(String(r),cx+9,cy+d-5,shade,'9px Arial,sans-serif','left');
         }
     }
-    const vecInfo=(v)=>{
-        if(!Number.isFinite(v?.u_kt+v?.v_kt))return '—';
-        const spd=Math.round(Math.hypot(v.u_kt,v.v_kt));
-        const deg=Math.round((Math.atan2(v.u_kt,v.v_kt)*180/Math.PI+360)%360);
-        return `${deg}° @ ${spd} kt`;
+    function at(z){
+        if(!current?.length)return null;
+        return spcoaSndWindAt(current,z);
+    }
+    function series(profile,zStart,zEnd,step=80){
+        if(!profile?.length)return [];
+        const top=Math.min(zEnd,profile.at(-1).z);
+        if(top<zStart)return [];
+        const result=[];
+        for(let z=zStart;z<top;z+=step){
+            const v=spcoaSndWindAt(profile,z);
+            if(v && Number.isFinite(v.u)&&Number.isFinite(v.v))result.push({z,u:v.u,v:v.v});
+        }
+        const edge=spcoaSndWindAt(profile,top);
+        if(edge && Number.isFinite(edge.u)&&Number.isFinite(edge.v))
+            result.push({z:top,u:edge.u,v:edge.v});
+        return result;
+    }
+    // Effective storm-relative helicity polygon: storm motion -> effective
+    // inflow-base wind -> winds within the effective inflow layer -> storm motion.
+    // This is only displayed when matching SHARPpy effective layer & RM exist.
+    const eil=diagnostic?.effective_inflow;
+    const z0=eil?.bottom_m_agl,z1=eil?.top_m_agl;
+    let shaded=false;
+    if(valid(motion?.right) && Number.isFinite(z0)&&Number.isFinite(z1) &&
+       z1>z0 && z1>=0 && z0<=9000 && current?.length){
+        const layer=series(current,Math.max(0,z0),Math.min(9000,z1),70);
+        if(layer.length>=2){
+            const [mx,my]=xyKt(motion.right);
+            ctx.beginPath();ctx.moveTo(mx,my);
+            for(const wind of layer){const [px,py]=xy(wind);ctx.lineTo(px,py);}
+            ctx.closePath();
+            ctx.fillStyle='rgba(90,120,143,.29)';ctx.fill();
+            ctx.strokeStyle='rgba(125,154,178,.48)';ctx.lineWidth=.85;ctx.stroke();
+            shaded=true;
+        }
+    }
+    if(previous){
+        const prevSeries=series(previous,0,9000,100);
+        spcoaSndTrace(ctx,prevSeries.map(xy),'#858a90',1.7,[5,5]);
+    }
+    // Storm-motion vectors are drawn UNDER the hodograph. Keep the familiar
+    // orange RM / periwinkle LM identification from the previous SPCOA plot.
+    function drawMotion(v,color,dashed=false){
+        if(!valid(v))return;
+        const [px,py]=xyKt(v);
+        ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(px,py);
+        ctx.setLineDash(dashed?[4,4]:[]);ctx.strokeStyle=color;
+        ctx.lineWidth=1.45;ctx.stroke();ctx.setLineDash([]);
+    }
+    drawMotion(motion?.right,'#a6acb4');
+    drawMotion(motion?.left,'#787e8c',true);
+    drawMotion(mean,'#a18d60',true);
+    if(current?.length){
+        // Keep ALL original layer colors and boundaries; smooth rounded joins
+        // make their shapes read like the WeatherFront reference.
+        const layers=[
+            [0,500,'#c232b3'],
+            [500,3000,'#e34248'],
+            [3000,6000,'#3acf61'],
+            [6000,9000,'#ffe07b']
+        ];
+        ctx.lineCap='round';ctx.lineJoin='round';
+        for(const [lower,upper,color] of layers){
+            const pts=series(current,lower,upper,75).map(xy);
+            spcoaSndTrace(ctx,pts,color,4.3);
+        }
+        // Distinct numbered 0–9 km markers; do not generate synthetic
+        // winds above the actual available native profile.
+        for(let km=0;km<=9;km++){
+            if(km*1000>current.at(-1).z)break;
+            const wind=at(km*1000);
+            if(!wind || !Number.isFinite(wind.u)||!Number.isFinite(wind.v))continue;
+            const [px,py]=xy(wind);
+            if(px<6||px>w-6||py<6||py>h-6)continue;
+            ctx.beginPath();ctx.arc(px,py,6.1,0,Math.PI*2);
+            ctx.fillStyle='#f4f4f3';ctx.fill();ctx.lineWidth=1.4;
+            ctx.strokeStyle='#07090a';ctx.stroke();
+            drawText(String(km),px,py+.45,'#121317','bold 9.4px Arial,sans-serif');
+        }
+    }
+    function labelledVector(v,label,color,dx,dy){
+        if(!valid(v))return;
+        const [px,py]=xyKt(v);
+        ctx.beginPath();ctx.arc(px,py,5.1,0,Math.PI*2);
+        ctx.fillStyle=color;ctx.fill();ctx.lineWidth=1.2;
+        ctx.strokeStyle='#050608';ctx.stroke();
+        const tx=Math.max(20,Math.min(w-20,px+dx));
+        const ty=Math.max(14,Math.min(h-14,py+dy));
+        drawText(label,tx,ty,'#e7e9eb','bold 11px Arial,sans-serif',dx<0?'right':'left');
+    }
+    labelledVector(motion?.right,'RM','#ffaa70',8,-10);
+    labelledVector(motion?.left,'LM','#a7baff',8,-10);
+    labelledVector(mean,'MW','#e2bf6b',7,12);
+    const directionSpeed=v=>{
+        if(!valid(v))return '—';
+        const speed=Math.round(Math.hypot(v.u_kt,v.v_kt));
+        const deg=(Math.atan2(v.u_kt,v.v_kt)*180/Math.PI+360)%360;
+        const compass=['N','NNE','NE','ENE','E','ESE','SE','SSE',
+            'S','SSW','SW','WSW','W','WNW','NW','NNW'];
+        const heading=compass[Math.round(deg/22.5)%16];
+        return `${heading} @ ${speed} kt`;
     };
-    ctx.font='bold 11px Arial,sans-serif';ctx.textAlign='left';ctx.fillStyle='#dadde2';
-    ctx.fillText(`SM: RIGHT MOVING  ${vecInfo(motion?.right)}`,10,16);
-    ctx.font='10px Arial,sans-serif';ctx.fillStyle='#b2b7bf';
-    ctx.fillText(`LM: ${vecInfo(motion?.left)}`,10,30);
-    const mean=diagnostic?.mean_winds?.['0_6000m'];
-    ctx.fillText(`MW (0–6 km): ${vecInfo(mean)}`,10,44);
-    ctx.fillStyle='#878b94';ctx.fillText('Height markers (km) · winds in kt',10,h-12);
+    // WeatherFront-style storm motion summary in the upper-left. Draw after
+    // the rings, using a thin near-black outline for legibility.
+    drawText(`SM: RIGHT MOVING | ${directionSpeed(motion?.right)}`,
+        7,14,'#bec1c6','bold 13px Arial,sans-serif','left');
+    drawText(`RM: ${directionSpeed(motion?.right)}`,
+        7,31,'#9198a4','11px Arial,sans-serif','left');
+    drawText(`LM: ${directionSpeed(motion?.left)}`,
+        7,46,'#9198a4','11px Arial,sans-serif','left');
+    drawText(`MW (0–6 km): ${directionSpeed(mean)}`,
+        7,61,'#9198a4','11px Arial,sans-serif','left');
+    drawText(shaded?'Effective inflow shaded · Heights AGL (km) · kt':
+        'Height markers AGL (km) · Wind speed (kt)',
+        9,h-10,'#8b9199','10px Arial,sans-serif','left');
+    ctx.restore();
 }
 function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
@@ -19465,11 +19565,6 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel #ss-status.is-loading::after{content:'';display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,.24);border-top-color:#fff;border-radius:50%;animation:spcoa-snd-white-spin .75s linear infinite;flex:none}
 @keyframes spcoa-snd-white-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){#spcoa-sounding-panel #ss-status.is-loading::after{animation:none}}
-#spcoa-sounding-panel .ss-advanced{position:relative;font:11px Arial,sans-serif}
-#spcoa-sounding-panel .ss-advanced summary{cursor:pointer;list-style:auto;border:1px solid #777;padding:5px 8px;background:#161616;white-space:nowrap}
-#spcoa-sounding-panel .ss-advanced[open] summary{background:#282828}
-#spcoa-sounding-panel .ss-advanced button{position:absolute;right:0;top:calc(100% + 4px);white-space:nowrap;z-index:7;padding:7px 9px;background:#222;border:1px solid #777;box-shadow:0 4px 12px #000}
-
 #spcoa-sounding-panel .ss-title{font-weight:600;font-size:14px;line-height:1.2}
 #spcoa-sounding-panel .ss-sub{font-size:11px;color:#c7c7c7}
 #spcoa-sounding-panel .ss-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
@@ -19533,15 +19628,14 @@ function spcoaSndBuildPanel() {
     const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
     panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
     panel.innerHTML=`<div class="ss-head"><div class="ss-heading"><div class="ss-title" id="ss-title">HRRR F00 | Valid: —</div><div class="ss-locrow"><span class="ss-sub" id="ss-location">Select native HRRR grid point</span><span id="ss-hrrr-note">Native HRRR F00 values may differ slightly from SPCOA map fields</span></div></div>
-      <div class="ss-actions"><label>Parcel <select id="ss-parcel-mode"><option value="ml" selected>Mixed Layer (Method B)</option><option value="sb">Surface Based</option><option value="mu">Most Unstable</option></select></label>
+      <div class="ss-actions"><label>Parcel <select id="ss-parcel-mode"><option value="ml" selected>Mixed Layer</option><option value="sb">Surface Based</option><option value="mu">Most Unstable</option></select></label>
       <label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
-      <details class="ss-advanced"><summary>Advanced</summary><button type="button" id="ss-load-json">Load diagnostic JSON</button></details><input type="file" id="ss-json-file" accept=".json,application/json" style="display:none">
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
       <div class="ss-body"><div class="ss-meta-row"><span id="ss-credit">Sounding created by: Matthew Labenz · NWS North Platte, NE · Built with SHARPpy + Peters ECAPE</span><span id="ss-status" role="status" aria-live="polite"></span></div>
-      <div class="ss-figures"><div class="ss-chart"><h3>Skew-T / log-P · Native HRRR F00 · SHARPpy parcel</h3><canvas id="ss-skew"></canvas></div>
-      <div class="ss-chart"><h3>Hodograph · Storm motions</h3><canvas id="ss-hodo"></canvas></div></div>
+      <div class="ss-figures"><div class="ss-chart"><canvas id="ss-skew"></canvas></div>
+      <div class="ss-chart"><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables" aria-label="Compact SPCOA sounding diagnostics">
-        <div class="ss-box ss-thermo-box"><h3>Thermodynamics <span class="ss-thermo-unit">SB / ML (Method B) / MU</span></h3>
+        <div class="ss-box ss-thermo-box"><h3>Thermodynamics <span class="ss-thermo-unit">SB / ML / MU</span></h3>
           <table class="ss-thermo-table" id="ss-thermo"></table><div id="ss-thermo-extra" class="ss-thermo-extra"></div>
           <div id="ss-thermo-prev" style="display:none;margin-top:5px"></div></div>
         <div class="ss-box"><h3>Kinematics <span class="ss-thermo-unit">kt · m²/s²</span></h3><table class="ss-kine-table" id="ss-kinematics"></table><div class="ss-bottom-note" id="ss-eil"></div></div>
@@ -19567,13 +19661,6 @@ function spcoaSndBuildPanel() {
     document.getElementById('ss-parcel-mode').addEventListener('change',e=>{
         SPCOA_SOUNDING.parcelMode=e.target.value;
         if(SPCOA_SOUNDING.current)spcoaSndRender();
-    });
-    document.getElementById('ss-load-json').addEventListener('click',()=>{
-        document.getElementById('ss-json-file').click();
-    });
-    document.getElementById('ss-json-file').addEventListener('change',async e=>{
-        const file=e.target.files?.[0];e.target.value='';
-        if(file)await spcoaSndLoadLocalDiagnostic(file);
     });
     // V42: fallback hold gesture for a map panel opened outside the host shell.
     // In normal multipanel use the HOST overlay owns the hold gesture, since
@@ -19959,7 +20046,6 @@ function spcoaSndRender() {
     // Keep a compact loading/error notice, but remove the persistent,
     // redundant calculation-status sentence once diagnostics have arrived.
     const notes=[];
-    if(!diag&&!SPCOA_SOUNDING.loadingDiagnostics)notes.push('Diagnostics unavailable · Advanced → Load diagnostic JSON');
     if(SPCOA_SOUNDING.diagnosticError)notes.push(SPCOA_SOUNDING.diagnosticError);
     spcoaSndStatus(notes.join(' · '));
     if(SPCOA_SOUNDING.loadingDiagnostics)spcoaSndUpdateDiagnosticLoading();
