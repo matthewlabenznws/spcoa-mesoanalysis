@@ -18782,9 +18782,12 @@ function spcoaSndProfile(p) {
     const out=[];
     for(let k=0;k<p.pressure_hpa.length;k++) {
         const press=p.pressure_hpa[k], t=p.temperature_k[k],q=p.specific_humidity_kgkg[k];
-        const z=p.height_m_msl[k]-ground,u=p.u_ms[k],v=p.v_ms[k];
-        if(![press,t,q,z].every(Number.isFinite)||press<90||press>1100||z < -100 ||z>30000)continue;
-        out.push({p:press,t:t-273.15,td:spcoaSndDewpoint(q,press),z,u,v,q,k});
+        // z is AGL for all existing parcel/hodograph math. z_msl preserves the
+        // archived HRRR height, including the actual surface terrain elevation.
+        const z_msl=p.height_m_msl[k];
+        const z=z_msl-ground,u=p.u_ms[k],v=p.v_ms[k];
+        if(![press,t,q,z,z_msl].every(Number.isFinite)||press<90||press>1100||z < -100 ||z>30000)continue;
+        out.push({p:press,t:t-273.15,td:spcoaSndDewpoint(q,press),z,z_msl,u,v,q,k});
     }
     // Surface row has 2m T and 10m winds; avoid claiming all 6 variables are colocated.
     out.sort((a,b)=>a.z-b.z);
@@ -19122,7 +19125,7 @@ function spcoaSndWindBarb(ctx,x,y,u,v,size=1) {
     }
     ctx.restore();
 }
-/* SPCOA V51: WeatherFront-style Skew-T visual refinements only.
+/* SPCOA V52: WeatherFront-reference Skew-T annotations and native MSL terrain.
  * Native HRRR thermodynamics, 50-hPa barbs, SHARPpy parcel paths, and
  * inferred (not gridded) advection all retain their original provenance.
  */
@@ -19175,45 +19178,54 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         spcoaSndTrace(ctx,trace(current,'td'),'#169915',3.45);
         spcoaSndTrace(ctx,trace(current,'t'),'#ff3038',3.65);
     }
-    // Actual SHARPpy parcel pressure levels: never use approximated LCL/LFC/EL.
-    // Interpolate *only* the drawn trace temperature at the exact diagnostic
-    // pressure; this does not change the pressure or the parcel calculation.
-    const parcelTempAt=p=>{
-        for(let k=1;k<parcelPoints.length;k++){
-            const a=parcelPoints[k-1],b=parcelPoints[k];
-            if(a.p>=p && b.p<=p && a.p>b.p)
-                return a.t+(b.t-a.t)*(a.p-p)/(a.p-b.p);
-        }
-        const near=parcelPoints.find(a=>Math.abs(a.p-p)<.75);
-        return near?.t ?? NaN;
-    };
-    if(parcel && parcelPoints.length>1){
+    // WeatherFront-style level ticks: short HORIZONTAL guides at the actual
+    // SHARPpy pressures. Never join a parcel point to a far-away label with a
+    // diagonal leader. LFC/EL are omitted when no positive CAPE is available.
+    if(parcel){
+        const pCape=Number(parcel.cape_jkg);
+        const canUseBuoyancyLevels=Number.isFinite(pCape) && pCape>0;
         const levels=[
-            ['lcl_hpa','LCL','#5edd56'],
-            ['lfc_hpa','LFC','#f0d447'],
-            ['el_hpa','EL','#9bb8c8']
-        ].map(([key,label,color])=>({pressure:Number(parcel[key]),label,color}))
-         .filter(level=>Number.isFinite(level.pressure) && level.pressure>=top && level.pressure<=bottom)
-         .map(level=>({...level,tc:parcelTempAt(level.pressure),py:y(level.pressure)}))
-         .filter(level=>Number.isFinite(level.tc) && level.py>=T && level.py<=B)
-         .sort((a,b)=>a.py-b.py);
-        let lastLabelY=T-17;
-        for(const level of levels){
-            const xx=x(level.tc,level.pressure),py=level.py;
-            if(xx<L || xx>R)continue;
-            const labelY=clamp(Math.max(py,lastLabelY+14),T+12,B-11);
-            lastLabelY=labelY;
-            const leadEnd=R-68;
+            {key:'lcl_hpa',label:'LCL',color:'#39b52f',enabled:true},
+            {key:'lfc_hpa',label:'LFC',color:'#e3d137',enabled:canUseBuoyancyLevels},
+            {key:'el_hpa', label:'EL', color:'#91a5b5',enabled:canUseBuoyancyLevels}
+        ].filter(level=>level.enabled).map(level=>{
+            const raw=parcel[level.key];
+            const pressure=raw===null || raw===undefined ? NaN : Number(raw);
+            return {...level,pressure};
+        }).filter(level=>Number.isFinite(level.pressure) && level.pressure>=top && level.pressure<=bottom);
+        // Draw actual pressure markers; never shift a marker off its true level.
+        // If two text labels crowd, put the labels on alternate sides instead.
+        levels.sort((a,b)=>a.pressure-b.pressure);
+        for(let idx=0;idx<levels.length;idx++){
+            const level=levels[idx],py=y(level.pressure);
+            if(!(py>=T+3 && py<=B-3))continue;
             ctx.save();
-            ctx.strokeStyle=level.color;ctx.fillStyle=level.color;ctx.lineWidth=1.55;
-            ctx.beginPath();ctx.arc(xx,py,3.7,0,Math.PI*2);ctx.fill();
-            ctx.beginPath();ctx.moveTo(xx+(xx<leadEnd?5:-5),py);
-            ctx.lineTo(leadEnd,labelY);ctx.stroke();
-            // Dark backing keeps each colored annotation distinct from traces.
-            ctx.fillStyle='rgba(7,12,17,.91)';
-            ctx.fillRect(R-65,labelY-11,59,15);
-            ctx.font='bold 11px Arial,sans-serif';ctx.fillStyle=level.color;
-            ctx.textAlign='right';ctx.fillText(level.label,R-10,labelY);
+            ctx.strokeStyle=level.color;ctx.fillStyle=level.color;
+            ctx.lineWidth=1.5;
+            if(level.label==='EL'){
+                // EL is usually far aloft: an unobtrusive short tick is easier
+                // to read next to its parcel trace, as on the reference plot.
+                const near=parcelPoints.find(a=>Math.abs(a.p-level.pressure)<1)
+                    || parcelPoints.reduce((best,a)=>
+                        Math.abs(a.p-level.pressure)<Math.abs(best.p-level.pressure)?a:best,
+                        parcelPoints[0]);
+                if(near && Number.isFinite(near.t)){
+                    const xx=clamp(x(near.t,level.pressure),L+34,R-44);
+                    ctx.beginPath();ctx.moveTo(xx-12,py);ctx.lineTo(xx+12,py);ctx.stroke();
+                    ctx.textAlign='right';ctx.font='bold 11px Arial,sans-serif';
+                    ctx.fillText('EL',xx-15,py-5);
+                }
+            }else{
+                // Right-aligned LCL/LFC labels and short level ticks, all at
+                // the true pressure, WITHOUT stretching back across the Skew-T.
+                const edge=R-13;
+                ctx.beginPath();ctx.moveTo(edge-50,py);ctx.lineTo(edge,py);ctx.stroke();
+                ctx.textAlign='right';ctx.font='bold 11px Arial,sans-serif';
+                // Dark stroke lets the word remain legible without a box.
+                ctx.lineWidth=2.5;ctx.strokeStyle='#080b0e';
+                ctx.strokeText(level.label,edge,py-5);
+                ctx.fillText(level.label,edge,py-5);
+            }
             ctx.restore();
         }
     }
@@ -19228,28 +19240,28 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         const yt=clamp(y(Math.max(top,eTop)),T,B);
         const yb=clamp(y(Math.min(bottom,eBottom)),T,B);
         if(yb-yt>3){
-            const axisX=L-35;
-            ctx.fillStyle='#52d4e9';ctx.fillRect(axisX,yt,5,yb-yt);
-            ctx.strokeStyle='#b7eefa';ctx.lineWidth=1.3;
+            const axisX=L-34;
+            ctx.fillStyle='#a549ba';ctx.fillRect(axisX,yt,3,yb-yt);
+            ctx.strokeStyle='#b87ecb';ctx.lineWidth=1.2;
             ctx.beginPath();ctx.moveTo(axisX-3,yt);ctx.lineTo(axisX+9,yt);
             ctx.moveTo(axisX-3,yb);ctx.lineTo(axisX+9,yb);ctx.stroke();
             if(yb-yt>30){
                 ctx.save();ctx.translate(axisX-5,(yt+yb)/2);ctx.rotate(-Math.PI/2);
-                ctx.font='bold 9px '+fontMono;ctx.textAlign='center';ctx.fillStyle='#b8eff8';
+                ctx.font='bold 9px '+fontMono;ctx.textAlign='center';ctx.fillStyle='#c79ad4';
                 ctx.fillText('EIL',0,0);ctx.restore();
             }
         }
     }
 
-    // WeatherFront-style restrained slate-gray wind-barb shaft.
-    // The original full set of 50-hPa barbs is NOT thinned.
-    const barbX=R+17,advX=w-36;
-    const stripL=R+5,stripR=R+75;
-    ctx.fillStyle='#1b1f26';ctx.fillRect(stripL,T,stripR-stripL,B-T);
-    ctx.strokeStyle='#65717c';ctx.lineWidth=1;
-    ctx.strokeRect(stripL+.5,T+.5,stripR-stripL-1,B-T-1);
-    ctx.strokeStyle='rgba(184,197,209,.13)';ctx.lineWidth=.75;
-    ctx.beginPath();ctx.moveTo(barbX,T+1);ctx.lineTo(barbX,B-1);ctx.stroke();
+    // WeatherFront reference: narrow CHARCOAL wind-barb gutter, distinct
+    // bright vertical axis, and every native 50-hPa barb. No framed card.
+    const barbX=R+54,advX=w-36;
+    const stripL=R+7,stripR=R+63;
+    ctx.fillStyle='#111419';ctx.fillRect(stripL,T,stripR-stripL,B-T);
+    ctx.strokeStyle='#555a60';ctx.lineWidth=.8;
+    ctx.beginPath();ctx.moveTo(stripL+.5,T);ctx.lineTo(stripL+.5,B);ctx.stroke();
+    ctx.strokeStyle='#bac0c8';ctx.lineWidth=1.15;
+    ctx.beginPath();ctx.moveTo(barbX,T);ctx.lineTo(barbX,B);ctx.stroke();
     let barbs=Array.isArray(diagnostic?.wind_barbs_50hpa)?diagnostic.wind_barbs_50hpa.map(a=>({
         pressure:spcoaSndNum(a.pressure_hpa),u:spcoaSndNum(a.u_kt)/1.943844,v:spcoaSndNum(a.v_kt)/1.943844
     })):spcoaSndPressureLevels(current||[]).map(({pressure,sample:a})=>({pressure,u:a?.u,v:a?.v}));
@@ -19291,43 +19303,47 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     }
     if(current?.length){
         const s=current[0];
-        // Surface T/Td callouts reference the actual native surface sample.
-        // Keep the underlying traces and temperature mapping unchanged.
+        // Surface is NOT 0 m MSL. It is 0 m AGL by definition.
+        // z_msl is the original archived HRRR surface geopotential height
+        // (level 0, HGT:surface); z remains AGL for height labels.
         const sY=y(s.p);
-        if(Number.isFinite(sY) && sY>=T && sY<=B &&
-           Number.isFinite(s.t) && Number.isFinite(s.td)){
-            const tx=clamp(x(s.t,s.p),L+23,R-23);
-            const dx=clamp(x(s.td,s.p),L+23,R-23);
-            let labelTd=dx,labelT=tx;
-            if(Math.abs(labelT-labelTd)<56){
-                const mid=(labelT+labelTd)/2;
-                labelTd=mid-29;labelT=mid+29;
-                const shift=labelTd<L+21?L+21-labelTd:labelT>R-21?R-21-labelT:0;
-                labelTd+=shift;labelT+=shift;
+        if(Number.isFinite(sY) && sY>=T && sY<=B){
+            ctx.save();
+            const groundHeight=Number.isFinite(s.z_msl)?`${Math.round(s.z_msl)}m`:'—';
+            ctx.fillStyle='#a8afb8';ctx.font='10px '+fontMono;ctx.textAlign='left';
+            // A single quiet label at actual model surface pressure.
+            ctx.fillText(`SFC (${groundHeight})`,L+4,clamp(sY-6,T+12,B-6));
+            // Simple WeatherFront surface temperature and dewpoint labels,
+            // directly under their corresponding traces: NO boxes or leaders.
+            const vals=[
+                {tc:s.td,color:'#33d83e',tag:'Td'},
+                {tc:s.t,color:'#ff353d',tag:'T'}
+            ].filter(a=>Number.isFinite(a.tc));
+            const py=clamp(sY+18,T+17,B+15);
+            const labelWidths=[];
+            ctx.font='bold 13px Arial,sans-serif';
+            for(const val of vals){
+                val.text=`${Math.round(val.tc*1.8+32)}°F`;
+                val.width=ctx.measureText(val.text).width;
+                val.x=clamp(x(val.tc,s.p),L+val.width/2+3,R-val.width/2-3);
+                labelWidths.push(val.width);
             }
-            const calloutY=clamp(sY+18,T+19,B-12);
-            for(const callout of [
-                {realX:dx,cx:labelTd,tc:s.td,color:'#57e35c'},
-                {realX:tx,cx:labelT,tc:s.t,color:'#ff4c54'}
-            ]){
-                const label=Math.round(callout.tc*9/5+32)+'°F';
-                ctx.save();ctx.font='bold 12px Arial,sans-serif';
-                const boxW=Math.max(39,ctx.measureText(label).width+10);
-                const cx=clamp(callout.cx,L+boxW/2+2,R-boxW/2-2);
-                ctx.strokeStyle=callout.color;ctx.lineWidth=1;
-                ctx.beginPath();ctx.moveTo(callout.realX,sY);ctx.lineTo(cx,calloutY-12);ctx.stroke();
-                ctx.beginPath();ctx.arc(callout.realX,sY,2.6,0,2*Math.PI);ctx.fillStyle=callout.color;ctx.fill();
-                ctx.fillStyle='rgba(7,12,17,.93)';ctx.fillRect(cx-boxW/2,calloutY-12,boxW,17);
-                ctx.strokeStyle=callout.color;ctx.globalAlpha=.65;
-                ctx.strokeRect(cx-boxW/2+.5,calloutY-11.5,boxW-1,16);
-                ctx.globalAlpha=1;ctx.fillStyle=callout.color;ctx.textAlign='center';
-                ctx.fillText(label,cx,calloutY);ctx.restore();
+            if(vals.length===2 && vals[1].x-vals[0].x<(vals[0].width+vals[1].width)/2+7){
+                // Short horizontal separation only when labels would overlap;
+                // the actual temperature/dewpoint traces do not move.
+                const midpoint=(vals[0].x+vals[1].x)/2;
+                const halfGap=(vals[0].width+vals[1].width)/4+5;
+                vals[0].x=clamp(midpoint-halfGap,L+vals[0].width/2+3,R-vals[0].width/2-3);
+                vals[1].x=clamp(midpoint+halfGap,L+vals[1].width/2+3,R-vals[1].width/2-3);
             }
+            ctx.textAlign='center';ctx.lineJoin='round';
+            for(const val of vals){
+                ctx.fillStyle=val.color;ctx.strokeStyle='#07090c';ctx.lineWidth=3.5;
+                ctx.strokeText(val.text,val.x,py);
+                ctx.fillText(val.text,val.x,py);
+            }
+            ctx.restore();
         }
-        // Keep surface information available in exports even at narrow widths.
-        ctx.textAlign='left';ctx.font='bold 10px '+fontMono;
-        ctx.fillStyle='#d6dde4';
-        ctx.fillText(`SFC ${Number.isFinite(s.z)?Math.round(s.z)+' m MSL':'height unavailable'} · T / Td`,L+4,B+31);
         ctx.fillStyle='#adb5c3';ctx.font='10px '+fontMono;
         for(const km of [1,3,5,7,9,13]){
             const nearest=current.reduce((best,a)=>Math.abs(a.z-km*1000)<Math.abs(best.z-km*1000)?a:best,current[0]);
@@ -19336,15 +19352,10 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
             }
         }
     }
-    ctx.font='bold 10px '+fontMono;ctx.textAlign='left';
-    ctx.fillStyle='#ff4c54';ctx.fillText('T',L+7,T+14);
-    ctx.fillStyle='#57e35c';ctx.fillText('Td',L+24,T+14);
-    ctx.fillStyle='#84d5f7';
-    const parcelMessage=parcelPoints.length?`${mode.toUpperCase()} parcel`:
-        diagnostic?`${mode.toUpperCase()} trace unavailable`:'Parcel diagnostics loading…';
-    ctx.fillText(parcelMessage,L+51,T+14);
-    ctx.textAlign='center';ctx.fillStyle='#dce4ed';
-    ctx.fillText('WIND · 50 hPa',(stripL+stripR)/2,T-10);
+    // Plot is intentionally uncluttered; diagnostic-loading status is already
+    // displayed above the canvas in the existing sounding header.
+    ctx.textAlign='center';ctx.font='bold 10px '+fontMono;
+    ctx.fillStyle='#cfd5db';ctx.fillText('WIND · 50 hPa',(stripL+stripR)/2,T-10);
 }
 function spcoaSndHodo(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
