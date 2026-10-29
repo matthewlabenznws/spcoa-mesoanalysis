@@ -38,6 +38,7 @@ jobs:
             --template-file .aws-sam/build/template.yaml \
             --stack-name spcoa-sounding-diagnostics \
             --region "$AWS_DEFAULT_REGION" \
+            --resolve-s3 \
             --resolve-image-repos \
             --capabilities CAPABILITY_IAM \
             --no-confirm-changeset \
