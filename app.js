@@ -18918,12 +18918,71 @@ function spcoaSndVerifyDiagnostic(data,run,profile) {
         throw new Error(`Diagnostic geolocation differs from selected HRRR grid point by ${km.toFixed(2)} km`);
     return data;
 }
+/* V50: Any native CONUS cell can request its own SHARPpy/ECAPE diagnostics.
+ * First try the immutable S3 sidecar; if missing, ask the SQS-backed compute API.
+ * The API reads the authoritative HRRR tile itself and caches the result in S3.
+ * Set its URL in /spcoa_sounding_config.json; NO secrets in browser JavaScript.
+ */
+let spcoaSndApiConfigPromise=null;
+async function spcoaSndApiUrl() {
+    const direct=String(window.SPCOA_SOUNDING_DIAGNOSTICS_API_URL||'').trim();
+    if(direct) {
+        const u=new URL(direct);
+        if(u.protocol!=='https:')throw new Error('Sounding API must use HTTPS');
+        return u.toString();
+    }
+    if(!spcoaSndApiConfigPromise) {
+        spcoaSndApiConfigPromise=(async()=>{
+            const r=await fetch('spcoa_sounding_config.json',{cache:'no-store'});
+            if(r.status===404)return null;
+            if(!r.ok)throw new Error(`Sounding API config HTTP ${r.status}`);
+            const config=await r.json();
+            const raw=String(config?.diagnostics_api_url||'').trim();
+            if(!raw||raw.includes('REPLACE_WITH'))return null;
+            const u=new URL(raw);
+            if(u.protocol!=='https:')throw new Error('Sounding API must use HTTPS');
+            return u.toString();
+        })().catch(err=>{console.warn('SPCOA sounding API configuration:',err);return null;});
+    }
+    return spcoaSndApiConfigPromise;
+}
 async function spcoaSndFetchDiagnostic(run,profile) {
     const url=spcoaSndUrl(run,spcoaSndDiagnosticPath(profile.j,profile.i));
-    const response=await fetch(url,{cache:'no-store'});
-    if(response.status===404) return null;
-    if(!response.ok) throw new Error(`Diagnostic sidecar HTTP ${response.status}`);
-    return spcoaSndVerifyDiagnostic(await response.json(),run,profile);
+    let response=null;
+    try {response=await fetch(url,{cache:'no-store'});}
+    catch(err) {console.warn('SPCOA S3 sounding diagnostics request:',err);}
+    if(response?.ok)
+        return spcoaSndVerifyDiagnostic(await response.json(),run,profile);
+    // S3 may return 403 for a missing object when ListBucket isn't granted.
+    if(response && ![403,404].includes(response.status))
+        throw new Error(`Diagnostic sidecar HTTP ${response.status}`);
+    const api=await spcoaSndApiUrl();
+    if(!api)return null;   // Graceful native-only mode until API is deployed.
+    const target=new URL(api);
+    target.searchParams.set('run',run);
+    target.searchParams.set('j',String(profile.j));
+    target.searchParams.set('i',String(profile.i));
+    const requestSerial=SPCOA_SOUNDING.serial;
+    for(let attempt=0;attempt<39;attempt++) {
+        if(requestSerial!==SPCOA_SOUNDING.serial)
+            throw new Error('Sounding selection changed');
+        const r=await fetch(target.toString(),{cache:'no-store',headers:{Accept:'application/json'}});
+        const body=await r.json().catch(()=>({}));
+        if(r.ok && r.status===200)
+            return spcoaSndVerifyDiagnostic(body,run,profile);
+        if(r.status===202) {
+            if(attempt===0)spcoaSndStatus('HRRR profile loaded — calculating this native grid point (SHARPpy / Peters ECAPE)…');
+            const delay=Math.max(4000,Math.min(12000,Number(body.retry_after_seconds||7)*1000));
+            await new Promise(resolve=>setTimeout(resolve,delay));
+            continue;
+        }
+        if(r.status===429) {
+            await new Promise(resolve=>setTimeout(resolve,9000));
+            continue;
+        }
+        throw new Error(`Sounding diagnostics API HTTP ${r.status}: ${String(body.error||'request failed').slice(0,180)}`);
+    }
+    throw new Error('The HRRR diagnostic calculation is still pending after several minutes. Try the point again.');
 }
 function spcoaSndNum(value) { return Number.isFinite(value)?value:NaN; }
 function spcoaSndVal(data,path) {
@@ -18933,7 +18992,7 @@ function spcoaSndVal(data,path) {
 }
 function spcoaSndDiagnosticStatus(data) {
     return data ? 'Calculated from this native HRRR F00 profile (SHARPpy / Method B / Peters ECAPE)' :
-      'Native HRRR profile only — diagnostic JSON not published for this grid point. Use “Load diagnostic JSON” to test.';
+      'Native HRRR profile loaded — fetching or calculating diagnostics for this grid point (if the compute API is configured).';
 }
 async function spcoaSndLoadLocalDiagnostic(file) {
     if(!file || !SPCOA_SOUNDING.current)return;
@@ -19547,7 +19606,7 @@ function spcoaSndKinematicRows(data) {
       ['Effective inflow top (hPa)',value('effective_inflow.top_hpa'),0]
     ];
 }
-/* V49 adds SPC/SHARPpy-derived SCP, STP, SHIP and EHI when a matching
+/* V50 adds API-backed on-demand per-point diagnostics; V49 adds SHARPpy SCP/STP/SHIP/EHI when a matching
  * V4 per-point JSON exists. No invented tornado probabilities or hazards.
  */
 /* V49: native V4 computed BWD, SRH, SRW by layer, plus documented
@@ -19587,9 +19646,9 @@ function spcoaSndCompactEnvironment(data){
         ['STP (CIN)', 'composites.stp_cin',1,'ss-group-tornado'],
         ['STP (fixed)', 'composites.stp_fixed',1,'ss-group-tornado'],
         ['SHIP', 'composites.ship',1,'ss-group-hail'],
-        ['SB EHI 0–1', 'composites.ehi_0_1km',2,''],
-        ['SB EHI 0–3', 'composites.ehi_0_3km',2,''],
-        ['BRN (MU)', 'composites.brn_mu',0,''],
+        ['SB EHI 0–1', 'composites.ehi_0_1km',1,''],
+        ['SB EHI 0–3', 'composites.ehi_0_3km',1,''],
+        ['BRN (MU)', 'composites.brn_mu',1,''],
         ['PWAT', 'pwat_inches',2,''],
         ['Freezing', 'freezing_level_m_agl',0,'']
     ];
@@ -19733,7 +19792,7 @@ function spcoaSndRender() {
     const info=document.getElementById('ss-diagnostic-info');
     if(info)info.textContent=diag?
         `Method B: pressure-weighted 100-hPa ML; SHARPpy profiles + Peters ECAPE · ${Object.keys(diag.calculation_errors||{}).length} calculation errors · ${diag.storm_motions?.method||'storm motion not available'}`:
-        `No per-point diagnostic sidecar found at ${spcoaSndDiagnosticPath(a.profile.j,a.profile.i)}. Upload a diagnostic JSON for this precise grid point or use “Load diagnostic JSON”.`;
+        `Native HRRR profile loaded. Automatic per-point SB/ML/MU diagnostics require the configured calculation API; until then, you can use “Load diagnostic JSON”.`;
     const note=document.getElementById('ss-archive-note');
     if(note){
         const legacy=a.manifest?.quantization?.specific_humidity_kgkg?.transform!=='log10';
