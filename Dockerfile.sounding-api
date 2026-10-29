@@ -1,18 +1,19 @@
 FROM public.ecr.aws/lambda/python:3.11
 
-RUN yum install -y gcc gcc-c++ make && yum clean all
-
 COPY spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_sounding_api.py ${LAMBDA_TASK_ROOT}/
 
-# Install compatible scientific packages first
+# Install compatible prebuilt scientific packages
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir --only-binary=:all: \
-       "numpy==1.26.4" "scipy==1.13.1" \
-    && python -m pip install --no-cache-dir \
-       "numpy==1.26.4" "scipy==1.13.1" "metpy==1.6.3" \
-       ecape boto3 requests python-dateutil \
-    && python -m pip install --no-cache-dir --no-deps "SHARPpy==1.4.0a5" \
-    && python -c "import numpy, scipy, metpy, ecape, boto3; from sharppy.sharptab import params, profile, thermo, winds; print('SPCOA IMPORT OK', 'NumPy', numpy.__version__, 'SciPy', scipy.__version__, 'MetPy', metpy.__version__)" \
+       "numpy==1.26.4" \
+       "scipy==1.13.1" \
+       "pyproj==3.6.1" \
+       "metpy==1.6.3" \
+       "ecape==0.1.1" \
+       boto3 requests python-dateutil \
+    && python -m pip install --no-cache-dir --only-binary=:all: --no-deps \
+       "SHARPpy==1.4.0a5" \
+    && python -c "import numpy, scipy, pyproj, metpy, ecape, boto3; from sharppy.sharptab import params, profile, thermo, winds; print('SPCOA imports OK:', 'NumPy', numpy.__version__, 'SciPy', scipy.__version__, 'pyproj', pyproj.__version__, 'MetPy', metpy.__version__)" \
     && python spcoa_sounding_diagnostics.py selftest
 
 CMD ["spcoa_sounding_api.lambda_handler"]
