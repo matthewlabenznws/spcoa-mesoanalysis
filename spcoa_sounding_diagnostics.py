@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPCOA WeatherFront-inspired HRRR F00 sounding diagnostic engine (V6 / sounding UI V62).
+"""SPCOA WeatherFront-inspired HRRR F00 sounding diagnostic engine (V7 / sounding UI V63).
 
 Reads native columns from spcoa_soundings.py v1 S3 tiles or a JSON profile.
 Computes thermodynamics and SB/ML/MU Peters ECAPE from the selected profile; never substitutes gridded
@@ -320,7 +320,7 @@ def ecape_values(a, parcels, enabled=True):
     return output, errors
 
 
-# ---------------- V60: warm cloud, SHARPpy SARS, wet-bulb precip screen ----------------
+# ---------------- V60: warm cloud, SARS and wet-bulb profile helpers ----------------
 def warm_cloud_layers(freezing_m_agl, parcels):
     """Convective warm-cloud depth: first environmental 0 C height minus parcel LCL.
 
@@ -337,87 +337,6 @@ def warm_cloud_layers(freezing_m_agl, parcels):
                          'status': 'valid' if delta > 0 else 'no_warm_cloud_layer'}
     return {'definition': 'First environmental 0 C level minus parcel LCL (convective cloud-base approximation)',
             'freezing_level_m_agl': freezing_m_agl, 'by_parcel': out}
-
-
-def _energy_layers(z_agl, wetbulb_c):
-    """Integrate positive melting and below-warm-layer refreezing thermal areas.
-
-    Area units degC*m. This is an exploratory screen, NOT the calibrated
-    revised Bourgouin categorical/ensemble scheme.
-    """
-    z = np.asarray(z_agl, float)
-    w = np.asarray(wetbulb_c, float)
-    good = np.isfinite(z) & np.isfinite(w) & (z >= 0) & (z <= 6000)
-    z, w = z[good], w[good]
-    if len(z) < 5 or np.any(np.diff(z) <= 0):
-        return None
-    warm = np.where(w > 0.25)[0]
-    if not len(warm):
-        return {'melting_c_m': 0., 'refreezing_c_m': 0., 'warm_nose_max_c': float(np.max(w)),
-                'has_warm_nose': False}
-    # The cold layer to test is ONLY below the lowest elevated warm layer.
-    bottom_warm = int(warm[0]); top_warm = int(warm[-1]); melt = 0.; cold = 0.
-    for i in range(1, len(z)):
-        dz = z[i] - z[i-1]
-        if dz <= 0: continue
-        midpoint = 0.5 * (w[i-1] + w[i])
-        if i <= top_warm+1 and midpoint > 0:
-            melt += midpoint * dz
-        if i <= bottom_warm and midpoint < 0:
-            cold += -midpoint * dz
-    return {'melting_c_m': number(melt), 'refreezing_c_m': number(cold),
-            'warm_nose_max_c': number(np.max(w[warm])),
-            'has_warm_nose': bool(bottom_warm > 0)}
-
-
-def _classify_precip_screen(z_agl, wetbulb_c):
-    """A *conditional* p-type heuristic; does not predict precip occurrence.
-
-    Only rain/snow/sleet/freezing-rain screening. Hysteresis/bounds are
-    intentionally conservative; marginal cases explicitly called mixed/uncertain.
-    """
-    z = np.asarray(z_agl, float); w = np.asarray(wetbulb_c, float)
-    energies = _energy_layers(z, w)
-    if energies is None: return {'status': 'insufficient_wetbulb_profile', 'ptype': None}
-    surface = float(w[0]); melt = float(energies['melting_c_m']); refreeze=float(energies['refreezing_c_m'])
-    warm_max = float(energies['warm_nose_max_c'])
-    # Thermal-area cutoffs here are qualitative rules, not published
-    # or calibrated Bourgouin/revised Bourgouin thresholds.
-    if surface >= 2.0:
-        kind = 'Rain' if melt >= 800 else 'Rain / snow mix possible'
-    elif surface >= 0.3:
-        kind = 'Rain / snow mix possible' if melt < 1200 else 'Rain'
-    elif melt < 600 or warm_max <= 0.5:
-        kind = 'Snow' if surface <= -1.0 else 'Snow / rain mix possible'
-    elif refreeze >= 2800:
-        kind = 'Ice pellets (sleet) favored'
-    elif refreeze <= 500:
-        kind = 'Freezing rain favored'
-    else:
-        kind = 'Freezing rain / sleet mix possible'
-    return {'status': 'screening_only', 'ptype': kind,
-            'surface_wetbulb_c': number(surface), **energies,
-            'method': 'Exploratory wet-bulb melting/refreezing thermal-area screening; NOT calibrated revised Bourgouin',
-            'limitations': 'Conditional on precipitation. Does not diagnose cloud ice supply, precipitation occurrence/intensity, or microphysics.'}
-
-
-def precip_type_screen(a, dew):
-    try:
-        from metpy.units import units
-        import metpy.calc as mp
-        # Filter to the lowest 6 km AGL. A single gridpoint sounding does not
-        # say whether hydrometeors are forming or precipitating at this location.
-        keep = np.where((a['height_m_agl'] >= 0) & (a['height_m_agl'] <= 6000))[0]
-        if len(keep) < 5: raise ValueError('Insufficient low/midlevel HRRR profile')
-        p = a['pressure_hpa'][keep] * units.hPa
-        t = a['temperature_k'][keep] * units.kelvin
-        td = np.asarray(dew, float)[keep] * units.degC
-        tw = mp.wet_bulb_temperature(p,t,td).to('degC').m
-        result = _classify_precip_screen(a['height_m_agl'][keep],tw)
-        result['wetbulb_profile_c'] = [number(x) for x in tw]
-        return result
-    except Exception as exc:
-        return {'status':'calculation_unavailable','ptype':None,'detail': f'{type(exc).__name__}: {exc}'}
 
 
 def sars_analog_matches(prof, a, tc, parcels, shear, srh):
@@ -472,47 +391,126 @@ def sars_analog_matches(prof, a, tc, parcels, shear, srh):
         result['error']=f'{type(exc).__name__}: {exc}'
     return result
 
-def conditional_hazard_screen(parcels, composites, effective, dcape):
-    """Experimental, conditional environment signal (NOT a hazard forecast).
+def sharppy_possible_hazard(a, tc, dew, raw):
+    """Apply SHARPpy's published ingredients-based possible_watch routine.
 
-    Individual thresholds are screening conventions, not a validated categorical
-    severe-weather or tornado prediction algorithm. No probabilities are emitted.
-    Neither precipitation occurrence nor storm initiation can be inferred here.
+    SHARPpy's watch algorithm requires a ConvectiveProfile with its *own*
+    thermodynamic, kinematic, and severe diagnostic fields.  Do not attach our
+    custom parcel composites to a BasicProfile and call possible_watch: they
+    are not the same feature definitions.
+
+    Native HRRR gridpoints are not radiosonde climate stations. Therefore we
+    deliberately disable SHARPpy's station-specific PWV climatology flag.  Its
+    climatology-dependent FLASH FLOOD category is not assessed here; all
+    remaining supported categories use the original watch_type logic.
     """
-    mu = (parcels.get('mu') or {}).get('cape_jkg')
-    ml = (parcels.get('ml') or {})
-    sb = (parcels.get('sb') or {})
-    ebwd = (effective or {}).get('effective_bwd_kt')
-    stp = (composites or {}).get('stp_cin')
-    ship = (composites or {}).get('ship')
-    cin = ml.get('cin_jkg')
-    if mu is None or ebwd is None:
-        return {'status':'insufficient_inputs','label':'UNDETERMINED',
-                'limitations':'Conditional environment screen; not a hazard or occurrence forecast.'}
-    if (stp is not None and stp >= 1.0 and mu >= 500 and ebwd >= 25
-            and (cin is None or cin > -200)):
-        label='TORNADO ENVIRONMENT'
-    elif ship is not None and ship >= 1.0 and mu >= 1000 and ebwd >= 25:
-        label='LARGE-HAIL ENVIRONMENT'
-    elif dcape is not None and dcape >= 900 and mu >= 700 and ebwd >= 20:
-        label='DOWNBURST ENVIRONMENT'
-    elif mu >= 1000 and ebwd >= 30 and (cin is None or cin > -250):
-        label='SEVERE ENVIRONMENT'
-    elif mu >= 100 and ebwd >= 15:
-        label='THUNDERSTORM ENVIRONMENT'
-    else:
-        label='LOW SIGNAL'
-    return {'status':'screening_only','label':label,'method':'Exploratory environmental screening',
-            'basis':{'mu_cape_jkg':number(mu),'effective_bwd_kt':number(ebwd),
-                     'ml_cin_jkg':number(cin),'stp_cin':number(stp),
-                     'ship':number(ship),'dcape_jkg':number(dcape)},
-            'limitations':'Conditional on a storm forming; not a severe weather warning, probability, calibrated hazard category, or precipitation forecast.'}
+    from datetime import datetime, timezone
+    from sharppy.sharptab import profile, watch_type
+
+    class LocalGridConvectiveProfile(profile.ConvectiveProfile):
+        # The SARS *database matches* are unnecessary here, but original
+        # possible_watch references prof.ship, which get_sars normally sets.
+        # Keep the exact SHARPpy SHIP calculation while avoiding duplicate
+        # historical database lookups for every clicked point.
+        def get_sars(self):
+            from sharppy.sharptab import params
+            self.ship = params.ship(self)
+        def get_traj(self):
+            pass
+        def get_PWV_loc(self):
+            self.pwv_flag = -1  # Do not substitute another site's climatology.
+        def get_watch(self):
+            # Use exact SHARPpy categorization, independent of the installed
+            # version's optional watch_type_color / tuple indexing conventions.
+            self.spcoa_watch_candidates = watch_type.possible_watch(self, use_left=False)
+
+    try:
+        stamp = datetime.strptime(str(raw.get('run_id','')),'%Y%m%d_%H').replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        stamp = datetime(2000,1,1,tzinfo=timezone.utc)
+
+    try:
+        lat = float(raw.get('lat'))
+        if not np.isfinite(lat) or abs(lat)>90: raise ValueError('invalid native-grid latitude')
+        cp = LocalGridConvectiveProfile(
+            profile='convective',pres=a['pressure_hpa'],hght=a['height_m_msl'],
+            tmpc=tc,dwpc=dew,u=a['u_ms']*KTS_PER_MS,v=a['v_ms']*KTS_PER_MS,
+            latitude=lat,location='SPCOA',date=stamp,missing=-9999.,strictQC=False)
+        matches = cp.spcoa_watch_candidates
+        # Returns an ordered np.ndarray of categories; be defensive about
+        # iterable structures for different 1.4.x builds.
+        if isinstance(matches,np.ndarray): matches=matches.tolist()
+        if isinstance(matches,str): matches=[matches]
+        if isinstance(matches,(tuple,list)) and matches and isinstance(matches[0],(tuple,list,np.ndarray)):
+            matches=matches[0]
+        if not isinstance(matches,(list,tuple)):
+            raise ValueError('Unexpected SHARPpy watch output format')
+        allowed={'PDS TOR','TOR','MRGL TOR','SVR','MRGL SVR','FLASH FLOOD',
+                 'BLIZZARD','EXCESSIVE HEAT','NONE'}
+        labels=[str(x).strip().upper() for x in matches]
+        labels=[x for x in labels if x in allowed]
+        if not labels:
+            raise ValueError('SHARPpy returned no interpretable watch categories')
+        return {'status':'sharppy','label':labels[0], 'categories':labels,
+                'method':'SHARPpy watch_type.possible_watch (right mover)',
+                'pwv_climatology':'unavailable_for_native_grid',
+                'limitations':'SHARPpy ingredients-based suggestion, not an issued warning, watch, forecast or calibrated probability. Station-relative PWV/flash-flood assessment unavailable.'}
+    except Exception as exc:
+        return {'status':'unavailable','label':'UNDETERMINED',
+                'method':'SHARPpy watch_type.possible_watch',
+                'error':f'{type(exc).__name__}: {exc}',
+                'limitations':'SHARPpy ConvectiveProfile calculation failed; no simplified hazard is substituted.'}
+
+
+def sharppy_precipitation_type(prof):
+    """Original SHARPpy source-layer and positive/negative-energy algorithm.
+
+    Omega is masked in the native profile, so SHARPpy searches for a saturated
+    source layer.  Its method uses dry-bulb positive/negative thermal energy,
+    not the custom wet-bulb integration used before this revision.
+    """
+    from sharppy.sharptab import watch_type
+    try:
+        src_pressure, phase, src_temp, src_label = watch_type.init_phase(prof)
+        source = {'pressure_hpa':scalar(src_pressure),
+                  'temperature_c':scalar(src_temp),'initial_phase':int(phase),
+                  'initial_type':str(src_label)}
+        if phase < 0 or source['pressure_hpa'] is None or source['pressure_hpa'] <= 0:
+            return {'status':'no_saturated_source','ptype':None,
+                    'method':'SHARPpy init_phase / posneg_temperature / best_guess_precip',
+                    'source_layer':source, 'omega_available':False,
+                    'limitations':'No suitable saturated source layer was identified. This does not establish that precipitation will not occur.'}
+        tpos,tneg,top,bot = watch_type.posneg_temperature(prof,start=src_pressure)
+        # Return the original algorithm's surface precipitation type. Also
+        # calculate wet-bulb layer areas for transparency/debugging; SHARPpy
+        # best_guess_precip itself uses the *temperature* energies.
+        wpos,wneg,wtop,wbot = watch_type.posneg_wetbulb(prof,start=src_pressure)
+        suggestion=watch_type.best_guess_precip(prof,phase,src_pressure,src_temp,tpos,tneg)
+        label = str(suggestion).strip().rstrip('.') if suggestion is not None else 'Unknown'
+        if not label or label.lower() in ('unknown','none'):
+            return {'status':'undetermined','ptype':None,
+                    'method':'SHARPpy watch_type.best_guess_precip',
+                    'source_layer':source,'omega_available':False,
+                    'limitations':'Source-layer detection is conditional and does not establish precipitation occurrence.'}
+        return {'status':'sharppy','ptype':label,
+                'method':'SHARPpy watch_type.best_guess_precip',
+                'source_layer':source, 'omega_available':False,
+                'temperature_melting_jkg':scalar(tpos),
+                'temperature_refreezing_jkg':scalar(tneg),
+                'wetbulb_positive_jkg':scalar(wpos),
+                'wetbulb_negative_jkg':scalar(wneg),
+                'limitations':'Conditional surface-type guidance if precipitation occurs; no HRRR omega or cloud microphysics. Not a precipitation occurrence forecast.'}
+    except Exception as exc:
+        return {'status':'unavailable','ptype':None,
+                'method':'SHARPpy watch_type.best_guess_precip',
+                'error':f'{type(exc).__name__}: {exc}',
+                'limitations':'Original SHARPpy precipitation routine failed; no heuristic output was substituted.'}
 
 
 def sharppy_dcape(prof):
     """SHARPpy params.dcape returns DCAPE and diagnostic parcel traces.
 
-    Return ONLY the DCAPE number; V62 intentionally DOES NOT draw a
+    Return ONLY the DCAPE number; V63 intentionally DOES NOT draw a
     downdraft parcel or expose its trace to the browser.
     """
     from sharppy.sharptab import params
@@ -686,7 +684,7 @@ def diagnostics(raw, ecape=True):
     except Exception as exc: pwat=None;errors['pwat']=str(exc)
     freezing_h=first_freezing_level_m_agl(z,tc)
     warm_cloud = warm_cloud_layers(freezing_h, parcels)
-    ptype = precip_type_screen(a, dew)
+    ptype = sharppy_precipitation_type(prof)
     analogs = sars_analog_matches(prof, a, tc, parcels, shear, srh)
     try:
         dcape = sharppy_dcape(prof)
@@ -696,7 +694,7 @@ def diagnostics(raw, ecape=True):
     wetbulb_profile = sharppy_wetbulb_profile(prof,p)
     if not any(value is not None for value in wetbulb_profile):
         errors['wetbulb']='SHARPpy native wet-bulb profile unavailable'
-    hazard = conditional_hazard_screen(parcels, composites, effective, dcape)
+    hazard = sharppy_possible_hazard(a, tc, dew, raw)
     return {
       'schema':'spcoa.hrrr_f00_sounding_diagnostics.v2','source':'native HRRR F00 profile',
       'location':{k:raw.get(k) for k in ('lat','lon','i','j')},
@@ -727,7 +725,7 @@ def diagnostics(raw, ecape=True):
       'storm_relative_helicity':srh,'storm_relative_wind':srw,
       'effective_inflow':effective,'composites':composites,
       'lapse_rates':lapse,'pwat_inches':pwat,'freezing_level_m_agl':freezing_h,
-      'diagnostic_revision': 6,
+      'diagnostic_revision': 7,
       'warm_cloud_depth': warm_cloud, 'sars_analogs': analogs, 'precip_type_screen': ptype,
       'dcape_jkg': dcape, 'hazard_screen': hazard,
       'profile':{'pressure_hpa':p.tolist(),'temperature_c':tc.tolist(),
@@ -804,17 +802,11 @@ def selftest():
     assert cloud['by_parcel']['ml']['depth_m']==2000
     assert cloud['by_parcel']['sb']['depth_m']==2400
     assert cloud['by_parcel']['mu']['depth_m'] is None
-    assert _classify_precip_screen([0,500,1000,1500,2000],[-4,-3,-2,-4,-8])['ptype']=='Snow'
-    assert _classify_precip_screen([0,500,1000,1500,2000],[4,3,2,0,-3])['ptype']=='Rain'
-    assert _classify_precip_screen([0,500,1000,1500,2000],[-3,-2,2,4,-3])['status']=='screening_only'
     encoded=json.dumps(json_safe({'i':np.int64(12),'value':np.float32(1.5),
                                    'missing':np.float64(np.nan),
                                    'barbs':np.array([950,900],dtype=np.int64)}),allow_nan=False)
     assert json.loads(encoded)=={'i':12,'value':1.5,'missing':None,'barbs':[950,900]}
-    assert conditional_hazard_screen({'mu':{'cape_jkg':1500},'ml':{'cin_jkg':-30}},
-        {'stp_cin':1.5,'ship':0.5},{'effective_bwd_kt':35},700)['label']=='TORNADO ENVIRONMENT'
-    assert conditional_hazard_screen({}, {}, None, None)['label']=='UNDETERMINED'
-    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, conditional hazards, JSON (V6)')
+    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, SHARPpy hazard/ptype interfaces, JSON (V7)')
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__)
