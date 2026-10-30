@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPCOA WeatherFront-inspired HRRR F00 sounding diagnostic engine (V5 / sounding UI V60).
+"""SPCOA WeatherFront-inspired HRRR F00 sounding diagnostic engine (V6 / sounding UI V62).
 
 Reads native columns from spcoa_soundings.py v1 S3 tiles or a JSON profile.
 Computes thermodynamics and SB/ML/MU Peters ECAPE from the selected profile; never substitutes gridded
@@ -472,6 +472,68 @@ def sars_analog_matches(prof, a, tc, parcels, shear, srh):
         result['error']=f'{type(exc).__name__}: {exc}'
     return result
 
+def conditional_hazard_screen(parcels, composites, effective, dcape):
+    """Experimental, conditional environment signal (NOT a hazard forecast).
+
+    Individual thresholds are screening conventions, not a validated categorical
+    severe-weather or tornado prediction algorithm. No probabilities are emitted.
+    Neither precipitation occurrence nor storm initiation can be inferred here.
+    """
+    mu = (parcels.get('mu') or {}).get('cape_jkg')
+    ml = (parcels.get('ml') or {})
+    sb = (parcels.get('sb') or {})
+    ebwd = (effective or {}).get('effective_bwd_kt')
+    stp = (composites or {}).get('stp_cin')
+    ship = (composites or {}).get('ship')
+    cin = ml.get('cin_jkg')
+    if mu is None or ebwd is None:
+        return {'status':'insufficient_inputs','label':'UNDETERMINED',
+                'limitations':'Conditional environment screen; not a hazard or occurrence forecast.'}
+    if (stp is not None and stp >= 1.0 and mu >= 500 and ebwd >= 25
+            and (cin is None or cin > -200)):
+        label='TORNADO ENVIRONMENT'
+    elif ship is not None and ship >= 1.0 and mu >= 1000 and ebwd >= 25:
+        label='LARGE-HAIL ENVIRONMENT'
+    elif dcape is not None and dcape >= 900 and mu >= 700 and ebwd >= 20:
+        label='DOWNBURST ENVIRONMENT'
+    elif mu >= 1000 and ebwd >= 30 and (cin is None or cin > -250):
+        label='SEVERE ENVIRONMENT'
+    elif mu >= 100 and ebwd >= 15:
+        label='THUNDERSTORM ENVIRONMENT'
+    else:
+        label='LOW SIGNAL'
+    return {'status':'screening_only','label':label,'method':'Exploratory environmental screening',
+            'basis':{'mu_cape_jkg':number(mu),'effective_bwd_kt':number(ebwd),
+                     'ml_cin_jkg':number(cin),'stp_cin':number(stp),
+                     'ship':number(ship),'dcape_jkg':number(dcape)},
+            'limitations':'Conditional on a storm forming; not a severe weather warning, probability, calibrated hazard category, or precipitation forecast.'}
+
+
+def sharppy_dcape(prof):
+    """SHARPpy params.dcape returns DCAPE and diagnostic parcel traces.
+
+    Return ONLY the DCAPE number; V62 intentionally DOES NOT draw a
+    downdraft parcel or expose its trace to the browser.
+    """
+    from sharppy.sharptab import params
+    result = params.dcape(prof)
+    if isinstance(result, (tuple,list)) and len(result): return scalar(result[0])
+    return scalar(result)
+
+
+def sharppy_wetbulb_profile(prof, pressure_hpa):
+    """Extract SHARPpy's profile wet-bulb in C at native pressure levels.
+
+    If it is unavailable, return missing rather than fabricating a curve.
+    """
+    try:
+        arr = np.ma.asarray(prof.wetbulb).filled(np.nan).astype(float)
+        if arr.ndim != 1 or len(arr) != len(pressure_hpa): return [None]*len(pressure_hpa)
+        return [number(x) for x in arr]
+    except Exception:
+        return [None]*len(pressure_hpa)
+
+
 def diagnostics(raw, ecape=True):
     from sharppy.sharptab import params, thermo
     from metpy.units import units
@@ -626,6 +688,15 @@ def diagnostics(raw, ecape=True):
     warm_cloud = warm_cloud_layers(freezing_h, parcels)
     ptype = precip_type_screen(a, dew)
     analogs = sars_analog_matches(prof, a, tc, parcels, shear, srh)
+    try:
+        dcape = sharppy_dcape(prof)
+    except Exception as exc:
+        errors['dcape']=str(exc)
+        dcape=None
+    wetbulb_profile = sharppy_wetbulb_profile(prof,p)
+    if not any(value is not None for value in wetbulb_profile):
+        errors['wetbulb']='SHARPpy native wet-bulb profile unavailable'
+    hazard = conditional_hazard_screen(parcels, composites, effective, dcape)
     return {
       'schema':'spcoa.hrrr_f00_sounding_diagnostics.v2','source':'native HRRR F00 profile',
       'location':{k:raw.get(k) for k in ('lat','lon','i','j')},
@@ -656,10 +727,12 @@ def diagnostics(raw, ecape=True):
       'storm_relative_helicity':srh,'storm_relative_wind':srw,
       'effective_inflow':effective,'composites':composites,
       'lapse_rates':lapse,'pwat_inches':pwat,'freezing_level_m_agl':freezing_h,
-      'diagnostic_revision': 5,
+      'diagnostic_revision': 6,
       'warm_cloud_depth': warm_cloud, 'sars_analogs': analogs, 'precip_type_screen': ptype,
+      'dcape_jkg': dcape, 'hazard_screen': hazard,
       'profile':{'pressure_hpa':p.tolist(),'temperature_c':tc.tolist(),
                  'dewpoint_c':dew.tolist(),'relative_humidity_percent':rh.tolist(),
+                 'wetbulb_c':wetbulb_profile,
                  'height_m_agl':z.tolist(), 'height_m_msl':a['height_m_msl'].tolist(),
                  'u_kt':(a['u_ms']*KTS_PER_MS).tolist(), 'v_kt':(a['v_ms']*KTS_PER_MS).tolist()},
       'warnings':(['Surface row combines 2m T/q with 10m winds and surface terrain height'] if a['surface_is_mixed_height'] else []),
@@ -738,7 +811,10 @@ def selftest():
                                    'missing':np.float64(np.nan),
                                    'barbs':np.array([950,900],dtype=np.int64)}),allow_nan=False)
     assert json.loads(encoded)=={'i':12,'value':1.5,'missing':None,'barbs':[950,900]}
-    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, JSON (V5)')
+    assert conditional_hazard_screen({'mu':{'cape_jkg':1500},'ml':{'cin_jkg':-30}},
+        {'stp_cin':1.5,'ship':0.5},{'effective_bwd_kt':35},700)['label']=='TORNADO ENVIRONMENT'
+    assert conditional_hazard_screen({}, {}, None, None)['label']=='UNDETERMINED'
+    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, conditional hazards, JSON (V6)')
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__)
