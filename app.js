@@ -18908,11 +18908,11 @@ function spcoaSndStats(p) {
  * this exact run and native i/j while full CONUS publishing is developed.
  */
 function spcoaSndDiagnosticPath(j,i) {
-    return `diagnostics/v6/j${String(j).padStart(4,'0')}/i${String(i).padStart(4,'0')}.json`;
+    return `diagnostics/v7/j${String(j).padStart(4,'0')}/i${String(i).padStart(4,'0')}.json`;
 }
 function spcoaSndVerifyDiagnostic(data,run,profile) {
     if(!data || data.schema !== 'spcoa.hrrr_f00_sounding_diagnostics.v2' ||
-       data.diagnostic_revision !== 6 ||
+       data.diagnostic_revision !== 7 ||
        data.run_id !== run || !data.location ||
        Number(data.location.i) !== profile.i || Number(data.location.j) !== profile.j ||
        !data.parcels || !data.profile) {
@@ -19393,15 +19393,13 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
 /* SPCOA V58 - full-panel WeatherFront-style hodograph with the SAME colors
  * as the SPC map hodograph overlays. Preserve original u/v, storm motions,
  * effective inflow diagnostics and 0-9 km layer boundaries. */
-/* V62: independent conditional SEVERE-ENVIRONMENT and THERMAL P-TYPE
- * screens. Neither is a categorical forecast or calibrated probability.
- * The hazard panel NEVER re-labels the precipitation type as a hazard.
- */
+/* V63: SHARPpy possible_watch and best_guess_precip (separate).
+ * Neither is a storm/precipitation occurrence forecast. */
 function spcoaSndDrawHazardType(ctx,w,h,diagnostic){
     const haz=diagnostic?.hazard_screen;
     const pt=diagnostic?.precip_type_screen;
-    const hasHaz=haz?.status==='screening_only' && typeof haz.label==='string';
-    const hasPt=pt?.status==='screening_only' && typeof pt.ptype==='string';
+    const hasHaz=haz?.status==='sharppy' && typeof haz.label==='string';
+    const hasPt=pt?.status==='sharppy' && typeof pt.ptype==='string';
     const pw=Math.min(197,Math.max(132,w*0.255));
     const gap=8, panelH=96;
     const firstX=Math.max(8,w-(pw*2+gap+12));
@@ -19424,16 +19422,17 @@ function spcoaSndDrawHazardType(ctx,w,h,diagnostic){
         ctx.fillText(caption,x+pw/2,topY+80,maxText);
     }
     let label=hasHaz?haz.label:'UNDETERMINED';
-    const hazardColor=label.includes('TORNADO')?'#ff6975':
-        label.includes('SEVERE')||label.includes('WIND')||label.includes('HAIL')?'#f1c45b':
-        label.includes('THUNDER')?'#bad7ee':'#b2bcc5';
+    const hazardColor=label.includes('TOR')?'#ff6975':
+        label.includes('SVR')?'#f1c45b':
+        label.includes('FLOOD')?'#67caff':label.includes('BLIZZARD')?'#94c6fa':
+        label.includes('HEAT')?'#ffa56c':'#b2bcc5';
     let ptype=hasPt?pt.ptype:'UNDETERMINED';
     const lower=String(ptype).toLowerCase();
     const ptypeColor=lower.includes('freezing')||lower.includes('sleet')?'#f7b0ef':
         lower.includes('snow')?'#91c9ff':lower.includes('mix')?'#e8d19c':'#96e1a8';
     ctx.save();
-    draw(firstX,'Possible Hazard Type',label,hasHaz,hazardColor,'Conditional environment');
-    draw(firstX+pw+gap,'Precipitation Type',ptype,hasPt,ptypeColor,'Only if precipitation occurs');
+    draw(firstX,'Possible Hazard Type',label,hasHaz,hazardColor,'SHARPpy ingredients');
+    draw(firstX+pw+gap,'Precipitation Type',ptype,hasPt,ptypeColor,'If precipitation occurs');
     ctx.restore();
 }
 function spcoaSndHodo(canvas,current,previous,diagnostic) {
@@ -20204,15 +20203,15 @@ function spcoaSndSarsHtml(data){
 }
 function spcoaSndPtypeHtml(data){
     const d=data?.precip_type_screen;
-    if(!d)return '<span class="ss-mute">Awaiting updated sounding diagnostics</span>';
-    if(d.status!=='screening_only')return '<span class="ss-mute">Precipitation-type estimate unavailable</span>';
-    const stat=x=>Number.isFinite(x)?Number(x).toFixed(0):'—';
+    if(!d || d.status!=='sharppy')return '<span class="ss-mute">SHARPpy precipitation type unavailable</span>';
+    const fmt=n=>Number.isFinite(n)?Number(n).toFixed(0):'—';
     return `<div class="ss-main">${spcoaSndEscape(d.ptype)}</div>`+
-           `<div class="ss-secondary">If precipitation occurs · Wet-bulb profile</div>`+
-           `<div class="ss-secondary">SFC Tw: ${Number.isFinite(d.surface_wetbulb_c)?d.surface_wetbulb_c.toFixed(1)+'°C':'—'}</div>`+
-           `<div class="ss-secondary">Melting: ${stat(d.melting_c_m)} · Refreezing: ${stat(d.refreezing_c_m)} °C·m</div>`+
-           `<div class="ss-warn" style="margin-top:8px">Experimental screening only; not a precipitation forecast or calibrated Bourgouin output.</div>`;
+           `<div class="ss-secondary">If precipitation occurs · SHARPpy source-layer method</div>`+
+           `<div class="ss-secondary">Initial source: ${fmt(d.source_layer?.pressure_hpa)} hPa</div>`+
+           `<div class="ss-secondary">Warm/cold thermal energy: ${fmt(d.temperature_melting_jkg)} / ${fmt(d.temperature_refreezing_jkg)} J/kg</div>`+
+           `<div class="ss-warn" style="margin-top:8px">No omega archived; SHARPpy searches for saturated source layers. Not a precipitation forecast.</div>`;
 }
+
 function spcoaSndRender() {
     const a=SPCOA_SOUNDING.current,b=SPCOA_SOUNDING.previous;
     if(!a)return;
