@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPCOA native HRRR F00 on-demand sounding diagnostics API (V6 / UI V62).
+"""SPCOA native HRRR F00 on-demand sounding diagnostics API (V7 / UI V63.1 identity diagnostic).
 
 Deploy this as a Lambda container. The *same* handler accepts an API Gateway
 HTTP GET (/diagnostics?run=YYYYMMDD_HH&j=...&i=...) and SQS worker records.
@@ -10,8 +10,8 @@ GET returns one of:
   400/404/405/500/503 descriptive error JSON
 
 SQS events load authoritative archived native HRRR tiles from S3 and run the
-V6 spcoa_sounding_diagnostics.diagnostics() function, then write
-  spcoa/runs/YYYYMMDD_HH/soundings/v1/diagnostics/v6/j####/i####.json
+V7 spcoa_sounding_diagnostics.diagnostics() function, then write
+  spcoa/runs/YYYYMMDD_HH/soundings/v1/diagnostics/v7/j####/i####.json
 
 The API NEVER accepts client-supplied meteorological profiles and NEVER writes
 into the parent SPCOA analysis latest.json. The existing archive manifest
@@ -62,7 +62,7 @@ def _validate(run, j, i):
 
 
 def relative_diag(j, i):
-    return f'diagnostics/v6/j{j:04d}/i{i:04d}.json'
+    return f'diagnostics/v7/j{j:04d}/i{i:04d}.json'
 
 
 def _is_missing(exc):
@@ -95,7 +95,7 @@ def cached_diagnostics(client, run, j, i):
         raise
     loc = d.get('location', {})
     if (d.get('schema') != 'spcoa.hrrr_f00_sounding_diagnostics.v2' or
-            d.get('diagnostic_revision') != 6 or
+            d.get('diagnostic_revision') != 7 or
             d.get('run_id') != run or
             loc.get('j') != j or loc.get('i') != i):
         # Wrong/legacy sidecar is not accepted as a match.
@@ -127,11 +127,34 @@ def _calculate(run, j, i):
         return
     raw = _native_profile(client, run, j, i)
     result = met.json_safe(met.diagnostics(raw, ecape=True))
+    # Strict identity guard: never cache a document for the wrong run, grid cell,
+    # schema or diagnostic revision. Report the exact discrepancy in CloudWatch;
+    # this catches mixed V62/V63 files in the same Lambda deployment.
+    expected = {
+        'schema': 'spcoa.hrrr_f00_sounding_diagnostics.v2',
+        'diagnostic_revision': 7,
+        'run_id': run,
+        'location.j': j,
+        'location.i': i,
+    }
     loc = result.get('location') or {}
-    if (result.get('run_id') != run or loc.get('j') != j or loc.get('i') != i or
-            (result.get('schema') != 'spcoa.hrrr_f00_sounding_diagnostics.v2' or
-             result.get('diagnostic_revision') != 6)):
-        raise ValueError('Calculated output identity check failed; refusing cache upload')
+    observed = {
+        'schema': result.get('schema'),
+        'diagnostic_revision': result.get('diagnostic_revision'),
+        'run_id': result.get('run_id'),
+        'location.j': loc.get('j'),
+        'location.i': loc.get('i'),
+    }
+    mismatches = {name: {'expected': expected[name], 'actual': observed[name]}
+                  for name in expected if expected[name] != observed[name]}
+    if mismatches:
+        print('SPCOA_DIAGNOSTICS_IDENTITY_MISMATCH ' + json.dumps({
+            'fields': mismatches,
+            'diagnostics_module_file': getattr(met, '__file__', 'unknown'),
+            'api_expected_revision': 7,
+        }, sort_keys=True, default=str), flush=True)
+        raise ValueError('Calculated output identity check failed: ' +
+                         ', '.join(sorted(mismatches)) + '; refusing cache upload')
     payload = json.dumps(result, separators=(',', ':'), allow_nan=False).encode('utf-8')
     client.put_object(Bucket=archive.BUCKET,
                       Key=archive.key(run, relative_diag(j, i)), Body=payload,
