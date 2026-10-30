@@ -18908,11 +18908,11 @@ function spcoaSndStats(p) {
  * this exact run and native i/j while full CONUS publishing is developed.
  */
 function spcoaSndDiagnosticPath(j,i) {
-    return `diagnostics/v5/j${String(j).padStart(4,'0')}/i${String(i).padStart(4,'0')}.json`;
+    return `diagnostics/v6/j${String(j).padStart(4,'0')}/i${String(i).padStart(4,'0')}.json`;
 }
 function spcoaSndVerifyDiagnostic(data,run,profile) {
     if(!data || data.schema !== 'spcoa.hrrr_f00_sounding_diagnostics.v2' ||
-       data.diagnostic_revision !== 5 ||
+       data.diagnostic_revision !== 6 ||
        data.run_id !== run || !data.location ||
        Number(data.location.i) !== profile.i || Number(data.location.j) !== profile.j ||
        !data.parcels || !data.profile) {
@@ -19175,6 +19175,18 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         spcoaSndShadeParcel(ctx,current,parcelPoints,parcel,x,y);
         spcoaSndTrace(ctx,parcelPoints.map(a=>[x(a.t,a.p),y(a.p)]),'#70c8f4',2.15,[6,3]);
     }
+    // V62: SOLID wet-bulb profile from the matching native-grid SHARPpy
+    // diagnostic. It is deliberately not a dotted virtual-temperature trace.
+    // The native archive does not itself contain Tw; hide until revision 6 loads.
+    if(current && diagnostic?.diagnostic_revision>=6){
+        const wet=diagnostic?.profile?.wetbulb_c;
+        const pressures=diagnostic?.profile?.pressure_hpa;
+        if(Array.isArray(wet)&&Array.isArray(pressures)&&wet.length===pressures.length){
+            const wetPoints=wet.map((tw,k)=>Number.isFinite(tw)&&Number.isFinite(pressures[k])?
+                [x(tw,pressures[k]),y(pressures[k])]:null);
+            spcoaSndTrace(ctx,wetPoints,'#37cbed',1.7);
+        }
+    }
     if(current) {
         spcoaSndTrace(ctx,trace(current,'td'),'#169915',3.45);
         spcoaSndTrace(ctx,trace(current,'t'),'#ff3038',3.65);
@@ -19381,33 +19393,47 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
 /* SPCOA V58 - full-panel WeatherFront-style hodograph with the SAME colors
  * as the SPC map hodograph overlays. Preserve original u/v, storm motions,
  * effective inflow diagnostics and 0-9 km layer boundaries. */
-/* V61: Pivotal-like bottom-right hodograph assessment. These values come
- * from the V60 wet-bulb precipitation TYPE screening, NOT a modeled severe
- * weather hazard classifier. Keep the distinction visible on the chart. */
+/* V62: independent conditional SEVERE-ENVIRONMENT and THERMAL P-TYPE
+ * screens. Neither is a categorical forecast or calibrated probability.
+ * The hazard panel NEVER re-labels the precipitation type as a hazard.
+ */
 function spcoaSndDrawHazardType(ctx,w,h,diagnostic){
-    const report=diagnostic?.precip_type_screen;
-    const active=report?.status==='screening_only' && typeof report.ptype==='string';
-    const kind=active ? report.ptype : '—';
-    const t=kind.toLowerCase();
-    const color=!active?'#a7afbb':
-        t.includes('freezing')||t.includes('sleet')||t.includes('ice pellets')?'#eda8e2':
-        t.includes('mix')?'#f1d98b':t.includes('snow')?'#8fc9ff':'#9fe7ab';
-    const wide=Math.min(252,Math.max(166,w*.36));
-    const high=89;
-    const x=w-wide-13,y=h-high-19;
+    const haz=diagnostic?.hazard_screen;
+    const pt=diagnostic?.precip_type_screen;
+    const hasHaz=haz?.status==='screening_only' && typeof haz.label==='string';
+    const hasPt=pt?.status==='screening_only' && typeof pt.ptype==='string';
+    const pw=Math.min(197,Math.max(132,w*0.255));
+    const gap=8, panelH=96;
+    const firstX=Math.max(8,w-(pw*2+gap+12));
+    const topY=h-panelH-24;
+    function draw(x,title,value,active,color,caption){
+        const maxText=pw-10;
+        ctx.fillStyle='rgba(4,7,10,.95)';ctx.fillRect(x,topY,pw,panelH);
+        ctx.strokeStyle='#848c96';ctx.lineWidth=1;
+        ctx.strokeRect(x+.5,topY+.5,pw-1,panelH-1);
+        ctx.textAlign='center';ctx.textBaseline='middle';
+        ctx.fillStyle='#e4ebf2';ctx.font='bold 11px Arial,sans-serif';
+        ctx.fillText(title,x+pw/2,topY+16,maxText);
+        ctx.strokeStyle='#43505a';ctx.beginPath();
+        ctx.moveTo(x+8,topY+30);ctx.lineTo(x+pw-8,topY+30);ctx.stroke();
+        const text=String(value||'—').toUpperCase();
+        ctx.font='bold '+(text.length>22?10:text.length>15?11:text.length>11?13:20)+'px Arial,sans-serif';
+        ctx.fillStyle=active?color:'#a4b0bb';
+        ctx.fillText(text,x+pw/2,topY+55,maxText);
+        ctx.fillStyle='#9daeba';ctx.font='9px Arial,sans-serif';
+        ctx.fillText(caption,x+pw/2,topY+80,maxText);
+    }
+    let label=hasHaz?haz.label:'UNDETERMINED';
+    const hazardColor=label.includes('TORNADO')?'#ff6975':
+        label.includes('SEVERE')||label.includes('WIND')||label.includes('HAIL')?'#f1c45b':
+        label.includes('THUNDER')?'#bad7ee':'#b2bcc5';
+    let ptype=hasPt?pt.ptype:'UNDETERMINED';
+    const lower=String(ptype).toLowerCase();
+    const ptypeColor=lower.includes('freezing')||lower.includes('sleet')?'#f7b0ef':
+        lower.includes('snow')?'#91c9ff':lower.includes('mix')?'#e8d19c':'#96e1a8';
     ctx.save();
-    ctx.fillStyle='rgba(6,9,13,.94)';ctx.fillRect(x,y,wide,high);
-    ctx.strokeStyle='#7f8995';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,wide-1,high-1);
-    ctx.textAlign='center';ctx.textBaseline='middle';
-    ctx.fillStyle='#e0e5ec';ctx.font='bold 12px Arial,sans-serif';
-    ctx.fillText('Possible Hazard Type',x+wide/2,y+17,wide-12);
-    ctx.strokeStyle='#3e4854';ctx.beginPath();ctx.moveTo(x+10,y+31);ctx.lineTo(x+wide-10,y+31);ctx.stroke();
-    const value=String(kind).toUpperCase();
-    const len=value.length;
-    ctx.font='bold '+(len>25?10:len>17?12:len>12?15:21)+'px Arial,sans-serif';
-    ctx.fillStyle=color;ctx.fillText(value,x+wide/2,y+52,wide-14);
-    ctx.font='10px Arial,sans-serif';ctx.fillStyle='#a5b3c0';
-    ctx.fillText(active?'Precip type if precipitation occurs':'Awaiting V60 diagnostics',x+wide/2,y+77,wide-12);
+    draw(firstX,'Possible Hazard Type',label,hasHaz,hazardColor,'Conditional environment');
+    draw(firstX+pw+gap,'Precipitation Type',ptype,hasPt,ptypeColor,'Only if precipitation occurs');
     ctx.restore();
 }
 function spcoaSndHodo(canvas,current,previous,diagnostic) {
@@ -20023,7 +20049,8 @@ function spcoaSndCompactEnvironment(data){
         ['BRN (MU)', 'composites.brn_mu',1,''],
         ['PWAT', 'pwat_inches',2,''],
         ['Freezing', 'freezing_level_m_agl',0,''],
-        ['Warm Cloud Depth', '__warm_cloud_depth',0,'ss-warm-cloud-row']
+        ['Warm Cloud Depth', '__warm_cloud_depth',0,'ss-warm-cloud-row'],
+        ['DCAPE', 'dcape_jkg',0,'ss-group-severe']
     ];
     return entries.map(([label,path,n,klass])=>{
         if(path==='__warm_cloud_depth'){
@@ -20033,7 +20060,7 @@ function spcoaSndCompactEnvironment(data){
             const key=parcel.toUpperCase();
             return `<tr class="${klass}" title="Depth from ${key} LCL to the first freezing level, meters AGL"><td>${label} (${key})</td><td>${display}</td></tr>`;
         }
-        const unit=path==='pwat_inches'?' in':path==='freezing_level_m_agl'?' m':'';
+        const unit=path==='pwat_inches'?' in':path==='freezing_level_m_agl'?' m':path==='dcape_jkg'?' J/kg':'';
         return `<tr class="${klass}"><td>${label}</td><td>${fmt(path,n)}${unit}</td></tr>`;
     }).join('');
 }
@@ -20139,8 +20166,8 @@ function spcoaSndMiniPlot(canvas,kind,diag){
 }
 
 
-/* V61 — V60 backend data, compact SARS/hazard and warm-cloud layout. */
-/* V60 -- additional diagnostics from authoritative native HRRR profile. */
+/* V62 — separate conditional hazard/ptype; SARS, WCD, DCAPE and Tw. */
+/* Additional diagnostics from authoritative native HRRR profile. */
 function spcoaSndEscape(value){
     return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -20248,100 +20275,74 @@ function spcoaSndRender() {
 /* V49: Export real Skew-T, hodograph, compact diagnostic strip, and
  * actual computed mini-profile canvases. No synthesized placeholder values.
  */
-function spcoaSndExportPng() {
-    if(!SPCOA_SOUNDING.current)return;
-    const c=document.createElement('canvas');c.width=1720;c.height=1116;
-    const ctx=c.getContext('2d');ctx.fillStyle='#020304';ctx.fillRect(0,0,c.width,c.height);
-    ctx.fillStyle='#f0f2f3';ctx.font='bold 21px Arial,sans-serif';ctx.textAlign='left';
-    ctx.fillText(document.getElementById('ss-title')?.textContent||'HRRR F00 Sounding',20,32);
-    ctx.font='13px Arial,sans-serif';ctx.fillStyle='#bdcbd6';
-    ctx.fillText(document.getElementById('ss-location')?.textContent||'',20,52);
-    for(const [id,x,width] of [['ss-skew',12,900],['ss-hodo',918,790]]){
-        const source=document.getElementById(id);
-        if(source)ctx.drawImage(source,x,62,width,765);
+/* V62: Save the ENTIRE sounding tab, including header, both canvases,
+ * previous-hour diagnostics, SARS, wind profile and both hodograph boxes.
+ * html2canvas is loaded only after the user presses Save PNG, not on page load.
+ * Rendering happens in an isolated clone so the live popup never jumps.
+ */
+let spcoaSndHtml2CanvasPromise=null;
+function spcoaSndLoadHtml2Canvas(){
+    if(typeof window.html2canvas==='function')return Promise.resolve(window.html2canvas);
+    if(!spcoaSndHtml2CanvasPromise){
+        spcoaSndHtml2CanvasPromise=new Promise((resolve,reject)=>{
+            const script=document.createElement('script');
+            script.src='https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+            script.async=true;script.crossOrigin='anonymous';
+            script.onload=()=>typeof window.html2canvas==='function'?
+                resolve(window.html2canvas):reject(new Error('Full-panel image exporter did not initialize'));
+            script.onerror=()=>reject(new Error('Unable to load html2canvas; check network or Content Security Policy'));
+            document.head.appendChild(script);
+        }).catch(err=>{spcoaSndHtml2CanvasPromise=null;throw err;});
     }
-    const layout=[
-      ['ss-thermo','THERMODYNAMICS · ECAPE / LCL–LFC RH',13,835,550],
-      ['ss-kinematics','KINEMATICS',563,835,215],
-      ['ss-environment','GENERAL / SEVERE',778,835,210],
-      ['ss-sars','SARS SOUNDING ANALOGS',988,835,480],
-      ['ss-mini-sr','SR WIND (kt)',1468,835,240]
-    ];
-    for(const [id,title,x,y,width] of layout){
-        ctx.fillStyle='#050607';ctx.fillRect(x,y,width,246);
-        ctx.strokeStyle='#666';ctx.lineWidth=1;ctx.strokeRect(x,y,width,246);
-        ctx.font='bold 14px Arial,sans-serif';ctx.fillStyle='#dfe7eb';ctx.textAlign='left';
-        ctx.fillText(title,x+7,y+20);
-        const el=document.getElementById(id);if(!el)continue;
-        if(el instanceof HTMLCanvasElement){ctx.drawImage(el,x+2,y+27,width-4,201);continue;}
-        if(id==='ss-sars'){
-            // Native SARS entries are drawn from the exact same V60
-            // diagnostic object shown in the browser—not placeholder text.
-            const sars=SPCOA_SOUNDING.diagnostic?.sars_analogs;
-            const cols=[{name:'Supercell',v:sars?.supercell,type:'supercell',x:x+10},
-                        {name:'Significant Hail',v:sars?.hail,type:'hail',x:x+width/2+6}];
-            for(const a of cols){
-                const maxWidth=width/2-18;
-                ctx.font='bold 12px Arial,sans-serif';ctx.fillStyle='#a8cde4';
-                ctx.fillText(a.name,a.x,y+46,maxWidth);
-                const n=Number(a.v?.loose_count)||0;
-                const pct=a.type==='hail'?a.v?.sig_hail_fraction_percent:a.v?.tornadic_fraction_percent;
-                const fraction=n&&Number.isFinite(Number(pct))?`${Number(pct).toFixed(0)}% (${n} loose matches)`:'No loose analog matches';
-                ctx.font='11px Arial,sans-serif';ctx.fillStyle='#e5edf3';
-                ctx.fillText(fraction,a.x,y+67,maxWidth);
-                const matches=(a.v?.quality_matches||[]).slice(0,6);
-                ctx.font='11px Arial,sans-serif';ctx.fillStyle='#aab3be';
-                if(!matches.length)ctx.fillText('No close analogs',a.x,y+91,maxWidth);
-                for(let k=0;k<matches.length;k++){
-                    const m=matches[k];
-                    const result=a.type==='hail'?(Number.isFinite(m.hail_in)?`${m.hail_in.toFixed(2)} in`:'—'):
-                        (m.category||'—');
-                    ctx.fillText(`${m.id||'—'} · ${result}`,a.x,y+91+21*k,maxWidth);
+    return spcoaSndHtml2CanvasPromise;
+}
+async function spcoaSndExportPng(){
+    if(!SPCOA_SOUNDING.current)return;
+    const panel=document.getElementById('spcoa-sounding-panel');
+    const button=document.getElementById('ss-save');
+    if(!panel)return;
+    const oldText=button?.textContent;
+    if(button){button.disabled=true;button.textContent='Saving…';}
+    try{
+        const html2canvas=await spcoaSndLoadHtml2Canvas();
+        // Capture the ENTIRE scrollable sounding, including off-screen content.
+        const width=Math.ceil(Math.max(panel.scrollWidth,panel.clientWidth));
+        const height=Math.ceil(Math.max(panel.scrollHeight,panel.clientHeight));
+        const scale=Math.min(2,6000/width,6500/height);
+        const screenshot=await html2canvas(panel,{
+            backgroundColor:'#020204',useCORS:true,scale,
+            logging:false,scrollX:0,scrollY:0,
+            width,height,windowWidth:Math.max(width,window.innerWidth),
+            windowHeight:Math.max(height,window.innerHeight),
+            onclone:(clone)=>{
+                const el=clone.getElementById('spcoa-sounding-panel');
+                if(!el)return;
+                el.style.position='relative';el.style.display='block';
+                el.style.top='0';el.style.left='0';el.style.right='auto';
+                el.style.width=width+'px';el.style.maxHeight='none';
+                el.style.height=height+'px';el.style.overflow='visible';
+                el.style.borderRadius='0';el.style.boxShadow='none';
+                const head=el.querySelector('.ss-head');
+                if(head){head.style.position='relative';head.style.top='auto';}
+                const btn=el.querySelector('#ss-save');
+                if(btn)btn.textContent='Save PNG';
+                const status=el.querySelector('#ss-status');
+                if(status?.classList.contains('is-loading')){
+                    status.classList.remove('is-loading');status.textContent='';
                 }
             }
-            ctx.font='10px Arial,sans-serif';ctx.fillStyle='#839ba9';
-            ctx.fillText('Historical analog fractions are not storm occurrence probabilities',x+9,y+232,width-18);
-            continue;
-        }
-        const rows=[...el.querySelectorAll('tr')];
-        const lineH=id==='ss-thermo'?29:19;
-        const totalColumns=id==='ss-thermo'?9:id==='ss-kinematics'?4:2;
-        const usable=width-18;
-        for(let ri=0;ri<rows.length;ri++){
-            const cells=[...rows[ri].children];
-            const yy=y+48+ri*lineH;if(yy>y+227)break;
-            let column=0;
-            for(const cell of cells){
-                const span=Math.min(totalColumns-column,Math.max(1,cell.colSpan||1));
-                if(span<=0)break;
-                const label=(cell.childNodes[0]?.textContent||cell.textContent).trim();
-                const left=x+9+column/totalColumns*usable;
-                const spanWidth=span/totalColumns*usable;
-                ctx.textAlign=column===0?'left':'center';
-                const isHeader=ri===0;
-                ctx.font=(isHeader?'bold 10px':'11px')+' Arial,sans-serif';
-                ctx.fillStyle=(id==='ss-thermo'&&column===5)?'#88e8a2':
-                    (id==='ss-thermo'&&column===8)?'#8edcf4':isHeader?'#acbac6':'#e9eff2';
-                const tx=column===0?left+2:left+spanWidth/2;
-                ctx.fillText(label,tx,yy,Math.max(17,spanWidth-5));
-                column+=span;
-            }
-        }
-        if(id==='ss-thermo'){
-            const spans=[...document.querySelectorAll('#ss-thermo-extra span')];
-            ctx.fillStyle='#9db5c4';ctx.textAlign='left';ctx.font='11px Arial,sans-serif';
-            ctx.fillText(spans.slice(0,2).map(e=>e.textContent.trim()).join('     '),x+8,y+184,width-16);
-            ctx.fillText(spans[2]?.textContent.trim()||'',x+8,y+205,width-16);
-        }
-    }
-    // V61: no additional footer; the hodograph canvas contains the
-    // conditional precipitation-type box and the SARS panel is beside SR Wind.
-    c.toBlob(blob=>{
-        if(!blob)return;
+        });
+        if(!screenshot.width||!screenshot.height)throw new Error('Empty screenshot canvas');
+        const blob=await new Promise((resolve,reject)=>screenshot.toBlob(
+            b=>b?resolve(b):reject(new Error('Could not encode PNG')),'image/png'));
+        const name=`SPCOA_HRRR_F00_Full_Sounding_${currentRun}_i${SPCOA_SOUNDING.current.profile.i}_j${SPCOA_SOUNDING.current.profile.j}.png`;
         const url=URL.createObjectURL(blob),link=document.createElement('a');
-        link.href=url;link.download=`SPCOA_HRRR_Sounding_${currentRun}_${SPCOA_SOUNDING.current.profile.i}_${SPCOA_SOUNDING.current.profile.j}.png`;
-        link.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
-    },'image/png');
+        link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),15000);
+    }catch(error){
+        console.error('SPCOA full sounding PNG export:',error);
+        spcoaSndStatus('Could not save the entire sounding panel: '+(error?.message||error));
+    }finally{if(button){button.disabled=false;button.textContent=oldText||'Save PNG';}}
 }
 function spcoaSndRefreshForRun() {
     if(!SPCOA_SOUNDING.point || document.getElementById('spcoa-sounding-panel')?.style.display!=='block')return;
