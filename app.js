@@ -18908,10 +18908,11 @@ function spcoaSndStats(p) {
  * this exact run and native i/j while full CONUS publishing is developed.
  */
 function spcoaSndDiagnosticPath(j,i) {
-    return `diagnostics/j${String(j).padStart(4,'0')}/i${String(i).padStart(4,'0')}.json`;
+    return `diagnostics/v5/j${String(j).padStart(4,'0')}/i${String(i).padStart(4,'0')}.json`;
 }
 function spcoaSndVerifyDiagnostic(data,run,profile) {
     if(!data || data.schema !== 'spcoa.hrrr_f00_sounding_diagnostics.v2' ||
+       data.diagnostic_revision !== 5 ||
        data.run_id !== run || !data.location ||
        Number(data.location.i) !== profile.i || Number(data.location.j) !== profile.j ||
        !data.parcels || !data.profile) {
@@ -19380,6 +19381,35 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
 /* SPCOA V58 - full-panel WeatherFront-style hodograph with the SAME colors
  * as the SPC map hodograph overlays. Preserve original u/v, storm motions,
  * effective inflow diagnostics and 0-9 km layer boundaries. */
+/* V61: Pivotal-like bottom-right hodograph assessment. These values come
+ * from the V60 wet-bulb precipitation TYPE screening, NOT a modeled severe
+ * weather hazard classifier. Keep the distinction visible on the chart. */
+function spcoaSndDrawHazardType(ctx,w,h,diagnostic){
+    const report=diagnostic?.precip_type_screen;
+    const active=report?.status==='screening_only' && typeof report.ptype==='string';
+    const kind=active ? report.ptype : '—';
+    const t=kind.toLowerCase();
+    const color=!active?'#a7afbb':
+        t.includes('freezing')||t.includes('sleet')||t.includes('ice pellets')?'#eda8e2':
+        t.includes('mix')?'#f1d98b':t.includes('snow')?'#8fc9ff':'#9fe7ab';
+    const wide=Math.min(252,Math.max(166,w*.36));
+    const high=89;
+    const x=w-wide-13,y=h-high-19;
+    ctx.save();
+    ctx.fillStyle='rgba(6,9,13,.94)';ctx.fillRect(x,y,wide,high);
+    ctx.strokeStyle='#7f8995';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,wide-1,high-1);
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle='#e0e5ec';ctx.font='bold 12px Arial,sans-serif';
+    ctx.fillText('Possible Hazard Type',x+wide/2,y+17,wide-12);
+    ctx.strokeStyle='#3e4854';ctx.beginPath();ctx.moveTo(x+10,y+31);ctx.lineTo(x+wide-10,y+31);ctx.stroke();
+    const value=String(kind).toUpperCase();
+    const len=value.length;
+    ctx.font='bold '+(len>25?10:len>17?12:len>12?15:21)+'px Arial,sans-serif';
+    ctx.fillStyle=color;ctx.fillText(value,x+wide/2,y+52,wide-14);
+    ctx.font='10px Arial,sans-serif';ctx.fillStyle='#a5b3c0';
+    ctx.fillText(active?'Precip type if precipitation occurs':'Awaiting V60 diagnostics',x+wide/2,y+77,wide-12);
+    ctx.restore();
+}
 function spcoaSndHodo(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
     ctx.fillStyle='#020304';ctx.fillRect(0,0,w,h);
@@ -19609,6 +19639,7 @@ function spcoaSndHodo(canvas,current,previous,diagnostic) {
         'Height markers: 0.5, 1, 3, 6, 9 km AGL · Wind speed (kt)',
         9,h-11,'#959da5','10px Arial,sans-serif','left');
     ctx.restore();
+    spcoaSndDrawHazardType(ctx,w,h,diagnostic);
 }
 function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
@@ -19679,6 +19710,17 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-compare{white-space:nowrap;display:flex;align-items:center;gap:5px;font-size:11px;color:#cbd1de}
 #spcoa-sounding-panel .ss-missing{color:#f6ca83}
 #spcoa-sounding-panel .ss-diagnostic-info{color:#c4d6e7;font-size:10px;padding:3px 6px}
+#spcoa-sounding-panel .ss-tables>.ss-sars-box{grid-column:span 2;padding:5px 8px 6px;min-width:220px}
+#spcoa-sounding-panel .ss-sars-box h3{font-size:12px;color:#c7dff5;border-bottom:1px solid #364858;padding-bottom:4px}
+#spcoa-sounding-panel .ss-sars-box .ss-analogs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#spcoa-sounding-panel .ss-sars-box .ss-analogs>div{min-width:0}
+#spcoa-sounding-panel .ss-sars-box .ss-analogs strong{color:#a8cde4;font-size:11px;display:block;padding:1px 0 4px}
+#spcoa-sounding-panel .ss-sars-box .ss-secondary{color:#9cb5c5;font-size:10px;line-height:1.35}
+#spcoa-sounding-panel .ss-sars-box .ss-mute{color:#aab3be;font-size:10px;line-height:1.42}
+#spcoa-sounding-panel .ss-sars-box .ss-warn{color:#ffc58f;font-size:10px}
+#spcoa-sounding-panel .ss-sars-box .ss-analogs .ss-mute{margin-top:3px}
+#spcoa-sounding-panel .ss-warm-cloud-row td:first-child{color:#99d6e4}
+
 @media(max-width:950px){#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-tables>.ss-box{min-height:197px}}
 @media(max-width:680px){#spcoa-sounding-panel .ss-figures{grid-template-columns:1fr}#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-figures canvas{height:430px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
 `;
@@ -19702,12 +19744,10 @@ function spcoaSndBuildPanel() {
           <div id="ss-thermo-prev" style="display:none;margin-top:5px"></div></div>
         <div class="ss-box"><h3>Kinematics <span class="ss-thermo-unit">kt · m²/s²</span></h3><table class="ss-kine-table" id="ss-kinematics"></table><div class="ss-bottom-note" id="ss-eil"></div></div>
         <div class="ss-box"><h3>General / Severe <span class="ss-thermo-unit">HRRR F00</span></h3><table class="ss-environment-table" id="ss-environment"></table></div>
-        <div class="ss-box ss-mini"><h3 class="ss-blue">RH (%)</h3><canvas id="ss-mini-rh" aria-label="Vertical relative humidity profile"></canvas></div>
-        <div class="ss-box ss-mini"><h3 class="ss-red">WAA / CAA</h3><canvas id="ss-mini-adv" aria-label="Inferred temperature advection by pressure layer"></canvas></div>
+        <div class="ss-box ss-sars-box"><h3>SARS – Sounding Analogs</h3><div id="ss-sars">—</div></div>
         <div class="ss-box ss-mini"><h3>SR Wind (kt)</h3><canvas id="ss-mini-sr" aria-label="Right-moving storm-relative wind by height"></canvas></div>
       </div>
-      <div class="ss-diagnostic-info" id="ss-diagnostic-info"></div>
-      <div class="ss-note" id="ss-archive-note">Native HRRR F00 grid point (2-m T/q; 10-m winds). WAA/CAA is inferred from the vertical profile, not actual gridded temperature advection. Missing diagnostics are shown as “—”.</div></div>`;
+      <div class="ss-note" id="ss-archive-note" style="display:none"></div></div>`;
     document.body.appendChild(panel);
     document.getElementById('ss-close').addEventListener('click',()=>{
         panel.style.display='none';
@@ -19982,10 +20022,18 @@ function spcoaSndCompactEnvironment(data){
         ['SB EHI 0–3', 'composites.ehi_0_3km',1,''],
         ['BRN (MU)', 'composites.brn_mu',1,''],
         ['PWAT', 'pwat_inches',2,''],
-        ['Freezing', 'freezing_level_m_agl',0,'']
+        ['Freezing', 'freezing_level_m_agl',0,''],
+        ['Warm Cloud Depth', '__warm_cloud_depth',0,'ss-warm-cloud-row']
     ];
     return entries.map(([label,path,n,klass])=>{
-        let unit=path==='pwat_inches'?' in':path==='freezing_level_m_agl'?' m':'';
+        if(path==='__warm_cloud_depth'){
+            const parcel=SPCOA_SOUNDING.parcelMode||'ml';
+            const value=spcoaSndNum(data?.warm_cloud_depth?.by_parcel?.[parcel]?.depth_m);
+            const display=Number.isFinite(value)?`${Math.round(value)} m`:'—';
+            const key=parcel.toUpperCase();
+            return `<tr class="${klass}" title="Depth from ${key} LCL to the first freezing level, meters AGL"><td>${label} (${key})</td><td>${display}</td></tr>`;
+        }
+        const unit=path==='pwat_inches'?' in':path==='freezing_level_m_agl'?' m':'';
         return `<tr class="${klass}"><td>${label}</td><td>${fmt(path,n)}${unit}</td></tr>`;
     }).join('');
 }
@@ -20090,6 +20138,54 @@ function spcoaSndMiniPlot(canvas,kind,diag){
     if(points.length<1){ctx.font='10px Arial';ctx.fillStyle='#a6b4c0';ctx.fillText('—',w/2,h/2);}
 }
 
+
+/* V61 — V60 backend data, compact SARS/hazard and warm-cloud layout. */
+/* V60 -- additional diagnostics from authoritative native HRRR profile. */
+function spcoaSndEscape(value){
+    return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function spcoaSndWarmCloudHtml(data){
+    const d=data?.warm_cloud_depth;
+    if(!d)return '<span class="ss-mute">Awaiting updated sounding diagnostics</span>';
+    const parts=[['sb','SB'],['ml','ML'],['mu','MU']].map(([k,label])=>{
+        const v=d.by_parcel?.[k]?.depth_m;
+        return `<span class="ss-chip">${label}: <b>${Number.isFinite(v)?Math.round(v)+' m':'—'}</b></span>`;
+    }).join('');
+    return `<div class="ss-secondary">0°C height minus parcel LCL (AGL)</div><div>${parts}</div>`+
+           `<div class="ss-mute" style="margin-top:8px">Convective cloud-base approximation; does not establish that a cloud exists.</div>`;
+}
+function spcoaSndSarsHtml(data){
+    const d=data?.sars_analogs;
+    if(!d)return '<span class="ss-mute">Awaiting updated sounding diagnostics</span>';
+    const render=(x,type)=>{
+        if(!x)return '<span class="ss-mute">Not available for this profile</span>';
+        const n=x.loose_count||0;
+        const frac=type==='hail'?x.sig_hail_fraction_percent:x.tornadic_fraction_percent;
+        const label=type==='hail'?'≥2″ historical hail reports':'Tornadic historical supercells';
+        const samples=n?`${Number(frac).toFixed(0)}% (${n} loose matches)`:'No loose matches';
+        const rows=(x.quality_matches||[]).slice(0,5).map(m=>{
+            const extra=type==='hail'?(Number.isFinite(m.hail_in)?`${m.hail_in.toFixed(2)}″`:'—'):
+                m.category==='SIGTOR'?'EF2+':m.category==='WEAKTOR'?'Weak TOR':m.category==='NONTOR'?'Non-TOR':spcoaSndEscape(m.category);
+            return `<div class="ss-mute">${spcoaSndEscape(m.id)} · ${spcoaSndEscape(extra)}</div>`;
+        }).join('');
+        return `<div class="ss-secondary">${label}</div><div style="color:#e5edf3;font-weight:600;margin:5px 0">${samples}</div>`+
+               (rows||'<span class="ss-mute">No close analogs</span>');
+    };
+    return `<div class="ss-analogs"><div><strong>Hail SARS</strong>${render(d.hail,'hail')}</div>`+
+           `<div><strong>Supercell SARS</strong>${render(d.supercell,'supercell')}</div></div>`+
+           `<div class="ss-mute" style="margin-top:8px">Conditional historical match fractions, not severe-weather forecast probabilities.</div>`;
+}
+function spcoaSndPtypeHtml(data){
+    const d=data?.precip_type_screen;
+    if(!d)return '<span class="ss-mute">Awaiting updated sounding diagnostics</span>';
+    if(d.status!=='screening_only')return '<span class="ss-mute">Precipitation-type estimate unavailable</span>';
+    const stat=x=>Number.isFinite(x)?Number(x).toFixed(0):'—';
+    return `<div class="ss-main">${spcoaSndEscape(d.ptype)}</div>`+
+           `<div class="ss-secondary">If precipitation occurs · Wet-bulb profile</div>`+
+           `<div class="ss-secondary">SFC Tw: ${Number.isFinite(d.surface_wetbulb_c)?d.surface_wetbulb_c.toFixed(1)+'°C':'—'}</div>`+
+           `<div class="ss-secondary">Melting: ${stat(d.melting_c_m)} · Refreezing: ${stat(d.refreezing_c_m)} °C·m</div>`+
+           `<div class="ss-warn" style="margin-top:8px">Experimental screening only; not a precipitation forecast or calibrated Bourgouin output.</div>`;
+}
 function spcoaSndRender() {
     const a=SPCOA_SOUNDING.current,b=SPCOA_SOUNDING.previous;
     if(!a)return;
@@ -20122,19 +20218,14 @@ function spcoaSndRender() {
     document.getElementById('ss-thermo-extra').innerHTML=spcoaSndCompactExtra(diag);
     document.getElementById('ss-kinematics').innerHTML=spcoaSndCompactKinematics(diag);
     document.getElementById('ss-environment').innerHTML=spcoaSndCompactEnvironment(diag);
+    document.getElementById('ss-sars').innerHTML=spcoaSndSarsHtml(diag);
     const eff=diag?.effective_inflow;
     document.getElementById('ss-eil').textContent=[eff?.bottom_m_agl,eff?.top_m_agl].every(Number.isFinite)?
         `EIL: ${Math.round(eff.bottom_m_agl)}–${Math.round(eff.top_m_agl)} m AGL`:
         Number.isFinite(eff?.bottom_hpa+eff?.top_hpa)?
         `EIL: ${Math.round(eff.bottom_hpa)}–${Math.round(eff.top_hpa)} hPa`:'EIL: —';
-    for(const [id,kind] of [['ss-mini-rh','rh'],['ss-mini-adv','adv'],['ss-mini-sr','sr']])
+    for(const [id,kind] of [['ss-mini-sr','sr']])
         spcoaSndMiniPlot(document.getElementById(id),kind,diag);
-    const info=document.getElementById('ss-diagnostic-info');
-    if(info)info.textContent=diag?
-        `Method B: pressure-weighted 100-hPa ML; SHARPpy profiles + Peters ECAPE · ${Object.keys(diag.calculation_errors||{}).length} calculation errors · ${diag.storm_motions?.method||'storm motion not available'}`:
-        SPCOA_SOUNDING.loadingDiagnostics?
-            `Native HRRR profile ready; SHARPpy and Peters ECAPE calculations are in progress for this grid point.`:
-            `Native HRRR profile loaded; matching per-point SB/ML/MU diagnostic JSON is not currently available.`;
     const note=document.getElementById('ss-archive-note');
     if(note){
         const legacy=a.manifest?.quantization?.specific_humidity_kgkg?.transform!=='log10';
@@ -20146,6 +20237,7 @@ function spcoaSndRender() {
             note.appendChild(old);
         }
         if(old)old.style.display=legacy?'block':'none';
+        note.style.display=legacy?'block':'none';
     }
 }
 /* V56: compact white loading spinner beneath the attribution; error statuses preserved. */
@@ -20158,7 +20250,7 @@ function spcoaSndRender() {
  */
 function spcoaSndExportPng() {
     if(!SPCOA_SOUNDING.current)return;
-    const c=document.createElement('canvas');c.width=1720;c.height=1110;
+    const c=document.createElement('canvas');c.width=1720;c.height=1116;
     const ctx=c.getContext('2d');ctx.fillStyle='#020304';ctx.fillRect(0,0,c.width,c.height);
     ctx.fillStyle='#f0f2f3';ctx.font='bold 21px Arial,sans-serif';ctx.textAlign='left';
     ctx.fillText(document.getElementById('ss-title')?.textContent||'HRRR F00 Sounding',20,32);
@@ -20172,8 +20264,7 @@ function spcoaSndExportPng() {
       ['ss-thermo','THERMODYNAMICS · ECAPE / LCL–LFC RH',13,835,550],
       ['ss-kinematics','KINEMATICS',563,835,215],
       ['ss-environment','GENERAL / SEVERE',778,835,210],
-      ['ss-mini-rh','RH (%)',988,835,240],
-      ['ss-mini-adv','WAA / CAA',1228,835,240],
+      ['ss-sars','SARS SOUNDING ANALOGS',988,835,480],
       ['ss-mini-sr','SR WIND (kt)',1468,835,240]
     ];
     for(const [id,title,x,y,width] of layout){
@@ -20183,6 +20274,35 @@ function spcoaSndExportPng() {
         ctx.fillText(title,x+7,y+20);
         const el=document.getElementById(id);if(!el)continue;
         if(el instanceof HTMLCanvasElement){ctx.drawImage(el,x+2,y+27,width-4,201);continue;}
+        if(id==='ss-sars'){
+            // Native SARS entries are drawn from the exact same V60
+            // diagnostic object shown in the browser—not placeholder text.
+            const sars=SPCOA_SOUNDING.diagnostic?.sars_analogs;
+            const cols=[{name:'Supercell',v:sars?.supercell,type:'supercell',x:x+10},
+                        {name:'Significant Hail',v:sars?.hail,type:'hail',x:x+width/2+6}];
+            for(const a of cols){
+                const maxWidth=width/2-18;
+                ctx.font='bold 12px Arial,sans-serif';ctx.fillStyle='#a8cde4';
+                ctx.fillText(a.name,a.x,y+46,maxWidth);
+                const n=Number(a.v?.loose_count)||0;
+                const pct=a.type==='hail'?a.v?.sig_hail_fraction_percent:a.v?.tornadic_fraction_percent;
+                const fraction=n&&Number.isFinite(Number(pct))?`${Number(pct).toFixed(0)}% (${n} loose matches)`:'No loose analog matches';
+                ctx.font='11px Arial,sans-serif';ctx.fillStyle='#e5edf3';
+                ctx.fillText(fraction,a.x,y+67,maxWidth);
+                const matches=(a.v?.quality_matches||[]).slice(0,6);
+                ctx.font='11px Arial,sans-serif';ctx.fillStyle='#aab3be';
+                if(!matches.length)ctx.fillText('No close analogs',a.x,y+91,maxWidth);
+                for(let k=0;k<matches.length;k++){
+                    const m=matches[k];
+                    const result=a.type==='hail'?(Number.isFinite(m.hail_in)?`${m.hail_in.toFixed(2)} in`:'—'):
+                        (m.category||'—');
+                    ctx.fillText(`${m.id||'—'} · ${result}`,a.x,y+91+21*k,maxWidth);
+                }
+            }
+            ctx.font='10px Arial,sans-serif';ctx.fillStyle='#839ba9';
+            ctx.fillText('Historical analog fractions are not storm occurrence probabilities',x+9,y+232,width-18);
+            continue;
+        }
         const rows=[...el.querySelectorAll('tr')];
         const lineH=id==='ss-thermo'?29:19;
         const totalColumns=id==='ss-thermo'?9:id==='ss-kinematics'?4:2;
@@ -20214,10 +20334,8 @@ function spcoaSndExportPng() {
             ctx.fillText(spans[2]?.textContent.trim()||'',x+8,y+205,width-16);
         }
     }
-    const diag=SPCOA_SOUNDING.diagnostic;
-    ctx.font='11px Arial';ctx.fillStyle='#b7c2cf';ctx.textAlign='left';
-    ctx.fillText(diag?'Native HRRR F00 · SHARPpy / Method B / Peters ECAPE · WAA/CAA inferred, not gridded':
-        'Native HRRR F00 · matching diagnostic JSON unavailable',16,1100);
+    // V61: no additional footer; the hodograph canvas contains the
+    // conditional precipitation-type box and the SARS panel is beside SR Wind.
     c.toBlob(blob=>{
         if(!blob)return;
         const url=URL.createObjectURL(blob),link=document.createElement('a');
