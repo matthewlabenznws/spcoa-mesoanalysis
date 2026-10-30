@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPCOA WeatherFront-inspired HRRR F00 sounding diagnostic engine (V4).
+"""SPCOA WeatherFront-inspired HRRR F00 sounding diagnostic engine (V5 / sounding UI V60).
 
 Reads native columns from spcoa_soundings.py v1 S3 tiles or a JSON profile.
 Computes thermodynamics and SB/ML/MU Peters ECAPE from the selected profile; never substitutes gridded
@@ -319,6 +319,159 @@ def ecape_values(a, parcels, enabled=True):
         output[name]=row
     return output, errors
 
+
+# ---------------- V60: warm cloud, SHARPpy SARS, wet-bulb precip screen ----------------
+def warm_cloud_layers(freezing_m_agl, parcels):
+    """Convective warm-cloud depth: first environmental 0 C height minus parcel LCL.
+
+    This is a thermodynamic depth only, NOT a diagnosis of an actual cloud.
+    """
+    out = {}
+    for kind in ('sb', 'ml', 'mu'):
+        lcl = (parcels.get(kind) or {}).get('lcl_m_agl')
+        if freezing_m_agl is None or lcl is None or not math.isfinite(float(lcl)):
+            out[kind] = {'depth_m': None, 'status': 'undefined_lcl_or_freezing_level'}
+        else:
+            delta = float(freezing_m_agl) - float(lcl)
+            out[kind] = {'depth_m': number(max(0.0, delta)),
+                         'status': 'valid' if delta > 0 else 'no_warm_cloud_layer'}
+    return {'definition': 'First environmental 0 C level minus parcel LCL (convective cloud-base approximation)',
+            'freezing_level_m_agl': freezing_m_agl, 'by_parcel': out}
+
+
+def _energy_layers(z_agl, wetbulb_c):
+    """Integrate positive melting and below-warm-layer refreezing thermal areas.
+
+    Area units degC*m. This is an exploratory screen, NOT the calibrated
+    revised Bourgouin categorical/ensemble scheme.
+    """
+    z = np.asarray(z_agl, float)
+    w = np.asarray(wetbulb_c, float)
+    good = np.isfinite(z) & np.isfinite(w) & (z >= 0) & (z <= 6000)
+    z, w = z[good], w[good]
+    if len(z) < 5 or np.any(np.diff(z) <= 0):
+        return None
+    warm = np.where(w > 0.25)[0]
+    if not len(warm):
+        return {'melting_c_m': 0., 'refreezing_c_m': 0., 'warm_nose_max_c': float(np.max(w)),
+                'has_warm_nose': False}
+    # The cold layer to test is ONLY below the lowest elevated warm layer.
+    bottom_warm = int(warm[0]); top_warm = int(warm[-1]); melt = 0.; cold = 0.
+    for i in range(1, len(z)):
+        dz = z[i] - z[i-1]
+        if dz <= 0: continue
+        midpoint = 0.5 * (w[i-1] + w[i])
+        if i <= top_warm+1 and midpoint > 0:
+            melt += midpoint * dz
+        if i <= bottom_warm and midpoint < 0:
+            cold += -midpoint * dz
+    return {'melting_c_m': number(melt), 'refreezing_c_m': number(cold),
+            'warm_nose_max_c': number(np.max(w[warm])),
+            'has_warm_nose': bool(bottom_warm > 0)}
+
+
+def _classify_precip_screen(z_agl, wetbulb_c):
+    """A *conditional* p-type heuristic; does not predict precip occurrence.
+
+    Only rain/snow/sleet/freezing-rain screening. Hysteresis/bounds are
+    intentionally conservative; marginal cases explicitly called mixed/uncertain.
+    """
+    z = np.asarray(z_agl, float); w = np.asarray(wetbulb_c, float)
+    energies = _energy_layers(z, w)
+    if energies is None: return {'status': 'insufficient_wetbulb_profile', 'ptype': None}
+    surface = float(w[0]); melt = float(energies['melting_c_m']); refreeze=float(energies['refreezing_c_m'])
+    warm_max = float(energies['warm_nose_max_c'])
+    # Thermal-area cutoffs here are qualitative rules, not published
+    # or calibrated Bourgouin/revised Bourgouin thresholds.
+    if surface >= 2.0:
+        kind = 'Rain' if melt >= 800 else 'Rain / snow mix possible'
+    elif surface >= 0.3:
+        kind = 'Rain / snow mix possible' if melt < 1200 else 'Rain'
+    elif melt < 600 or warm_max <= 0.5:
+        kind = 'Snow' if surface <= -1.0 else 'Snow / rain mix possible'
+    elif refreeze >= 2800:
+        kind = 'Ice pellets (sleet) favored'
+    elif refreeze <= 500:
+        kind = 'Freezing rain favored'
+    else:
+        kind = 'Freezing rain / sleet mix possible'
+    return {'status': 'screening_only', 'ptype': kind,
+            'surface_wetbulb_c': number(surface), **energies,
+            'method': 'Exploratory wet-bulb melting/refreezing thermal-area screening; NOT calibrated revised Bourgouin',
+            'limitations': 'Conditional on precipitation. Does not diagnose cloud ice supply, precipitation occurrence/intensity, or microphysics.'}
+
+
+def precip_type_screen(a, dew):
+    try:
+        from metpy.units import units
+        import metpy.calc as mp
+        # Filter to the lowest 6 km AGL. A single gridpoint sounding does not
+        # say whether hydrometeors are forming or precipitating at this location.
+        keep = np.where((a['height_m_agl'] >= 0) & (a['height_m_agl'] <= 6000))[0]
+        if len(keep) < 5: raise ValueError('Insufficient low/midlevel HRRR profile')
+        p = a['pressure_hpa'][keep] * units.hPa
+        t = a['temperature_k'][keep] * units.kelvin
+        td = np.asarray(dew, float)[keep] * units.degC
+        tw = mp.wet_bulb_temperature(p,t,td).to('degC').m
+        result = _classify_precip_screen(a['height_m_agl'][keep],tw)
+        result['wetbulb_profile_c'] = [number(x) for x in tw]
+        return result
+    except Exception as exc:
+        return {'status':'calculation_unavailable','ptype':None,'detail': f'{type(exc).__name__}: {exc}'}
+
+
+def sars_analog_matches(prof, a, tc, parcels, shear, srh):
+    """Call SHARPpy's bundled SPC SARS supercell and hail analogue databases.
+
+    Fractions describe historical matched sounding subsets, not unconditional
+    storm/severe weather probabilities. Never substitute fake matches.
+    """
+    result = {'source':'SHARPpy SARS (SPC historical proximity-sounding databases)',
+              'supercell':None,'hail':None,
+              'disclaimer':'Conditional historical-analogue fractions; not a probability that thunderstorms will occur.'}
+    try:
+        from sharppy.databases import sars
+        from sharppy.sharptab import params, thermo
+        p=a['pressure_hpa']; z=a['height_m_agl']
+        if p.min()>500 or p.max()<700: raise ValueError('500/700 hPa levels unavailable')
+        temp500=float(np.interp(500,p[::-1],tc[::-1]))
+        temp700=float(np.interp(700,p[::-1],tc[::-1]))
+        z500=float(np.interp(500,p[::-1],z[::-1]))
+        z700=float(np.interp(700,p[::-1],z[::-1]))
+        lr=(temp700-temp500)/(z500-z700)*1000 if z500>z700 else None
+        def require(*vals):
+            return all(x is not None and math.isfinite(float(x)) for x in vals)
+        ml=parcels.get('ml') or {};mu=parcels.get('mu') or {}
+        shr6=shear.get('0_6000m_kt');shr3=shear.get('0_3000m_kt');shr9=shear.get('0_9000m_kt')
+        srh1=srh.get('0_1000m_right_m2s2');srh3=srh.get('0_3000m_right_m2s2')
+        if require(ml.get('cape_jkg'),ml.get('lcl_m_agl'),temp500,lr,shr6,srh1,shr3,shr9,srh3):
+            dates,categories,nloose,ntor,frac = sars.supercell('sars_supercell.txt',
+                float(ml['cape_jkg']),float(ml['lcl_m_agl']),temp500,lr,
+                float(shr6),float(srh1),float(shr3),float(shr9),float(srh3))
+            matches=[{'id':str(d),'category':str(c)} for d,c in zip(dates[:8],categories[:8])]
+            result['supercell']={'loose_count':int(nloose),'tornadic_loose_count':int(ntor),
+                                 'tornadic_fraction_percent':number(100*frac) if nloose>0 else None,
+                                 'quality_matches':matches}
+        else: result['supercell_status']='missing_severe_environment_inputs'
+        try:
+            lpl=params.define_parcel(prof,flag=3)
+            mumr=scalar(thermo.mixratio(lpl.pres,lpl.dwpc))
+        except Exception:
+            mumr=None
+        if require(mumr,mu.get('cape_jkg'),temp500,lr,shr3,shr6,shr9,srh3):
+            dates,sizes,nloose,nsig,frac=sars.hail('sars_hail.txt',float(mumr),
+                float(mu['cape_jkg']),temp500,lr,float(shr6)/KTS_PER_MS,
+                float(shr9)/KTS_PER_MS,float(shr3)/KTS_PER_MS,float(srh3))
+            matches=[{'id':str(d),'hail_in':number(s)} for d,s in zip(dates[:8],sizes[:8])]
+            result['hail']={'loose_count':int(nloose),'sig_hail_loose_count':int(nsig),
+                            'sig_hail_fraction_percent':number(100*frac) if nloose>0 else None,
+                            'quality_matches':matches}
+        else: result['hail_status']='missing_severe_environment_inputs'
+    except Exception as exc:
+        result['status']='unavailable'
+        result['error']=f'{type(exc).__name__}: {exc}'
+    return result
+
 def diagnostics(raw, ecape=True):
     from sharppy.sharptab import params, thermo
     from metpy.units import units
@@ -470,6 +623,9 @@ def diagnostics(raw, ecape=True):
         pwat=scalar(params.precip_water(prof)) # inches SHARPpy convention
     except Exception as exc: pwat=None;errors['pwat']=str(exc)
     freezing_h=first_freezing_level_m_agl(z,tc)
+    warm_cloud = warm_cloud_layers(freezing_h, parcels)
+    ptype = precip_type_screen(a, dew)
+    analogs = sars_analog_matches(prof, a, tc, parcels, shear, srh)
     return {
       'schema':'spcoa.hrrr_f00_sounding_diagnostics.v2','source':'native HRRR F00 profile',
       'location':{k:raw.get(k) for k in ('lat','lon','i','j')},
@@ -500,6 +656,8 @@ def diagnostics(raw, ecape=True):
       'storm_relative_helicity':srh,'storm_relative_wind':srw,
       'effective_inflow':effective,'composites':composites,
       'lapse_rates':lapse,'pwat_inches':pwat,'freezing_level_m_agl':freezing_h,
+      'diagnostic_revision': 5,
+      'warm_cloud_depth': warm_cloud, 'sars_analogs': analogs, 'precip_type_screen': ptype,
       'profile':{'pressure_hpa':p.tolist(),'temperature_c':tc.tolist(),
                  'dewpoint_c':dew.tolist(),'relative_humidity_percent':rh.tolist(),
                  'height_m_agl':z.tolist(), 'height_m_msl':a['height_m_msl'].tolist(),
@@ -569,11 +727,18 @@ def selftest():
         {'lcl_hpa':950,'lfc_hpa':None})['status']=='no_valid_lcl_lfc'
     assert abs(float(longitude_difference(179.0,-179.0))+2.0)<1e-8
     assert first_freezing_level_m_agl([0,1000,2000],[5,-5,-10])==500.0
+    cloud=warm_cloud_layers(3200,{'ml':{'lcl_m_agl':1200},'sb':{'lcl_m_agl':800}})
+    assert cloud['by_parcel']['ml']['depth_m']==2000
+    assert cloud['by_parcel']['sb']['depth_m']==2400
+    assert cloud['by_parcel']['mu']['depth_m'] is None
+    assert _classify_precip_screen([0,500,1000,1500,2000],[-4,-3,-2,-4,-8])['ptype']=='Snow'
+    assert _classify_precip_screen([0,500,1000,1500,2000],[4,3,2,0,-3])['ptype']=='Rain'
+    assert _classify_precip_screen([0,500,1000,1500,2000],[-3,-2,2,4,-3])['status']=='screening_only'
     encoded=json.dumps(json_safe({'i':np.int64(12),'value':np.float32(1.5),
                                    'missing':np.float64(np.nan),
                                    'barbs':np.array([950,900],dtype=np.int64)}),allow_nan=False)
     assert json.loads(encoded)=={'i':12,'value':1.5,'missing':None,'barbs':[950,900]}
-    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, JSON (V4)')
+    print('SELFTEST PASS: profiles, Method B integration, SB/ML/MU RH, wind barbs, longitude, JSON (V5)')
 
 def main():
     cli=argparse.ArgumentParser(description=__doc__)
