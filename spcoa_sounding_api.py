@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPCOA native HRRR F00 on-demand sounding diagnostics API (V1).
+"""SPCOA native HRRR F00 on-demand sounding diagnostics API (V5 / UI V60).
 
 Deploy this as a Lambda container. The *same* handler accepts an API Gateway
 HTTP GET (/diagnostics?run=YYYYMMDD_HH&j=...&i=...) and SQS worker records.
@@ -10,8 +10,8 @@ GET returns one of:
   400/404/405/500/503 descriptive error JSON
 
 SQS events load authoritative archived native HRRR tiles from S3 and run the
-unchanged V4 spcoa_sounding_diagnostics.diagnostics() function, then write
-  spcoa/runs/YYYYMMDD_HH/soundings/v1/diagnostics/j####/i####.json
+V5 spcoa_sounding_diagnostics.diagnostics() function, then write
+  spcoa/runs/YYYYMMDD_HH/soundings/v1/diagnostics/v5/j####/i####.json
 
 The API NEVER accepts client-supplied meteorological profiles and NEVER writes
 into the parent SPCOA analysis latest.json. The existing archive manifest
@@ -62,7 +62,7 @@ def _validate(run, j, i):
 
 
 def relative_diag(j, i):
-    return f'diagnostics/j{j:04d}/i{i:04d}.json'
+    return f'diagnostics/v5/j{j:04d}/i{i:04d}.json'
 
 
 def _is_missing(exc):
@@ -95,6 +95,7 @@ def cached_diagnostics(client, run, j, i):
         raise
     loc = d.get('location', {})
     if (d.get('schema') != 'spcoa.hrrr_f00_sounding_diagnostics.v2' or
+            d.get('diagnostic_revision') != 5 or
             d.get('run_id') != run or
             loc.get('j') != j or loc.get('i') != i):
         # Wrong/legacy sidecar is not accepted as a match.
@@ -128,7 +129,8 @@ def _calculate(run, j, i):
     result = met.json_safe(met.diagnostics(raw, ecape=True))
     loc = result.get('location') or {}
     if (result.get('run_id') != run or loc.get('j') != j or loc.get('i') != i or
-            result.get('schema') != 'spcoa.hrrr_f00_sounding_diagnostics.v2'):
+            (result.get('schema') != 'spcoa.hrrr_f00_sounding_diagnostics.v2' or
+             result.get('diagnostic_revision') != 5)):
         raise ValueError('Calculated output identity check failed; refusing cache upload')
     payload = json.dumps(result, separators=(',', ':'), allow_nan=False).encode('utf-8')
     client.put_object(Bucket=archive.BUCKET,
