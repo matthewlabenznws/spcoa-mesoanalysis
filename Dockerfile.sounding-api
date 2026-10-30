@@ -1,8 +1,18 @@
+# SPCOA V60 - HRRR F00 sounding diagnostics Lambda container
+# Save these contents in the GitHub repository ROOT as:
+#   Dockerfile.sounding-api
+#
+# Keep the existing working Python 3.11 / Amazon Linux 2 dependency pins.
+# V60 adds warm-cloud depth, SARS analogs, and experimental wet-bulb
+# precipitation-type screening in spcoa_sounding_diagnostics.py.
+# No separate SARS package is needed: the analog functions and databases
+# are supplied by SHARPpy.
 FROM public.ecr.aws/lambda/python:3.11
 
+# Lambda Python 3.11 image is Amazon Linux 2; use manylinux-compatible wheels.
+# No GUI / Qt stack is required for the SHARPpy sounding calculations.
 COPY spcoa_soundings.py spcoa_sounding_diagnostics.py spcoa_sounding_api.py ${LAMBDA_TASK_ROOT}/
 
-# Install compatible prebuilt scientific packages
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir --only-binary=:all: \
        "numpy==1.26.4" \
@@ -13,7 +23,9 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
        boto3 requests python-dateutil \
     && python -m pip install --no-cache-dir --only-binary=:all: --no-deps \
        "SHARPpy==1.4.0a5" \
-    && python -c "import numpy, scipy, pyproj, metpy, ecape, boto3; from sharppy.sharptab import params, profile, thermo, winds; print('SPCOA imports OK:', 'NumPy', numpy.__version__, 'SciPy', scipy.__version__, 'pyproj', pyproj.__version__, 'MetPy', metpy.__version__)" \
+    && python -c "import numpy, scipy, pyproj, metpy, ecape, boto3; from sharppy.sharptab import params, profile, thermo, winds; print('SPCOA V60 imports OK:', 'NumPy', numpy.__version__, 'SciPy', scipy.__version__, 'pyproj', pyproj.__version__, 'MetPy', metpy.__version__)" \
+    && python -c "from pathlib import Path; from sharppy.databases import sars; db = Path(sars.__file__).resolve().parent; names = ('sars_hail.txt', 'sars_supercell.txt'); missing = [name for name in names if not (db / name).is_file() or (db / name).stat().st_size < 100]; assert not missing, 'SHARPpy SARS database file(s) missing or empty: ' + ', '.join(missing); print('SPCOA V60 SARS databases OK:', ', '.join(str(db / name) for name in names))" \
     && python spcoa_sounding_diagnostics.py selftest
 
+# The same Lambda handles API Gateway requests and SQS diagnostic jobs.
 CMD ["spcoa_sounding_api.lambda_handler"]
