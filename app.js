@@ -18767,6 +18767,49 @@ async function spcoaSndSamePoint(run,j,i) {
     const block=await spcoaSndBlock(run,Math.floor(j/32)*32,Math.floor(i/32)*32,manifest);
     return {profile:spcoaSndDecodePoint(block,(j-block.j0)*block.w+i-block.i0,manifest),manifest};
 }
+/* SPCOA V64: optional real native HRRR omega, isolated from existing six-field archive.
+ * Fetches sidecar only if its FULL-CONUS manifest is published. No inferred omega.
+ * Sidecar binary: 8-byte SPCOMG01, six little-endian uint16s
+ * j0/i0/rows/cols/levels/fields=1, then int16 omega[levels,rows,cols],
+ * Pa/s x1000, -32768 missing. Level zero is missing (not a model layer).
+ */
+async function spcoaSndFetchNativeOmega(run,profile){
+    const marker=await fetch(spcoaSndUrl(run,'omega/v1/manifest.json'),{cache:'no-store'});
+    if(marker.status===403||marker.status===404)return null;
+    if(!marker.ok)throw new Error('Omega manifest HTTP '+marker.status);
+    const manifest=await marker.json();
+    if(manifest?.complete!==true || manifest.run_id!==run ||
+       manifest.schema!=='spcoa.native_hrrr_f00_omega.v1')return null;
+    const block=32,j0=Math.floor(profile.j/block)*block,i0=Math.floor(profile.i/block)*block;
+    const key=`omega/v1/tiles/j${String(j0).padStart(4,'0')}/i${String(i0).padStart(4,'0')}.bin`;
+    const response=await fetch(spcoaSndUrl(run,key));
+    if(!response.ok)throw new Error('Omega tile HTTP '+response.status);
+    // Fetch API transparently decompresses gzip Content-Encoding from S3.
+    const bytes=await response.arrayBuffer(),dv=new DataView(bytes);
+    const magic=String.fromCharCode(...new Uint8Array(bytes,0,8));
+    if(magic!=='SPCOMG01')throw new Error('Unexpected HRRR omega tile format');
+    const jj=dv.getUint16(8,true),ii=dv.getUint16(10,true),h=dv.getUint16(12,true),w=dv.getUint16(14,true);
+    const n=dv.getUint16(16,true),fields=dv.getUint16(18,true);
+    if(jj!==j0||ii!==i0||fields!==1||n!==profile.pressure_hpa.length||
+       bytes.byteLength!==20+2*n*h*w)throw new Error('Native omega dimensions differ from profile');
+    const dj=profile.j-j0,di=profile.i-i0;
+    if(dj<0||di<0||dj>=h||di>=w)throw new Error('Omega tile coordinates do not match');
+    const omega=[];
+    for(let k=0;k<n;k++){
+        const raw=dv.getInt16(20+2*(k*h*w+dj*w+di),true);
+        omega.push(raw===-32768?null:raw/1000);
+    }
+    return omega;
+}
+async function spcoaSndLoadOmega(run,profile,serial){
+    try{
+        const values=await spcoaSndFetchNativeOmega(run,profile);
+        if(!values||serial!==SPCOA_SOUNDING.serial||run!==currentRun||
+           SPCOA_SOUNDING.current?.profile!==profile)return;
+        profile.omega_pa_s=values;
+        spcoaSndRender();
+    }catch(error){console.warn('SPCOA optional HRRR omega unavailable:',error);}
+}
 function spcoaSndFormatted(value,digits=0) {
     return Number.isFinite(value)?value.toLocaleString('en-US',{maximumFractionDigits:digits,minimumFractionDigits:digits}):'—';
 }
@@ -18787,7 +18830,9 @@ function spcoaSndProfile(p) {
         const z_msl=p.height_m_msl[k];
         const z=z_msl-ground,u=p.u_ms[k],v=p.v_ms[k];
         if(![press,t,q,z,z_msl].every(Number.isFinite)||press<90||press>1100||z < -100 ||z>30000)continue;
-        out.push({p:press,t:t-273.15,td:spcoaSndDewpoint(q,press),z,z_msl,u,v,q,k});
+        const omega=Array.isArray(p.omega_pa_s)?Number(p.omega_pa_s[k]):NaN;
+        out.push({p:press,t:t-273.15,td:spcoaSndDewpoint(q,press),z,z_msl,u,v,q,k,
+                  omega:Number.isFinite(omega)?omega:NaN});
     }
     // Surface row has 2m T and 10m winds; avoid claiming all 6 variables are colocated.
     out.sort((a,b)=>a.z-b.z);
@@ -19274,6 +19319,40 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         }
     }
 
+    // V66: separate, narrow WeatherFront-style omega GUTTER, left of the
+    // pressure/isobar plotting region. Magenta-only baseline and micro-ticks.
+    // No red/blue bars. Micro-ticks are drawn ONLY when the optional real
+    // native-HRRR VVEL sidecar is present; otherwise the strip stays empty.
+    // Data are Pa/s; pressure heights use exactly the Skew-T's y() mapping.
+    ctx.save();
+    const omegaLeft=3, omegaRight=37, omegaZeroX=15.5;
+    ctx.fillStyle='#020305';ctx.fillRect(omegaLeft,T,omegaRight-omegaLeft,B-T);
+    ctx.strokeStyle='#596068';ctx.lineWidth=.8;
+    ctx.beginPath();ctx.moveTo(omegaLeft+.5,T);ctx.lineTo(omegaLeft+.5,B);
+    ctx.moveTo(omegaRight+.5,T);ctx.lineTo(omegaRight+.5,B);ctx.stroke();
+    ctx.beginPath();ctx.rect(omegaLeft+1,T,omegaRight-omegaLeft-2,B-T);ctx.clip();
+    ctx.strokeStyle='#ba289b';ctx.lineWidth=1.1;
+    ctx.beginPath();ctx.moveTo(omegaZeroX,T);ctx.lineTo(omegaZeroX,B);ctx.stroke();
+    if(Array.isArray(current)) {
+        let lastTickY=-Infinity;
+        for(const a of current){
+            if(!Number.isFinite(a.omega)||!Number.isFinite(a.p)||
+               a.p<top||a.p>bottom)continue;
+            const yy=y(a.p);
+            // Prevent adjacent native hybrid levels from forming a filled bar.
+            if(yy-lastTickY<2.5)continue;
+            const microbarPerSecond=a.omega*10; // 1 Pa/s = 10 μbar/s
+            if(Math.abs(microbarPerSecond)<0.12)continue;
+            const tinyTick=clamp(Math.abs(microbarPerSecond)*0.25,1,3.2);
+            const direction=a.omega<0?1:-1;
+            ctx.strokeStyle='#cb3a9b';ctx.lineWidth=.85;
+            ctx.beginPath();ctx.moveTo(omegaZeroX,yy);
+            ctx.lineTo(omegaZeroX+direction*tinyTick,yy);ctx.stroke();
+            lastTickY=yy;
+        }
+    }
+    ctx.restore();
+
     // V53: move the shaft, every barb and the charcoal gutter together
     // approximately 18 pixels LEFT, away from WAA/CAA numeric labels.
     // Keep the 50-hPa density and physical pressure alignment unchanged.
@@ -19314,14 +19393,31 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     ctx.textAlign='center';ctx.fillText('WAA',advX+1,T-12);
     ctx.fillText('CAA',advX+1,T-2);
     ctx.fillText('°C/h',advX+1,B+14);
-    ctx.fillStyle='#dce2ea';ctx.textAlign='right';
+    // V67: Inline pressure labels have a VISIBLE isobar segment on BOTH sides.
+    // The full pressure line was already drawn from L to R above; instead of
+    // erasing L..L+32, clear only the measured text footprint. This leaves a
+    // short uninterrupted isobar segment to the LEFT of each number and the
+    // remainder extending to the RIGHT. Keep the omega gutter separate.
+    ctx.save();
+    ctx.fillStyle='#e4e8ed';ctx.textAlign='left';ctx.textBaseline='middle';
+    ctx.font='bold 10px '+fontMono;ctx.lineJoin='round';
+    const pressureLabelX=L+24;
     for(let p=100;p<=1000;p+=50){
         if(p%100!==0&&p!==850)continue;
-        ctx.font='bold 10px '+fontMono;ctx.fillText(String(p),L-8,y(p)+4);
+        const yy=y(p), label=String(p);
+        const labelWidth=ctx.measureText(label).width;
+        ctx.fillStyle='#080d13';
+        ctx.fillRect(pressureLabelX-3,yy-7.5,labelWidth+6,15);
+        ctx.fillStyle='#e4e8ed';
+        ctx.fillText(label,pressureLabelX,yy);
     }
-    ctx.textAlign='center';ctx.font='10px '+fontMono;
-    for(let tc=-60;tc<=60;tc+=20){
-        const xx=x(tc,1000);if(xx>L&&xx<R)ctx.fillText(`${tc}°`,xx,B+17);
+    ctx.restore();
+    // Bottom tick labels every 10°C, at the EXACT bottom intersection of
+    // each drawn isotherm (same skew transform AND same p=bottom anchor).
+    ctx.fillStyle='#dce2ea';ctx.textAlign='center';ctx.font='10px '+fontMono;
+    for(let tc=-80;tc<=80;tc+=10){
+        const xx=x(tc,bottom);
+        if(xx>=L+10&&xx<=R-10)ctx.fillText(`${tc}°`,xx,B+17);
     }
     if(current?.length){
         const s=current[0];
@@ -19337,10 +19433,10 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
             // traces. Canvas textBaseline='middle' aligns the surface-label
             // center EXACTLY with those profile endpoints, not 6 px above.
             ctx.textBaseline='middle';
-            ctx.fillText(`SFC (${groundHeight})`,L+4,sY);
+            ctx.fillText(`SFC (${groundHeight})`,L+65,sY);
             // Small surface-level tick: same y-coordinate as the trace bases.
             ctx.strokeStyle='#8a949d';ctx.lineWidth=0.9;
-            ctx.beginPath();ctx.moveTo(L-3,sY);ctx.lineTo(L+2,sY);ctx.stroke();
+            ctx.beginPath();ctx.moveTo(L+54,sY);ctx.lineTo(L+62,sY);ctx.stroke();
             ctx.textBaseline='alphabetic';
             // Simple WeatherFront surface temperature and dewpoint labels,
             // directly under their corresponding traces: NO boxes or leaders.
@@ -19377,7 +19473,11 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         for(const km of [1,3,5,7,9,13]){
             const nearest=current.reduce((best,a)=>Math.abs(a.z-km*1000)<Math.abs(best.z-km*1000)?a:best,current[0]);
             if(Math.abs(nearest.z-km*1000)<600){const yy=y(nearest.p);
-                if(yy>T+6&&yy<B-7)ctx.fillText(`${km}km`,L+5,yy-3);
+                if(yy>T+6&&yy<B-7){
+                    ctx.textAlign='left';ctx.strokeStyle='#090d11';
+                    ctx.lineWidth=2.2;ctx.strokeText(`${km}km`,L+65,yy-3);
+                    ctx.fillText(`${km}km`,L+65,yy-3);
+                }
             }
         }
     }
@@ -19393,7 +19493,8 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
 /* SPCOA V58 - full-panel WeatherFront-style hodograph with the SAME colors
  * as the SPC map hodograph overlays. Preserve original u/v, storm motions,
  * effective inflow diagnostics and 0-9 km layer boundaries. */
-/* V63: SHARPpy possible_watch and best_guess_precip (separate).
+/* V64: Omega sidecar, SHARPpy STP inset, clean hazard subtitle.
+ * V63: SHARPpy possible_watch and best_guess_precip (separate).
  * Neither is a storm/precipitation occurrence forecast. */
 function spcoaSndDrawHazardType(ctx,w,h,diagnostic){
     const haz=diagnostic?.hazard_screen;
@@ -19419,7 +19520,7 @@ function spcoaSndDrawHazardType(ctx,w,h,diagnostic){
         ctx.fillStyle=active?color:'#a4b0bb';
         ctx.fillText(text,x+pw/2,topY+55,maxText);
         ctx.fillStyle='#9daeba';ctx.font='9px Arial,sans-serif';
-        ctx.fillText(caption,x+pw/2,topY+80,maxText);
+        if(caption)ctx.fillText(caption,x+pw/2,topY+80,maxText);
     }
     let label=hasHaz?haz.label:'UNDETERMINED';
     const hazardColor=label.includes('TOR')?'#ff6975':
@@ -19431,7 +19532,7 @@ function spcoaSndDrawHazardType(ctx,w,h,diagnostic){
     const ptypeColor=lower.includes('freezing')||lower.includes('sleet')?'#f7b0ef':
         lower.includes('snow')?'#91c9ff':lower.includes('mix')?'#e8d19c':'#96e1a8';
     ctx.save();
-    draw(firstX,'Possible Hazard Type',label,hasHaz,hazardColor,'SHARPpy ingredients');
+    draw(firstX,'Possible Hazard Type',label,hasHaz,hazardColor,'');
     draw(firstX+pw+gap,'Precipitation Type',ptype,hasPt,ptypeColor,'If precipitation occurs');
     ctx.restore();
 }
@@ -19745,6 +19846,14 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-sars-box .ss-warn{color:#ffc58f;font-size:10px}
 #spcoa-sounding-panel .ss-sars-box .ss-analogs .ss-mute{margin-top:3px}
 #spcoa-sounding-panel .ss-warm-cloud-row td:first-child{color:#99d6e4}
+/* V64 tornado / SHARPpy conditional historical relative-frequency inset */
+#spcoa-sounding-panel .ss-tornado-panel{margin-top:5px;padding:4px 5px;border:1px solid #55565b;background:#030406;color:#e7edf1;font:10px/1.24 ui-monospace,Consolas,monospace}
+#spcoa-sounding-panel .ss-tornado-head{font:bold 11px Arial,sans-serif;color:#fc7548;border-bottom:1px solid #45484e;padding-bottom:2px;margin-bottom:3px}
+#spcoa-sounding-panel .ss-tor-prob{display:flex;justify-content:space-between;gap:5px;white-space:nowrap;line-height:1.23}
+#spcoa-sounding-panel .ss-tor-prob b{font-weight:700;color:#f4f5f7}
+#spcoa-sounding-panel .ss-tor-caption{margin-top:6px;color:#f0e6d9;font-weight:700;white-space:normal;font-size:10px}
+#spcoa-sounding-panel .ss-tor-note{font:9px/1.18 Arial,sans-serif;color:#91a3ae;margin-top:3px}
+
 
 @media(max-width:950px){#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-tables>.ss-box{min-height:197px}}
 @media(max-width:680px){#spcoa-sounding-panel .ss-figures{grid-template-columns:1fr}#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-figures canvas{height:430px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
@@ -19768,7 +19877,7 @@ function spcoaSndBuildPanel() {
           <table class="ss-thermo-table" id="ss-thermo"></table><div id="ss-thermo-extra" class="ss-thermo-extra"></div>
           <div id="ss-thermo-prev" style="display:none;margin-top:5px"></div></div>
         <div class="ss-box"><h3>Kinematics <span class="ss-thermo-unit">kt · m²/s²</span></h3><table class="ss-kine-table" id="ss-kinematics"></table><div class="ss-bottom-note" id="ss-eil"></div></div>
-        <div class="ss-box"><h3>General / Severe <span class="ss-thermo-unit">HRRR F00</span></h3><table class="ss-environment-table" id="ss-environment"></table></div>
+        <div class="ss-box"><h3>General / Severe <span class="ss-thermo-unit">HRRR F00</span></h3><table class="ss-environment-table" id="ss-environment"></table><div id="ss-tornado"></div></div>
         <div class="ss-box ss-sars-box"><h3>SARS – Sounding Analogs</h3><div id="ss-sars">—</div></div>
         <div class="ss-box ss-mini"><h3>SR Wind (kt)</h3><canvas id="ss-mini-sr" aria-label="Right-moving storm-relative wind by height"></canvas></div>
       </div>
@@ -19876,6 +19985,8 @@ async function spcoaSndLoadSelection() {
         const result=await spcoaSndNearest(run,point.lat,point.lon);
         if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
         SPCOA_SOUNDING.current=result;
+        // Omega archive runs independently and is optional; never delay sounding.
+        void spcoaSndLoadOmega(run,result.profile,serial);
         if(SPCOA_SOUNDING.marker)SPCOA_SOUNDING.marker.remove();
         const marker=document.createElement('div');
         marker.style.cssText='width:14px;height:14px;background:#54e4fc;border:3px solid #07131c;border-radius:50%;box-shadow:0 0 0 2px #fff,0 0 6px #000a';
@@ -20040,8 +20151,10 @@ function spcoaSndCompactEnvironment(data){
     const val=(p)=>spcoaSndVal(data,p),fmt=(p,n=1)=>spcoaSndFormatted(val(p),n);
     const entries=[
         ['SCP', 'composites.scp',1,'ss-group-severe'],
+        // STP remains available here; the compact Tornado inset is reserved
+        // for VTP, SHERBE and conditional historical EF2+ ingredient frequencies.
         ['STP (CIN)', 'composites.stp_cin',1,'ss-group-tornado'],
-        ['STP (fixed)', 'composites.stp_fixed',1,'ss-group-tornado'],
+        ['STP (Fixed)', 'composites.stp_fixed',1,'ss-group-tornado'],
         ['SHIP', 'composites.ship',1,'ss-group-hail'],
         ['SB EHI 0–1', 'composites.ehi_0_1km',1,''],
         ['SB EHI 0–3', 'composites.ehi_0_3km',1,''],
@@ -20062,6 +20175,75 @@ function spcoaSndCompactEnvironment(data){
         const unit=path==='pwat_inches'?' in':path==='freezing_level_m_agl'?' m':path==='dcape_jkg'?' J/kg':'';
         return `<tr class="${klass}"><td>${label}</td><td>${fmt(path,n)}${unit}</td></tr>`;
     }).join('');
+}
+/* V66 compact Tornado inset. Frequencies are the published SHARPpy/plotSTP
+ * historical relative frequencies CONDITIONAL on right-moving supercells;
+ * they are NOT unconditional tornado forecast probabilities.
+ * Reference: sharppy/viz/stp.py (SHARPpy), function *prob.
+ * VTP/SHERBE are intentionally unavailable until their validated native
+ * algorithms are included; do not substitute map-grid numbers.
+ */
+/* Sherburn-Parker SHERBE: normalized effective bulk shear (m/s),
+ * 0-3 km AGL lapse rate, and 700-500 hPa lapse rate. Do not substitute
+ * a fixed-layer 700-500 m lapse rate for the pressure-layer calculation.
+ * All three values are from this native SHARPpy diagnostic grid point.
+ */
+function spcoaSndSHERBE(d){
+    const eb=Number(d?.effective_inflow?.effective_bwd_kt);
+    const lr03=Number(d?.lapse_rates?.['0_3000m_c_km']);
+    const p=d?.profile?.pressure_hpa,t=d?.profile?.temperature_c,z=d?.profile?.height_m_agl;
+    if(!Number.isFinite(eb)||eb<0||!Number.isFinite(lr03)||
+       !Array.isArray(p)||!Array.isArray(t)||!Array.isArray(z)||
+       p.length!==t.length||p.length!==z.length)return NaN;
+    const at=pressure=>{
+        for(let i=1;i<p.length;i++){
+            const a=p[i-1],b=p[i];
+            if(!(Number.isFinite(a)&&Number.isFinite(b)&&a>b))continue;
+            if(a>=pressure&&b<=pressure){
+                const f=(Math.log(a)-Math.log(pressure))/(Math.log(a)-Math.log(b));
+                return [t[i-1]+f*(t[i]-t[i-1]),z[i-1]+f*(z[i]-z[i-1])];
+            }
+        }
+        return null;
+    };
+    const a=at(700),b=at(500);
+    if(!a||!b||!(b[1]>a[1])||![...a,...b].every(Number.isFinite))return NaN;
+    const lr75=(a[0]-b[0])*1000/(b[1]-a[1]);
+    return eb/1.94384449244/27*lr03/5.2*lr75/5.6;
+}
+function spcoaSndTornadoHtml(d){
+    const f=(v,digits=1)=>Number.isFinite(v)?Number(v).toFixed(digits):'—';
+    const get=p=>spcoaSndVal(d,p);
+    const cape=get('parcels.ml.cape_jkg'),lcl=get('parcels.ml.lcl_m_agl');
+    const esrh=get('storm_relative_helicity.effective_right_m2s2');
+    const sherbe=spcoaSndSHERBE(d);
+    const ebwd=get('effective_inflow.effective_bwd_kt');
+    function bins(v,edges,values){
+        if(!Number.isFinite(v)||v<0)return null;
+        let k=0;while(k<edges.length&&v>=edges[k])k++;
+        return values[Math.min(k,values.length-1)];
+    }
+    const probs={
+        cape: Number.isFinite(cape)?bins(cape,[.001,250,500,1000,1500,2000,2500,3000,4000],
+               [0,.12,.14,.16,.15,.13,.14,.18,.20,.16]):null,
+        lcl:bins(lcl,[750,1000,1250,1500,1750,2000,2500],
+               [.19,.19,.15,.10,.06,.06,.02,0]),
+        esrh:bins(esrh,[50,100,200,300,400,500,600,700],
+                [.06,.06,.08,.14,.20,.27,.38,.37,.42]),
+        ebwd:bins(ebwd,[.01,20,30,40,50,60,70,80],
+                [0,.03,.05,.06,.12,.19,.27,.36,.26])
+    };
+    const val=(k)=>Number.isFinite(probs[k])?probs[k].toFixed(2):'—';
+    const color=v=>!Number.isFinite(v)?'#a8b2be':v>=.25?'#f88775':v>=.15?'#eec951':'#9eabb8';
+    const entry=(label,k)=>`<div class="ss-tor-prob"><span>${label}</span><b style="color:${color(probs[k])}">${val(k)}</b></div>`;
+    return `<div class="ss-tornado-panel" role="group" aria-label="Tornado environmental ingredients">
+      <div class="ss-tornado-head">Tornado</div>
+      <div class="ss-tor-prob"><span>VTP</span><b>${f(get('composites.vtp'))}</b></div>
+      <div class="ss-tor-prob"><span>SHERBE</span><b>${f(sherbe)}</b></div>
+      <div class="ss-tor-caption" title="Conditional historical frequencies from SHARPpy STP ingredient bins for right-moving supercells, NOT tornado occurrence probabilities.">EF2+ historical frequency†</div>
+      ${entry('CAPE','cape')}${entry('LCL','lcl')}${entry('ESRH','esrh')}${entry('EBWD','ebwd')}
+      <div class="ss-tor-note">† Historical ingredient frequencies, conditional on right-moving supercells.</div>
+    </div>`;
 }
 function spcoaSndCompactExtra(data){
     const p=data?.parcels||{};
@@ -20244,6 +20426,7 @@ function spcoaSndRender() {
     document.getElementById('ss-thermo-extra').innerHTML=spcoaSndCompactExtra(diag);
     document.getElementById('ss-kinematics').innerHTML=spcoaSndCompactKinematics(diag);
     document.getElementById('ss-environment').innerHTML=spcoaSndCompactEnvironment(diag);
+    document.getElementById('ss-tornado').innerHTML=spcoaSndTornadoHtml(diag);
     document.getElementById('ss-sars').innerHTML=spcoaSndSarsHtml(diag);
     const eff=diag?.effective_inflow;
     document.getElementById('ss-eil').textContent=[eff?.bottom_m_agl,eff?.top_m_agl].every(Number.isFinite)?
