@@ -31,6 +31,7 @@ jobs:
     outputs:
       run_id: ${{ steps.detect.outputs.run_id }}
       skip: ${{ steps.detect.outputs.skip }}
+      omega_skip: ${{ steps.detect.outputs.omega_skip }}
       force: ${{ steps.detect.outputs.force }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -74,13 +75,26 @@ jobs:
               if code not in ('404', 'NoSuchKey', 'NotFound'):
                   raise
               published = False
+          omega_key = f'{prefix}/runs/{run}/soundings/v1/omega/v1/manifest.json'
+          try:
+              s3.head_object(Bucket=bucket, Key=omega_key)
+              omega_published = True
+          except ClientError as exc:
+              code = exc.response.get('Error', {}).get('Code', '')
+              if code not in ('404', 'NoSuchKey', 'NotFound'):
+                  raise
+              omega_published = False
           force = os.environ.get('FORCE_REBUILD', 'false').lower() == 'true'
           skip = published and not force
+          omega_skip = omega_published and not force
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               out.write(f'run_id={run}\n')
               out.write(f'skip={str(skip).lower()}\n')
+              out.write(f'omega_skip={str(omega_skip).lower()}\n')
               out.write(f'force={str(force).lower()}\n')
-          print(f'SPCOA sounding run: {run}; published={published}; force={force}; skip={skip}')
+          print(f'SPCOA sounding run: {run}; native published={published}; '
+                f'omega published={omega_published}; force={force}; '
+                f'skip native={skip}; skip omega={omega_skip}')
           PY
 
   compute-native-soundings:
@@ -220,4 +234,105 @@ jobs:
           assert m['tile_count'] == 1938
           assert m['shards'] == 12
           print(f'Verified complete native CONUS sounding archive: {run} ({m["tile_count"]} tiles)')
+          PY
+
+  compute-native-omega:
+    name: Native HRRR omega shard ${{ matrix.shard }} of 12
+    needs: [resolve, publish-sounding-archive]
+    if: ${{ always() && needs.resolve.result == 'success' && needs.resolve.outputs.omega_skip == 'false' && (needs.publish-sounding-archive.result == 'success' || needs.resolve.outputs.skip == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_SOUNDINGS_BUCKET: spcoa-mesoanalysis
+      SPCOA_SOUNDINGS_PREFIX: spcoa
+      SPCOA_SOUNDINGS_WORKDIR: spcoa_soundings_work
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install sounding omega dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libeccodes0 libeccodes-dev
+          python -m pip install --upgrade pip
+          if [[ -f requirements_spcoa_soundings.txt ]]; then
+            REQUIREMENTS=requirements_spcoa_soundings.txt
+          elif [[ -f scripts/requirements_spcoa_soundings.txt ]]; then
+            REQUIREMENTS=scripts/requirements_spcoa_soundings.txt
+          else
+            echo '::error::Missing existing native-sounding requirements file.'
+            exit 1
+          fi
+          python -m pip install -r "$REQUIREMENTS"
+      - name: Check omega binary encoding
+        if: matrix.shard == 0
+        run: python spcoa_sounding_omega.py selftest
+      - name: Publish native hybrid-level VVEL blocks
+        shell: bash
+        env:
+          TARGET_RUN: ${{ needs.resolve.outputs.run_id }}
+          TARGET_SHARD: ${{ matrix.shard }}
+          FORCE: ${{ needs.resolve.outputs.force }}
+        run: |
+          test -f spcoa_sounding_omega.py || { echo '::error::Missing spcoa_sounding_omega.py in repository root'; exit 1; }
+          extra=()
+          if [[ "$FORCE" == "true" ]]; then extra+=(--force); fi
+          python spcoa_sounding_omega.py compute \
+            --run "$TARGET_RUN" --shard "$TARGET_SHARD" \
+            --shards 12 --upload-workers 5 "${extra[@]}"
+
+  publish-native-omega:
+    name: Verify HRRR omega grid and publish sidecar manifest
+    needs: [resolve, compute-native-omega]
+    if: ${{ needs.compute-native-omega.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-2
+      SPCOA_SOUNDINGS_BUCKET: spcoa-mesoanalysis
+      SPCOA_SOUNDINGS_PREFIX: spcoa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install boto3 and NumPy
+        run: python -m pip install --quiet boto3 numpy
+      - name: Publish the complete optional HRRR omega sidecar
+        env:
+          TARGET_RUN: ${{ needs.resolve.outputs.run_id }}
+          FORCE: ${{ needs.resolve.outputs.force }}
+        shell: bash
+        run: |
+          extra=()
+          if [[ "$FORCE" == "true" ]]; then extra+=(--force); fi
+          python spcoa_sounding_omega.py publish --run "$TARGET_RUN" --shards 12 "${extra[@]}"
+      - name: Verify omega manifest
+        env:
+          TARGET_RUN: ${{ needs.resolve.outputs.run_id }}
+        run: |
+          python - <<'PY'
+          import os,json,boto3
+          key=f"spcoa/runs/{os.environ['TARGET_RUN']}/soundings/v1/omega/v1/manifest.json"
+          doc=json.load(boto3.client('s3',region_name='us-east-2').get_object(
+              Bucket='spcoa-mesoanalysis',Key=key)['Body'])
+          assert doc['complete'] is True and doc['tile_count']==1938
+          assert doc['schema']=='spcoa.native_hrrr_f00_omega.v1'
+          print('Published',key)
           PY
