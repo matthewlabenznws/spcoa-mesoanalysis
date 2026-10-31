@@ -1,3 +1,5 @@
+/* V75: optional Skew-T level sampling ON/OFF; V74 loading fix, V72 zoom/pan,
+   V73 six-field inspector, V69-V70 tornado layout/diagnostics preserved. */
 /* V72: interactive Skew-T cursor-centered zoom, drag-to-pan, and expanded native-HRRR level inspection. V69-V71 preserved. */
 /* V71: Interactive native HRRR level inspection (hover/tap), V70 features preserved. */
 /* V70: Preserve V69 General/Severe layout and colors; apply SHARPpy native
@@ -19251,7 +19253,7 @@ function spcoaSndSkewZoomAt(px,py,w,h,factor) {
 function spcoaSndSkew(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
     // Preserve V50 chart geometry and the full 50-hPa wind/advection columns.
-    const {L,R,T,B,top,bottom,lo,hi,skew,logSpan,x,y}=spcoaSndSkewGeometry(w,h);
+    const {L,R,T,B,top,bottom,lo,hi,skew,logSpan,x,y,pressureAtY}=spcoaSndSkewGeometry(w,h);
     if(R<L+140)return;
     const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
     const fontMono='ui-monospace,Consolas,monospace';
@@ -19850,6 +19852,32 @@ function spcoaSndHodo(canvas,current,previous,diagnostic) {
    all heights are AGL, computed from the original archived surface height.
    Overlay is independent from main plotting canvas and has no backend needs.
    ========================================================================================= */
+/* V75: Skew-T HOVER/TAP sampling preference. This does NOT change the
+ * map's long-press selection of sounding locations or the stored HRRR data.
+ * Default enabled to match V74; remember the viewer's choice per browser. */
+const SPCOA_SKEWT_SAMPLE_PREF_KEY='spcoa_skewt_level_sampling_enabled_v1';
+let SPCOA_SKEWT_SAMPLE_ENABLED=(()=>{
+    try {return localStorage.getItem(SPCOA_SKEWT_SAMPLE_PREF_KEY)!=='false';}
+    catch (_) {return true;}
+})();
+function spcoaSndSetSamplingEnabled(enabled) {
+    SPCOA_SKEWT_SAMPLE_ENABLED=!!enabled;
+    try {localStorage.setItem(SPCOA_SKEWT_SAMPLE_PREF_KEY,String(SPCOA_SKEWT_SAMPLE_ENABLED));}
+    catch (_) {}
+    const button=document.getElementById('ss-skew-sampling-toggle');
+    if(button){
+        button.textContent=SPCOA_SKEWT_SAMPLE_ENABLED?'Sampling: ON':'Sampling: OFF';
+        button.setAttribute('aria-pressed',String(SPCOA_SKEWT_SAMPLE_ENABLED));
+        button.setAttribute('aria-label',SPCOA_SKEWT_SAMPLE_ENABLED?
+            'Disable Skew-T level sampling':'Enable Skew-T level sampling');
+        button.title=SPCOA_SKEWT_SAMPLE_ENABLED?
+            'Turn off pressure-level hover/tap readouts and crosshair':
+            'Turn on pressure-level hover/tap readouts and crosshair';
+        button.dataset.enabled=String(SPCOA_SKEWT_SAMPLE_ENABLED);
+    }
+    document.getElementById('ss-skew')?.classList.toggle('ss-skew-sampling-off',!SPCOA_SKEWT_SAMPLE_ENABLED);
+    if(!SPCOA_SKEWT_SAMPLE_ENABLED)spcoaSndHideInspect();
+}
 function spcoaSndHideInspect() {
     const tip=document.getElementById('ss-skew-inspect');
     if(tip)tip.style.display='none';
@@ -19885,6 +19913,8 @@ function spcoaSndInstallInspect() {
     const number=(n,dec=0)=>Number.isFinite(n)?Number(n).toFixed(dec):'—';
     const compass=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
     function inspect(e) {
+        // Sampling is independent of wheel zoom, drag pan and reset controls.
+        if(!SPCOA_SKEWT_SAMPLE_ENABLED){spcoaSndHideInspect();return;}
         const panel=document.getElementById('spcoa-sounding-panel');
         const active=SPCOA_SOUNDING.current?.profile;
         if(!active||panel?.style.display!=='block'){spcoaSndHideInspect();return;}
@@ -19961,8 +19991,13 @@ function spcoaSndInstallInspect() {
     zoomTools.innerHTML=`<button type="button" id="ss-skew-in" title="Zoom in" aria-label="Zoom in Skew-T">+</button>
       <button type="button" id="ss-skew-out" title="Zoom out" aria-label="Zoom out Skew-T">−</button>
       <button type="button" id="ss-skew-reset" title="Reset Skew-T axes">Reset</button>
-      <span id="ss-skew-zoom-label" aria-live="off">100%</span>`;
+      <span id="ss-skew-zoom-label" aria-live="off">100%</span>
+      <button type="button" id="ss-skew-sampling-toggle" aria-pressed="true"
+        title="Toggle Skew-T hover/tap level sampling">Sampling: ON</button>`;
     chart.appendChild(zoomTools);
+    const samplingButton=document.getElementById('ss-skew-sampling-toggle');
+    samplingButton.addEventListener('click',()=>spcoaSndSetSamplingEnabled(!SPCOA_SKEWT_SAMPLE_ENABLED));
+    spcoaSndSetSamplingEnabled(SPCOA_SKEWT_SAMPLE_ENABLED);
     const dimensions=()=>{
         const rect=canvas.getBoundingClientRect();
         return {w:Math.max(300,Math.round(rect.width||390)),
@@ -20066,9 +20101,14 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-skew-wrap{position:relative}
 #spcoa-sounding-panel #ss-skew{cursor:crosshair;touch-action:manipulation}
 #spcoa-sounding-panel #ss-skew:active{cursor:grabbing}
+#spcoa-sounding-panel #ss-skew.ss-skew-sampling-off{cursor:grab}
+#spcoa-sounding-panel #ss-skew.ss-skew-sampling-off:active{cursor:grabbing}
 #spcoa-sounding-panel #ss-skew-tools{position:absolute;top:4px;left:55px;display:flex;gap:3px;align-items:center;z-index:3;pointer-events:auto}
 #spcoa-sounding-panel #ss-skew-tools button{min-width:22px;padding:3px 6px;background:#101820e8;border:1px solid #506476;font:bold 11px Arial,sans-serif;color:#d9e9f5}
 #spcoa-sounding-panel #ss-skew-tools button:disabled{color:#667b87;opacity:.65;cursor:default}
+#spcoa-sounding-panel #ss-skew-tools #ss-skew-sampling-toggle{margin-left:5px;min-width:92px;border-color:#6c97b1;color:#c6e6f7}
+#spcoa-sounding-panel #ss-skew-tools #ss-skew-sampling-toggle[data-enabled="false"]{border-color:#56616b;color:#a9b2ba;background:#111316e8}
+#spcoa-sounding-panel #ss-skew-tools #ss-skew-sampling-toggle:focus-visible{outline:2px solid #9bd7ff;outline-offset:1px}
 #spcoa-sounding-panel #ss-skew-zoom-label{font:10px Arial,sans-serif;color:#c3dae9;padding-left:4px;text-shadow:0 1px 2px #000}
 #spcoa-sounding-panel #ss-skew-hover{position:absolute;pointer-events:none;z-index:1;display:block;max-width:none}
 #spcoa-sounding-panel #ss-skew-inspect{display:none;position:absolute;left:0;top:0;z-index:2;pointer-events:none;width:265px;max-width:calc(100% - 8px);padding:9px 10px 7px;background:rgba(6,12,18,.97);border:1px solid #68839a;border-radius:4px;color:#e6f0f7;box-shadow:0 5px 18px #000b;font:11px/1.4 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
