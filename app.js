@@ -1,3 +1,9 @@
+/* V70: Preserve V69 General/Severe layout and colors; apply SHARPpy native
+   tornado frequency bin colors and calculate native-profile Hampshire VTP. */
+/* V69: Compact Tornado inset color-matched to General/Severe: coral metrics,
+   amber historical heading, cyan neutral frequencies; calculations unchanged. */
+/* V68: Tornado inset is integrated beside General / Severe for above-fold viewing.
+   All V67 Skew-T, omega, diagnostics, export, and other features preserved. */
 /* Normalize annotation coordinates for snapshots, child-panel sync and Redo.
    Mapbox accepts both [lon,lat] and {lng,lat}, but history must not assume one. */
 function spcoaClonePoint(point) {
@@ -19794,7 +19800,8 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-chart{border:1px solid #6f6f6f;background:#020203;padding:1px 0 0}
 #spcoa-sounding-panel .ss-chart h3{color:#d0d0d0;margin:2px 7px;font-size:11px;font-weight:500}
 #spcoa-sounding-panel .ss-figures canvas{display:block;width:100%;height:clamp(460px,65vh,710px)}
-#spcoa-sounding-panel .ss-tables{display:grid;grid-template-columns:minmax(455px,3.7fr) minmax(172px,1.35fr) minmax(166px,1.25fr) minmax(127px,1fr) minmax(127px,1fr) minmax(127px,1fr);gap:0;margin-top:2px;overflow-x:auto;background:#020203;border:1px solid #676767}
+/* V68: General / Severe includes a visible, side-by-side Tornado subcolumn. */
+#spcoa-sounding-panel .ss-tables{display:grid;grid-template-columns:minmax(455px,4.5fr) minmax(170px,1.55fr) minmax(178px,1.65fr) minmax(185px,1.7fr) minmax(150px,1.25fr) minmax(150px,1.25fr) minmax(128px,1.1fr);gap:0;margin-top:2px;overflow-x:auto;background:#020203;border:1px solid #676767}
 #spcoa-sounding-panel .ss-tables>.ss-box{min-width:0;overflow:hidden;border:0;border-right:1px solid #656565;min-height:197px;padding:3px 4px 4px;border-radius:0;background:#030406}
 #spcoa-sounding-panel .ss-tables>.ss-box:last-child{border-right:0}
 #spcoa-sounding-panel .ss-box h3{font:700 11px Arial,sans-serif;color:#dce4ea;margin:1px 0 4px;min-height:13px}
@@ -19846,17 +19853,31 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-sars-box .ss-warn{color:#ffc58f;font-size:10px}
 #spcoa-sounding-panel .ss-sars-box .ss-analogs .ss-mute{margin-top:3px}
 #spcoa-sounding-panel .ss-warm-cloud-row td:first-child{color:#99d6e4}
-/* V64 tornado / SHARPpy conditional historical relative-frequency inset */
-#spcoa-sounding-panel .ss-tornado-panel{margin-top:5px;padding:4px 5px;border:1px solid #55565b;background:#030406;color:#e7edf1;font:10px/1.24 ui-monospace,Consolas,monospace}
-#spcoa-sounding-panel .ss-tornado-head{font:bold 11px Arial,sans-serif;color:#fc7548;border-bottom:1px solid #45484e;padding-bottom:2px;margin-bottom:3px}
-#spcoa-sounding-panel .ss-tor-prob{display:flex;justify-content:space-between;gap:5px;white-space:nowrap;line-height:1.23}
+/* In the shared General / Severe card, both data groups begin at the same vertical position.
+   Keep the complete general/severe table and conditional-frequency context visible. */
+#spcoa-sounding-panel .ss-general-severe-box{grid-column:span 2}
+#spcoa-sounding-panel .ss-severe-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px;align-items:start}
+#spcoa-sounding-panel .ss-severe-grid>table,#spcoa-sounding-panel .ss-severe-grid>#ss-tornado{min-width:0}
+#spcoa-sounding-panel .ss-severe-grid .ss-environment-table td{padding-top:0;padding-bottom:1px}
+#spcoa-sounding-panel .ss-severe-grid .ss-tornado-panel{margin:0;padding:1px 1px 2px 7px}
+#spcoa-sounding-panel .ss-severe-grid .ss-tor-caption{margin-top:4px}
+#spcoa-sounding-panel .ss-severe-grid .ss-tor-note{margin-top:2px}
+/* V70 SHARPpy original parameter-specific probability and tier colors, V69 layout retained */
+#spcoa-sounding-panel .ss-tornado-panel{margin:0;padding:1px 1px 2px 7px;border:0;border-left:1px solid #364858;background:transparent;color:#dae5ed;font:10px/1.3 ui-monospace,Consolas,monospace}
+#spcoa-sounding-panel .ss-tornado-head{font:bold 11px Arial,sans-serif;color:#f59383;border-bottom:1px solid #364858;padding-bottom:3px;margin-bottom:4px}
+#spcoa-sounding-panel .ss-tor-prob{display:flex;justify-content:space-between;gap:6px;white-space:nowrap;line-height:1.28}
+#spcoa-sounding-panel .ss-tor-prob span{color:#c4d5e1}
+#spcoa-sounding-panel .ss-tor-index span{color:#f59383}
+#spcoa-sounding-panel .ss-tor-index b{color:#f6c1b7}
+#spcoa-sounding-panel .ss-tor-frequency b{color:#ffffff}
+#spcoa-sounding-panel .ss-tor-prob b.ss-tor-unavailable{color:#97a6b5}
 #spcoa-sounding-panel .ss-tor-prob b{font-weight:700;color:#f4f5f7}
-#spcoa-sounding-panel .ss-tor-caption{margin-top:6px;color:#f0e6d9;font-weight:700;white-space:normal;font-size:10px}
-#spcoa-sounding-panel .ss-tor-note{font:9px/1.18 Arial,sans-serif;color:#91a3ae;margin-top:3px}
+#spcoa-sounding-panel .ss-tor-caption{margin-top:6px;color:#f6da72;font-weight:700;white-space:normal;font-size:10px}
+#spcoa-sounding-panel .ss-tor-note{font:9px/1.22 Arial,sans-serif;color:#98acb9;margin-top:4px}
 
 
-@media(max-width:950px){#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-tables>.ss-box{min-height:197px}}
-@media(max-width:680px){#spcoa-sounding-panel .ss-figures{grid-template-columns:1fr}#spcoa-sounding-panel .ss-tables{grid-template-columns:455px 180px 166px 130px 130px 130px}#spcoa-sounding-panel .ss-figures canvas{height:430px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
+@media(max-width:950px){#spcoa-sounding-panel .ss-tables{grid-template-columns:480px 170px 190px 200px 150px 150px 128px}#spcoa-sounding-panel .ss-tables>.ss-box{min-height:197px}}
+@media(max-width:680px){#spcoa-sounding-panel .ss-figures{grid-template-columns:1fr}#spcoa-sounding-panel .ss-tables{grid-template-columns:480px 170px 190px 200px 150px 150px 128px}#spcoa-sounding-panel .ss-figures canvas{height:430px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
 `;
     document.head.appendChild(css);
 }
@@ -19877,7 +19898,8 @@ function spcoaSndBuildPanel() {
           <table class="ss-thermo-table" id="ss-thermo"></table><div id="ss-thermo-extra" class="ss-thermo-extra"></div>
           <div id="ss-thermo-prev" style="display:none;margin-top:5px"></div></div>
         <div class="ss-box"><h3>Kinematics <span class="ss-thermo-unit">kt · m²/s²</span></h3><table class="ss-kine-table" id="ss-kinematics"></table><div class="ss-bottom-note" id="ss-eil"></div></div>
-        <div class="ss-box"><h3>General / Severe <span class="ss-thermo-unit">HRRR F00</span></h3><table class="ss-environment-table" id="ss-environment"></table><div id="ss-tornado"></div></div>
+        <div class="ss-box ss-general-severe-box"><h3>General / Severe <span class="ss-thermo-unit">HRRR F00</span></h3>
+          <div class="ss-severe-grid"><table class="ss-environment-table" id="ss-environment"></table><div id="ss-tornado"></div></div></div>
         <div class="ss-box ss-sars-box"><h3>SARS – Sounding Analogs</h3><div id="ss-sars">—</div></div>
         <div class="ss-box ss-mini"><h3>SR Wind (kt)</h3><canvas id="ss-mini-sr" aria-label="Right-moving storm-relative wind by height"></canvas></div>
       </div>
@@ -20176,13 +20198,26 @@ function spcoaSndCompactEnvironment(data){
         return `<tr class="${klass}"><td>${label}</td><td>${fmt(path,n)}${unit}</td></tr>`;
     }).join('');
 }
-/* V66 compact Tornado inset. Frequencies are the published SHARPpy/plotSTP
- * historical relative frequencies CONDITIONAL on right-moving supercells;
- * they are NOT unconditional tornado forecast probabilities.
- * Reference: sharppy/viz/stp.py (SHARPpy), function *prob.
- * VTP/SHERBE are intentionally unavailable until their validated native
- * algorithms are included; do not substitute map-grid numbers.
+/* V70 Tornado inset:
+ * - SHARPpy 1.4 plotSTP (sharppy/viz/stp.py) supplies *parameter-specific*
+ *   conditional EF2+ relative frequencies and six alert colors. Do not assign
+ *   a generic color by frequency alone: equal frequencies can have different
+ *   colors depending on the predictor's bin.
+ * - Hampshire-style VTP matches the SPCOA map backend *equation*, while using
+ *   native HRRR sounding ingredients rather than a sampled map value:
+ *     VTP = STP (CIN) * min(ML 0-3 km CAPE/50, 2) * (0-3 km LR / 6.5)
+ *   Nonnegative terms and null-when-missing guard match map implementation.
+ *   The gridded map's STP field and this SHARPpy-derived STP can differ.
+ * - These historical fractions are conditional on right-moving supercells,
+ *   not unconditional tornado forecasts.
  */
+function spcoaSndVTP(d){
+    const stp=spcoaSndVal(d,'composites.stp_cin');
+    const mlCape03=spcoaSndVal(d,'parcels.ml.cape_0_3km_jkg');
+    const lr03=spcoaSndVal(d,'lapse_rates.0_3000m_c_km');
+    if(![stp,mlCape03,lr03].every(Number.isFinite))return NaN;
+    return Math.max(0,stp)*Math.min(2,Math.max(0,mlCape03)/50)*Math.max(0,lr03)/6.5;
+}
 /* Sherburn-Parker SHERBE: normalized effective bulk shear (m/s),
  * 0-3 km AGL lapse rate, and 700-500 hPa lapse rate. Do not substitute
  * a fixed-layer 700-500 m lapse rate for the pressure-layer calculation.
@@ -20211,36 +20246,82 @@ function spcoaSndSHERBE(d){
     const lr75=(a[0]-b[0])*1000/(b[1]-a[1]);
     return eb/1.94384449244/27*lr03/5.2*lr75/5.6;
 }
+// Literal six-level default palette in SHARPpy's sharppy/viz/stp.py.
+const SPCOA_SHARPPY_TORNADO_ALERT_COLORS=[
+    '#775000','#996600','#ffffff','#ffff00','#ff0000','#e700df'
+];
+/* Return the native SHARPpy right-moving-supercell conditional frequency AND
+ * that variable's exact SHARPpy color tier, not a tier inferred from the
+ * frequency number. The original functions are plotSTP.cape_prob,
+ * plotSTP.lcl_prob, plotSTP.esrh_prob and plotSTP.ebwd_prob.
+ */
+function spcoaSndSharpTornadoFrequency(which,v){
+    if(!Number.isFinite(v))return null;
+    let p=null,tier=0;
+    if(which==='cape'){
+        if(v<0)return null;
+        if(v===0)p=0;
+        else if(v<250){p=.12;tier=1;}
+        else if(v<500){p=.14;tier=2;}
+        else if(v<1000){p=.16;tier=2;}
+        else if(v<1500){p=.15;tier=2;}
+        else if(v<2000){p=.13;tier=2;}
+        else if(v<2500){p=.14;tier=2;}
+        else if(v<3000){p=.18;tier=3;}
+        else if(v<4000){p=.20;tier=3;}
+        else{p=.16;tier=3;}
+    }else if(which==='lcl'){
+        if(v<0)return null;
+        if(v<750){p=.19;tier=3;}
+        else if(v<1000){p=.19;tier=3;}
+        else if(v<1250){p=.15;tier=2;}
+        else if(v<1500){p=.10;tier=1;}
+        else if(v<1750){p=.06;tier=0;}
+        else if(v<2000){p=.06;tier=0;}
+        else if(v<2500){p=.02;tier=0;}
+        else{p=0;tier=0;}
+    }else if(which==='esrh'){
+        if(v<50){p=.06;tier=0;}
+        else if(v<100){p=.06;tier=0;}
+        else if(v<200){p=.08;tier=1;}
+        else if(v<300){p=.14;tier=2;}
+        else if(v<400){p=.20;tier=3;}
+        else if(v<500){p=.27;tier=3;}
+        else if(v<600){p=.38;tier=4;}
+        else if(v<700){p=.37;tier=4;}
+        else{p=.42;tier=4;}
+    }else if(which==='ebwd'){
+        if(v===0){p=0;tier=0;}
+        else if(v>=.01&&v<20){p=.03;tier=0;}
+        else if(v>=20&&v<30){p=.05;tier=0;}
+        else if(v>=30&&v<40){p=.06;tier=0;}
+        else if(v>=40&&v<50){p=.12;tier=1;}
+        else if(v>=50&&v<60){p=.19;tier=3;}
+        else if(v>=60&&v<70){p=.27;tier=3;}
+        else if(v>=70&&v<80){p=.36;tier=4;}
+        else if(v>=80){p=.26;tier=3;}
+    }
+    return p===null?null:{prob:p,tier,color:SPCOA_SHARPPY_TORNADO_ALERT_COLORS[tier]};
+}
 function spcoaSndTornadoHtml(d){
     const f=(v,digits=1)=>Number.isFinite(v)?Number(v).toFixed(digits):'—';
     const get=p=>spcoaSndVal(d,p);
-    const cape=get('parcels.ml.cape_jkg'),lcl=get('parcels.ml.lcl_m_agl');
-    const esrh=get('storm_relative_helicity.effective_right_m2s2');
-    const sherbe=spcoaSndSHERBE(d);
-    const ebwd=get('effective_inflow.effective_bwd_kt');
-    function bins(v,edges,values){
-        if(!Number.isFinite(v)||v<0)return null;
-        let k=0;while(k<edges.length&&v>=edges[k])k++;
-        return values[Math.min(k,values.length-1)];
-    }
+    const vtp=spcoaSndVTP(d),sherbe=spcoaSndSHERBE(d);
     const probs={
-        cape: Number.isFinite(cape)?bins(cape,[.001,250,500,1000,1500,2000,2500,3000,4000],
-               [0,.12,.14,.16,.15,.13,.14,.18,.20,.16]):null,
-        lcl:bins(lcl,[750,1000,1250,1500,1750,2000,2500],
-               [.19,.19,.15,.10,.06,.06,.02,0]),
-        esrh:bins(esrh,[50,100,200,300,400,500,600,700],
-                [.06,.06,.08,.14,.20,.27,.38,.37,.42]),
-        ebwd:bins(ebwd,[.01,20,30,40,50,60,70,80],
-                [0,.03,.05,.06,.12,.19,.27,.36,.26])
+        cape:spcoaSndSharpTornadoFrequency('cape',get('parcels.ml.cape_jkg')),
+        lcl:spcoaSndSharpTornadoFrequency('lcl',get('parcels.ml.lcl_m_agl')),
+        esrh:spcoaSndSharpTornadoFrequency('esrh',get('storm_relative_helicity.effective_right_m2s2')),
+        ebwd:spcoaSndSharpTornadoFrequency('ebwd',get('effective_inflow.effective_bwd_kt'))
     };
-    const val=(k)=>Number.isFinite(probs[k])?probs[k].toFixed(2):'—';
-    const color=v=>!Number.isFinite(v)?'#a8b2be':v>=.25?'#f88775':v>=.15?'#eec951':'#9eabb8';
-    const entry=(label,k)=>`<div class="ss-tor-prob"><span>${label}</span><b style="color:${color(probs[k])}">${val(k)}</b></div>`;
+    const entry=(label,k)=>{
+        const b=probs[k];
+        return `<div class="ss-tor-prob ss-tor-frequency"><span>${label}</span><b class="${b?'':'ss-tor-unavailable'}" ${b?`style="color:${b.color}" title="SHARPpy ${label} bin; color tier ${b.tier+1} of 6"`:''}>${b?b.prob.toFixed(2):'—'}</b></div>`;
+    };
     return `<div class="ss-tornado-panel" role="group" aria-label="Tornado environmental ingredients">
       <div class="ss-tornado-head">Tornado</div>
-      <div class="ss-tor-prob"><span>VTP</span><b>${f(get('composites.vtp'))}</b></div>
-      <div class="ss-tor-prob"><span>SHERBE</span><b>${f(sherbe)}</b></div>
-      <div class="ss-tor-caption" title="Conditional historical frequencies from SHARPpy STP ingredient bins for right-moving supercells, NOT tornado occurrence probabilities.">EF2+ historical frequency†</div>
+      <div class="ss-tor-prob ss-tor-index" title="Hampshire-style VTP from native HRRR F00 SHARPpy effective-layer STP, ML 0–3 km CAPE and 0–3 km lapse rate (0–3 km CAPE multiplier capped at 2)"><span>VTP</span><b class="${Number.isFinite(vtp)?'':'ss-tor-unavailable'}">${f(vtp)}</b></div>
+      <div class="ss-tor-prob ss-tor-index"><span>SHERBE</span><b class="${Number.isFinite(sherbe)?'':'ss-tor-unavailable'}">${f(sherbe)}</b></div>
+      <div class="ss-tor-caption" title="Exact SHARPpy Sig-Tor Stats ingredient bins and colors for right-moving supercells, NOT tornado occurrence probabilities.">EF2+ historical frequency†</div>
       ${entry('CAPE','cape')}${entry('LCL','lcl')}${entry('ESRH','esrh')}${entry('EBWD','ebwd')}
       <div class="ss-tor-note">† Historical ingredient frequencies, conditional on right-moving supercells.</div>
     </div>`;
