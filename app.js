@@ -1,3 +1,5 @@
+/* V72: interactive Skew-T cursor-centered zoom, drag-to-pan, and expanded native-HRRR level inspection. V69-V71 preserved. */
+/* V71: Interactive native HRRR level inspection (hover/tap), V70 features preserved. */
 /* V70: Preserve V69 General/Severe layout and colors; apply SHARPpy native
    tornado frequency bin colors and calculate native-profile Hampshire VTP. */
 /* V69: Compact Tornado inset color-matched to General/Severe: coral metrics,
@@ -18836,7 +18838,8 @@ function spcoaSndProfile(p) {
         const z_msl=p.height_m_msl[k];
         const z=z_msl-ground,u=p.u_ms[k],v=p.v_ms[k];
         if(![press,t,q,z,z_msl].every(Number.isFinite)||press<90||press>1100||z < -100 ||z>30000)continue;
-        const omega=Array.isArray(p.omega_pa_s)?Number(p.omega_pa_s[k]):NaN;
+        const rawOmega=Array.isArray(p.omega_pa_s)?p.omega_pa_s[k]:null;
+        const omega=(rawOmega===null||rawOmega===undefined)?NaN:Number(rawOmega);
         out.push({p:press,t:t-273.15,td:spcoaSndDewpoint(q,press),z,z_msl,u,v,q,k,
                   omega:Number.isFinite(omega)?omega:NaN});
     }
@@ -19181,15 +19184,75 @@ function spcoaSndWindBarb(ctx,x,y,u,v,size=1) {
  * Native HRRR thermodynamics, 50-hPa barbs, SHARPpy parcel paths, and
  * inferred (not gridded) advection all retain their original provenance.
  */
+/* V72: Pressure-aware interactive Skew-T navigation. The view is kept in
+ * normalized ORIGINAL Skew-T world coordinates. No CSS canvas transforms:
+ * pressure labels, parcel markers, omega, 50-hPa barbs and hover all use the
+ * very same visible logarithmic-pressure transform. */
+const SPCOA_SKEW_DEFAULT_VIEW=Object.freeze({x0:0,x1:1,y0:0,y1:1});
+let SPCOA_SKEW_VIEW={...SPCOA_SKEW_DEFAULT_VIEW};
+function spcoaSndSkewClampView(start,span) {
+    const n=Math.max(.16,Math.min(1,span));
+    return Math.max(0,Math.min(1-n,start));
+}
+function spcoaSndSkewSetView(x0,xSpan,y0,ySpan) {
+    const sw=Math.max(.16,Math.min(1,xSpan)),sh=Math.max(.16,Math.min(1,ySpan));
+    SPCOA_SKEW_VIEW={x0:spcoaSndSkewClampView(x0,sw),
+        x1:spcoaSndSkewClampView(x0,sw)+sw,
+        y0:spcoaSndSkewClampView(y0,sh),
+        y1:spcoaSndSkewClampView(y0,sh)+sh};
+}
+function spcoaSndSkewResetView(redraw=true) {
+    SPCOA_SKEW_VIEW={...SPCOA_SKEW_DEFAULT_VIEW};
+    if(redraw)spcoaSndRenderSkewOnly();
+    else spcoaSndUpdateSkewZoomUi();
+}
+function spcoaSndSkewGeometry(w,h) {
+    const L=49,R=w-133,T=26,B=h-43;
+    const top=100,bottom=1050,lo=-85,hi=68,skew=78;
+    const logSpan=Math.log(bottom/top);
+    const v=SPCOA_SKEW_VIEW, spanX=v.x1-v.x0,spanY=v.y1-v.y0;
+    const baseY=p=>Math.log(p/top)/logSpan;
+    const baseX=(tc,p)=>(tc+skew*Math.log(1000/p)/Math.LN10-lo)/(hi-lo);
+    const y=p=>T+(baseY(p)-v.y0)/spanY*(B-T);
+    const x=(tc,p)=>L+(baseX(tc,p)-v.x0)/spanX*(R-L);
+    const pressureAtY=py=>top*Math.exp((v.y0+(py-T)/(B-T)*spanY)*logSpan);
+    return {L,R,T,B,top,bottom,lo,hi,skew,logSpan,x,y,pressureAtY,baseX,baseY,
+        visibleTop:pressureAtY(T),visibleBottom:pressureAtY(B)};
+}
+function spcoaSndRenderSkewOnly() {
+    const canvas=document.getElementById('ss-skew');
+    if(canvas&&SPCOA_SOUNDING.current?.profile){
+        const a=spcoaSndProfile(SPCOA_SOUNDING.current.profile);
+        const b=SPCOA_SOUNDING.previous?.profile?
+            spcoaSndProfile(SPCOA_SOUNDING.previous.profile):null;
+        spcoaSndSkew(canvas,a,b,SPCOA_SOUNDING.diagnostic);
+    }
+    spcoaSndHideInspect();
+    spcoaSndUpdateSkewZoomUi();
+}
+function spcoaSndUpdateSkewZoomUi() {
+    const indicator=document.getElementById('ss-skew-zoom-label');
+    if(indicator)indicator.textContent=`${Math.round(100/(SPCOA_SKEW_VIEW.x1-SPCOA_SKEW_VIEW.x0))}%`;
+    const reset=document.getElementById('ss-skew-reset');
+    if(reset)reset.disabled=SPCOA_SKEW_VIEW.x0===0&&SPCOA_SKEW_VIEW.x1===1&&
+        SPCOA_SKEW_VIEW.y0===0&&SPCOA_SKEW_VIEW.y1===1;
+}
+function spcoaSndSkewZoomAt(px,py,w,h,factor) {
+    const g=spcoaSndSkewGeometry(w,h),v=SPCOA_SKEW_VIEW;
+    const ax=Math.max(0,Math.min(1,(px-g.L)/(g.R-g.L)));
+    const ay=Math.max(0,Math.min(1,(py-g.T)/(g.B-g.T)));
+    const oldX=v.x1-v.x0,oldY=v.y1-v.y0;
+    const nextX=Math.max(.16,Math.min(1,oldX*factor));
+    const nextY=Math.max(.16,Math.min(1,oldY*factor));
+    spcoaSndSkewSetView(v.x0+ax*(oldX-nextX),nextX,
+                        v.y0+ay*(oldY-nextY),nextY);
+    spcoaSndRenderSkewOnly();
+}
 function spcoaSndSkew(canvas,current,previous,diagnostic) {
     const {ctx,w,h}=spcoaSndCanvas(canvas);
     // Preserve V50 chart geometry and the full 50-hPa wind/advection columns.
-    const L=49,R=w-133,T=26,B=h-43;
+    const {L,R,T,B,top,bottom,lo,hi,skew,logSpan,x,y}=spcoaSndSkewGeometry(w,h);
     if(R<L+140)return;
-    const top=100,bottom=1050,lo=-85,hi=68,skew=78;
-    const logSpan=Math.log(bottom/top);
-    const y=p=>T+Math.log(p/top)/logSpan*(B-T);
-    const x=(tc,p)=>L+(tc+skew*Math.log(1000/p)/Math.LN10-lo)/(hi-lo)*(R-L);
     const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
     const fontMono='ui-monospace,Consolas,monospace';
     ctx.save();ctx.beginPath();ctx.rect(L,T,R-L,B-T);ctx.clip();
@@ -19374,11 +19437,15 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     })):spcoaSndPressureLevels(current||[]).map(({pressure,sample:a})=>({pressure,u:a?.u,v:a?.v}));
     barbs=barbs.filter(b=>b.pressure>=top&&b.pressure<=bottom&&Number.isFinite(b.u+b.v));
     barbs.sort((a,b)=>a.pressure-b.pressure);
+    ctx.save();ctx.beginPath();ctx.rect(0,T,w,B-T);ctx.clip();
     for(const a of barbs){
-        // Preserve every level; short glyphs avoid lower-level visual crowding.
+        const py=y(a.pressure);
+        if(py<T-28 || py>B+28)continue;
+        // Preserve 50-hPa barbs at their original pressures, including zoom.
         const scale=a.pressure>=800?.76:a.pressure>=700?.90:1;
-        spcoaSndWindBarb(ctx,barbX,y(a.pressure),a.u,a.v,scale);
+        spcoaSndWindBarb(ctx,barbX,py,a.u,a.v,scale);
     }
+    ctx.restore();
     // SHARPpy-inferred geostrophic advection, NOT actual gridded advection.
     const strips=diagnostic?.inferred_advection_100hpa;
     ctx.fillStyle='#0f1012';ctx.fillRect(advX-4,T,15,B-T);
@@ -19387,7 +19454,7 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         const value=Number(row.c_per_hr),p1=Number(row.bottom_hpa),p2=Number(row.top_hpa);
         if(!Number.isFinite(value+p1+p2)||p1<=p2)continue;
         const y1=Math.min(B,Math.max(T,y(p2))),y2=Math.min(B,Math.max(T,y(p1)));
-        if(y2<=y1)continue;
+        if(y2-y1<4)continue;
         ctx.fillStyle=value>0.05?'rgba(230,35,51,.87)':value<-.05?'rgba(63,119,231,.88)':'#575757';
         ctx.fillRect(advX-3,y1+1,13,Math.max(1,y2-y1-2));
         ctx.font='bold 10px '+fontMono;
@@ -19411,6 +19478,7 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     for(let p=100;p<=1000;p+=50){
         if(p%100!==0&&p!==850)continue;
         const yy=y(p), label=String(p);
+        if(yy<T+5 || yy>B-5)continue;
         const labelWidth=ctx.measureText(label).width;
         ctx.fillStyle='#080d13';
         ctx.fillRect(pressureLabelX-3,yy-7.5,labelWidth+6,15);
@@ -19421,8 +19489,9 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
     // Bottom tick labels every 10°C, at the EXACT bottom intersection of
     // each drawn isotherm (same skew transform AND same p=bottom anchor).
     ctx.fillStyle='#dce2ea';ctx.textAlign='center';ctx.font='10px '+fontMono;
-    for(let tc=-80;tc<=80;tc+=10){
-        const xx=x(tc,bottom);
+    const bottomAxisPressure=pressureAtY(B);
+    for(let tc=-140;tc<=130;tc+=10){
+        const xx=x(tc,bottomAxisPressure);
         if(xx>=L+10&&xx<=R-10)ctx.fillText(`${tc}°`,xx,B+17);
     }
     if(current?.length){
@@ -19773,6 +19842,200 @@ function spcoaSndHodo(canvas,current,previous,diagnostic) {
     ctx.restore();
     spcoaSndDrawHazardType(ctx,w,h,diagnostic);
 }
+/* =========================================================================================
+   SPCOA V73 | SIX-FIELD HRRR F00 SKEW-T INTERACTIVE LEVEL INSPECTION
+   Hover (mouse/pen) or tap (touch) inside thermodynamic grid. Readout samples
+   the SAME logarithmic pressure levels as the drawn native profiles. Uses
+   spcoaSndAtPressure() to interpolate temperature, dewpoint and winds;
+   all heights are AGL, computed from the original archived surface height.
+   Overlay is independent from main plotting canvas and has no backend needs.
+   ========================================================================================= */
+function spcoaSndHideInspect() {
+    const tip=document.getElementById('ss-skew-inspect');
+    if(tip)tip.style.display='none';
+    const overlay=document.getElementById('ss-skew-hover');
+    if(overlay){
+        const ctx=overlay.getContext('2d');
+        if(ctx)ctx.clearRect(0,0,overlay.width,overlay.height);
+    }
+}
+function spcoaSndInstallInspect() {
+    const canvas=document.getElementById('ss-skew');
+    const chart=canvas?.parentElement;
+    if(!canvas||!chart||document.getElementById('ss-skew-hover'))return;
+    chart.classList.add('ss-skew-wrap');
+    const overlay=document.createElement('canvas');
+    overlay.id='ss-skew-hover';
+    overlay.setAttribute('aria-hidden','true');
+    chart.appendChild(overlay);
+    const tip=document.createElement('div');
+    tip.id='ss-skew-inspect';
+    tip.setAttribute('aria-label','Sounding level inspection');
+    tip.innerHTML=`<div class="ss-inspect-head">HRRR F00 · LEVEL INSPECTION</div>
+      <div class="ss-inspect-grid">
+        <span>Pressure</span><b id="ss-inspect-p">—</b>
+        <span>Height AGL</span><b id="ss-inspect-z">—</b>
+        <span>Temperature</span><b id="ss-inspect-t" class="ss-inspect-temp">—</b>
+        <span>Dewpoint</span><b id="ss-inspect-td" class="ss-inspect-dew">—</b>
+        <span>Relative humidity</span><b id="ss-inspect-rh">—</b>
+        <span>Wind (from)</span><b id="ss-inspect-wind">—</b>
+      </div><div class="ss-inspect-foot">Native HRRR F00 · vertically interpolated</div>`;
+    chart.appendChild(tip);
+    const set=(id,value)=>{const el=document.getElementById('ss-inspect-'+id);if(el)el.textContent=value;};
+    const number=(n,dec=0)=>Number.isFinite(n)?Number(n).toFixed(dec):'—';
+    const compass=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    function inspect(e) {
+        const panel=document.getElementById('spcoa-sounding-panel');
+        const active=SPCOA_SOUNDING.current?.profile;
+        if(!active||panel?.style.display!=='block'){spcoaSndHideInspect();return;}
+        // The base canvas is width/height-scaled by spcoaSndCanvas() on render.
+        const rect=canvas.getBoundingClientRect();
+        const w=Math.max(300,Math.round(rect.width||390));
+        const h=Math.max(280,Math.round(rect.height||410));
+        const g=spcoaSndSkewGeometry(w,h);
+        const cx=(e.clientX-rect.left)*(w/Math.max(rect.width,1));
+        const cy=(e.clientY-rect.top)*(h/Math.max(rect.height,1));
+        if(g.R<g.L+140||cx<g.L||cx>g.R||cy<g.T||cy>g.B){
+            spcoaSndHideInspect();return;
+        }
+        const pressure=g.pressureAtY(cy);
+        const profile=spcoaSndProfile(active);
+        const sample=spcoaSndAtPressure(profile,pressure);
+        // Below the native surface or above the highest native level is not data.
+        if(!sample){spcoaSndHideInspect();return;}
+        const sat=(tc)=>6.112*Math.exp(17.67*tc/(243.5+tc));
+        const rh=Number.isFinite(sample.t)&&Number.isFinite(sample.td)?
+            Math.max(0,Math.min(100,100*sat(sample.td)/sat(sample.t))):NaN;
+        const speed=Number.isFinite(sample.u)&&Number.isFinite(sample.v)?
+            Math.hypot(sample.u,sample.v)*1.943844:NaN;
+        const direction=Number.isFinite(speed)&&speed>=0.5?
+            (Math.atan2(-sample.u,-sample.v)*180/Math.PI+360)%360:NaN;
+        const wind=!Number.isFinite(speed)?'—':speed<0.5?'Calm':
+            `${compass[Math.round(direction/22.5)%16]} ${number(direction)}° · ${number(speed)} kt`;
+        set('p',number(pressure,1)+' hPa');
+        set('z',Number.isFinite(sample.z)?`${number(sample.z)} m / ${number(sample.z*3.28084)} ft`:'—');
+        set('t',Number.isFinite(sample.t)?`${number(sample.t,1)} °C / ${number(sample.t*1.8+32,1)} °F`:'—');
+        set('td',Number.isFinite(sample.td)?`${number(sample.td,1)} °C / ${number(sample.td*1.8+32,1)} °F`:'—');
+        set('rh',Number.isFinite(rh)?number(rh)+'%':'—');
+        set('wind',wind);
+        // A separate transparent overlay retains the Skew-T trace crispness.
+        // Position it using the canvas offset, including its 1px top padding.
+        const dpr=Math.min(2,window.devicePixelRatio||1);
+        const rw=Math.round(w*dpr),rhpx=Math.round(h*dpr);
+        if(overlay.width!==rw||overlay.height!==rhpx){overlay.width=rw;overlay.height=rhpx;}
+        overlay.style.left=canvas.offsetLeft+'px';
+        overlay.style.top=canvas.offsetTop+'px';
+        overlay.style.width=rect.width+'px';
+        overlay.style.height=rect.height+'px';
+        const ctx=overlay.getContext('2d');
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        ctx.clearRect(0,0,w,h);
+        ctx.save();ctx.beginPath();ctx.rect(g.L,g.T,g.R-g.L,g.B-g.T);ctx.clip();
+        ctx.strokeStyle='rgba(215,234,246,.85)';
+        ctx.lineWidth=1.1;ctx.setLineDash([5,4]);
+        ctx.beginPath();ctx.moveTo(g.L,cy);ctx.lineTo(g.R,cy);ctx.stroke();
+        ctx.setLineDash([]);
+        for(const [key,color] of [['t','#ff565b'],['td','#2bd65b']]){
+            if(!Number.isFinite(sample[key]))continue;
+            const px=g.x(sample[key],pressure);
+            if(px<g.L||px>g.R)continue;
+            ctx.beginPath();ctx.arc(px,cy,4.5,0,Math.PI*2);
+            ctx.fillStyle=color;ctx.fill();ctx.lineWidth=1.5;
+            ctx.strokeStyle='#080d13';ctx.stroke();
+        }
+        ctx.restore();
+        // Place the floating readout inside the chart, away from pointer and
+        // screen edges. Pointer-events:none prevents hover flicker.
+        tip.style.display='block';
+        const chartRect=chart.getBoundingClientRect();
+        const mx=e.clientX-chartRect.left,my=e.clientY-chartRect.top;
+        const tipW=tip.offsetWidth,tipH=tip.offsetHeight;
+        const left=mx+16+tipW<=chartRect.width-5?mx+16:mx-tipW-16;
+        const top=my+14+tipH<=chartRect.height-5?my+14:my-tipH-12;
+        tip.style.left=Math.max(4,Math.min(chartRect.width-tipW-4,left))+'px';
+        tip.style.top=Math.max(4,Math.min(chartRect.height-tipH-4,top))+'px';
+    }
+    // Zoom controls are outside the canvas and do not cover the wind barbs.
+    const zoomTools=document.createElement('div');
+    zoomTools.id='ss-skew-tools';zoomTools.setAttribute('aria-label','Skew-T zoom controls');
+    zoomTools.innerHTML=`<button type="button" id="ss-skew-in" title="Zoom in" aria-label="Zoom in Skew-T">+</button>
+      <button type="button" id="ss-skew-out" title="Zoom out" aria-label="Zoom out Skew-T">−</button>
+      <button type="button" id="ss-skew-reset" title="Reset Skew-T axes">Reset</button>
+      <span id="ss-skew-zoom-label" aria-live="off">100%</span>`;
+    chart.appendChild(zoomTools);
+    const dimensions=()=>{
+        const rect=canvas.getBoundingClientRect();
+        return {w:Math.max(300,Math.round(rect.width||390)),
+                h:Math.max(280,Math.round(rect.height||410)),rect};
+    };
+    const zoomButton=(factor)=>{
+        const {w,h}=dimensions(),g=spcoaSndSkewGeometry(w,h);
+        spcoaSndSkewZoomAt((g.L+g.R)/2,(g.T+g.B)/2,w,h,factor);
+    };
+    document.getElementById('ss-skew-in').addEventListener('click',()=>zoomButton(.8));
+    document.getElementById('ss-skew-out').addEventListener('click',()=>zoomButton(1.25));
+    document.getElementById('ss-skew-reset').addEventListener('click',()=>spcoaSndSkewResetView());
+    spcoaSndUpdateSkewZoomUi();
+    canvas.addEventListener('wheel',e=>{
+        const {w,h,rect}=dimensions(),g=spcoaSndSkewGeometry(w,h);
+        const px=(e.clientX-rect.left)*w/Math.max(1,rect.width);
+        const py=(e.clientY-rect.top)*h/Math.max(1,rect.height);
+        if(px<g.L||px>g.R||py<g.T||py>g.B)return;
+        // Wheel zoom must NOT scroll the modal when over the Skew-T.
+        e.preventDefault();
+        const normalized=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?500:1);
+        const factor=Math.exp(Math.max(-160,Math.min(160,normalized))*.0018);
+        spcoaSndSkewZoomAt(px,py,w,h,factor);
+        inspect(e);
+    },{passive:false});
+    let drag=null;
+    canvas.addEventListener('pointerdown',e=>{
+        if(e.pointerType==='touch'){inspect(e);return;}
+        if(e.button!==0)return;
+        const {w,h,rect}=dimensions(),g=spcoaSndSkewGeometry(w,h);
+        const px=(e.clientX-rect.left)*w/Math.max(1,rect.width);
+        const py=(e.clientY-rect.top)*h/Math.max(1,rect.height);
+        if(px<g.L||px>g.R||py<g.T||py>g.B)return;
+        drag={id:e.pointerId,x:e.clientX,y:e.clientY,
+              initial:{...SPCOA_SKEW_VIEW},w,h,moved:false};
+        try{canvas.setPointerCapture(e.pointerId);}catch(_){}
+    });
+    canvas.addEventListener('pointermove',e=>{
+        if(e.pointerType==='touch')return;
+        if(drag&&e.pointerId===drag.id){
+            const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+            if(Math.hypot(dx,dy)>4)drag.moved=true;
+            if(drag.moved){
+                const v=drag.initial,g=spcoaSndSkewGeometry(drag.w,drag.h);
+                const sw=v.x1-v.x0,sh=v.y1-v.y0;
+                const rect=canvas.getBoundingClientRect();
+                const vw=Math.max(1,rect.width)*(g.R-g.L)/drag.w;
+                const vh=Math.max(1,rect.height)*(g.B-g.T)/drag.h;
+                spcoaSndSkewSetView(v.x0-dx/vw*sw,sw,v.y0-dy/vh*sh,sh);
+                spcoaSndRenderSkewOnly();return;
+            }
+        }
+        inspect(e);
+    });
+    const stopDrag=(e)=>{
+        if(drag&&e.pointerId===drag.id){
+            const moved=drag.moved;drag=null;
+            try{canvas.releasePointerCapture(e.pointerId);}catch(_){}
+            if(moved)spcoaSndHideInspect();
+        }
+    };
+    canvas.addEventListener('pointerup',stopDrag);
+    canvas.addEventListener('pointercancel',e=>{stopDrag(e);spcoaSndHideInspect();});
+    canvas.addEventListener('dblclick',e=>{e.preventDefault();spcoaSndSkewResetView();});
+    canvas.addEventListener('pointerleave',e=>{
+        if(!drag&&e.pointerType!=='touch')spcoaSndHideInspect();
+    });
+    // Clear a touch readout when interacting outside the Skew-T.
+    document.addEventListener('pointerdown',e=>{
+        if(e.pointerType==='touch'&&!chart.contains(e.target))spcoaSndHideInspect();
+    });
+}
+
 function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
     const css=document.createElement('style');css.id='spcoa-sounding-css';
@@ -19799,6 +20062,24 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-figures{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:2px}
 #spcoa-sounding-panel .ss-chart{border:1px solid #6f6f6f;background:#020203;padding:1px 0 0}
 #spcoa-sounding-panel .ss-chart h3{color:#d0d0d0;margin:2px 7px;font-size:11px;font-weight:500}
+/* V71: independent hover overlay and compact level readout. */
+#spcoa-sounding-panel .ss-skew-wrap{position:relative}
+#spcoa-sounding-panel #ss-skew{cursor:crosshair;touch-action:manipulation}
+#spcoa-sounding-panel #ss-skew:active{cursor:grabbing}
+#spcoa-sounding-panel #ss-skew-tools{position:absolute;top:4px;left:55px;display:flex;gap:3px;align-items:center;z-index:3;pointer-events:auto}
+#spcoa-sounding-panel #ss-skew-tools button{min-width:22px;padding:3px 6px;background:#101820e8;border:1px solid #506476;font:bold 11px Arial,sans-serif;color:#d9e9f5}
+#spcoa-sounding-panel #ss-skew-tools button:disabled{color:#667b87;opacity:.65;cursor:default}
+#spcoa-sounding-panel #ss-skew-zoom-label{font:10px Arial,sans-serif;color:#c3dae9;padding-left:4px;text-shadow:0 1px 2px #000}
+#spcoa-sounding-panel #ss-skew-hover{position:absolute;pointer-events:none;z-index:1;display:block;max-width:none}
+#spcoa-sounding-panel #ss-skew-inspect{display:none;position:absolute;left:0;top:0;z-index:2;pointer-events:none;width:265px;max-width:calc(100% - 8px);padding:9px 10px 7px;background:rgba(6,12,18,.97);border:1px solid #68839a;border-radius:4px;color:#e6f0f7;box-shadow:0 5px 18px #000b;font:11px/1.4 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
+#spcoa-sounding-panel .ss-inspect-head{font:700 10px Arial,sans-serif;color:#b3dcf4;padding-bottom:5px;margin-bottom:6px;border-bottom:1px solid #354a5a;letter-spacing:.25px}
+#spcoa-sounding-panel .ss-inspect-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;align-items:baseline}
+#spcoa-sounding-panel .ss-inspect-grid span{color:#9fb7c9;white-space:nowrap}
+#spcoa-sounding-panel .ss-inspect-grid b{text-align:right;font-weight:600;white-space:nowrap;color:#eff6fb}
+#spcoa-sounding-panel .ss-inspect-grid .ss-inspect-temp{color:#ff777b}
+#spcoa-sounding-panel .ss-inspect-grid .ss-inspect-dew{color:#64e285}
+#spcoa-sounding-panel .ss-inspect-foot{font:9px Arial,sans-serif;color:#95adbf;border-top:1px solid #354a5a;margin-top:7px;padding-top:5px}
+
 #spcoa-sounding-panel .ss-figures canvas{display:block;width:100%;height:clamp(460px,65vh,710px)}
 /* V68: General / Severe includes a visible, side-by-side Tornado subcolumn. */
 #spcoa-sounding-panel .ss-tables{display:grid;grid-template-columns:minmax(455px,4.5fr) minmax(170px,1.55fr) minmax(178px,1.65fr) minmax(185px,1.7fr) minmax(150px,1.25fr) minmax(150px,1.25fr) minmax(128px,1.1fr);gap:0;margin-top:2px;overflow-x:auto;background:#020203;border:1px solid #676767}
@@ -19905,7 +20186,9 @@ function spcoaSndBuildPanel() {
       </div>
       <div class="ss-note" id="ss-archive-note" style="display:none"></div></div>`;
     document.body.appendChild(panel);
+    spcoaSndInstallInspect();
     document.getElementById('ss-close').addEventListener('click',()=>{
+        spcoaSndHideInspect();
         panel.style.display='none';
         SPCOA_SOUNDING.point=null;SPCOA_SOUNDING.serial++;
         spcoaSndStopDiagnosticLoading();
@@ -20000,6 +20283,8 @@ async function spcoaSndLoadSelection() {
     const serial=++SPCOA_SOUNDING.serial;
     spcoaSndStopDiagnosticLoading();
     SPCOA_SOUNDING.current=null;SPCOA_SOUNDING.previous=null;
+    spcoaSndSkewResetView(false);
+    spcoaSndHideInspect();
     SPCOA_SOUNDING.diagnostic=null;SPCOA_SOUNDING.previousDiagnostic=null;
     SPCOA_SOUNDING.diagnosticError='';
     spcoaSndStatus('Loading sounding');
@@ -20497,6 +20782,8 @@ function spcoaSndRender() {
     spcoaSndStatus(notes.join(' · '));
     if(SPCOA_SOUNDING.loadingDiagnostics)spcoaSndUpdateDiagnosticLoading();
     spcoaSndSkew(document.getElementById('ss-skew'),p,q,diag);
+    spcoaSndHideInspect(); // Clear stale crosshair after a new frame/resize.
+    spcoaSndUpdateSkewZoomUi();
     spcoaSndHodo(document.getElementById('ss-hodo'),p,q,diag);
     document.getElementById('ss-thermo').innerHTML=spcoaSndThermoTable(diag);
     const prevTable=document.getElementById('ss-thermo-prev');
@@ -20589,6 +20876,10 @@ async function spcoaSndExportPng(){
                 if(head){head.style.position='relative';head.style.top='auto';}
                 const btn=el.querySelector('#ss-save');
                 if(btn)btn.textContent='Save PNG';
+                for(const id of ['ss-skew-tools','ss-skew-inspect','ss-skew-hover']){
+                    const ui=el.querySelector('#'+id);
+                    if(ui)ui.style.display='none';
+                }
                 const status=el.querySelector('#ss-status');
                 if(status?.classList.contains('is-loading')){
                     status.classList.remove('is-loading');status.textContent='';
