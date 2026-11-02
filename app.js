@@ -5814,6 +5814,9 @@ function spcoaApplyMapBackground() {
             void renderWeather().catch(error =>
                 console.warn("Could not refresh neutral-fill transparency:", error)
             );
+            // Refresh the legend as well: its first five bins are unfilled on
+            // Satellite but retain their original colors on Plain.
+            updateLegend();
         }
     }
 }
@@ -8799,6 +8802,26 @@ function getRhColor(value) {
 }
 
 
+/* V78 satellite-specific starting shade for the existing composite palettes.
+ * All four begin with #ffffff, #f0f0f0, #e1e1e1, #d2d2d2, #c3c3c3,
+ * then #a5a5a5 at index 5. Keep the native bounds and plain-view palette.
+ * Do NOT touch severe-parameter calculations or contour layers.
+ */
+const SPCOA_SATELLITE_COMPOSITE_FIRST_VISIBLE = Object.freeze({
+    stp: STP_BOUNDS[5],
+    scp: SCP_BOUNDS[5],
+    srh: SRH_BOUNDS[5],
+    ehi: EHI_BOUNDS[5]
+});
+
+// Legend matches the satellite renderer: the first five bins are transparent,
+// followed by the original darker gray and the rest of the full color scale.
+function spcoaSatelliteCompositeLegendColors(type, colors) {
+    if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE ||
+        SPCOA_SATELLITE_COMPOSITE_FIRST_VISIBLE[type] === undefined) return colors;
+    return colors.map((color, index) => index < 5 ? "rgba(0,0,0,0)" : color);
+}
+
 /* =========================================================================================
    FIELD COLOR LOOKUP
    ========================================================================================= */
@@ -9319,7 +9342,7 @@ async function renderWeather() {
     const fastMapping = getFlatMapTileCoordinates(width, height, z);
     const fastEncoding = getEncoding(fieldMetadata[activeField]);
 
-    // Satellite-only transparency: neutral low-end bins of composite fields
+    // Satellite-only transparency: very pale low-end bins of composite fields
     // (STP/SCP/SRH/EHI) and the existing pale low-end wind bins reveal imagery.
     // CAPE and all other fields preserve their original fills.  This changes
     // pixel alpha only; color tables, numerical values, contours, and legends
@@ -9332,20 +9355,14 @@ async function renderWeather() {
         spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
     const satelliteFieldType = WEATHER_FIELDS[activeField]?.type;
 
-    // V77: On imagery backgrounds, SPC-style gray ramps hide the satellite
-    // across very low STP/SCP (and similarly SRH/EHI) values.  These four
-    // palettes begin with *neutral gray bins* before their blue/yellow/red
-    // categories.  Remove ONLY that neutral ramp's fill on Satellite;
-    // preserve the complete palette in Plain mode and preserve every
-    // non-gray meteorological category on Satellite.  Check the ACTUAL
-    // mapped color rather than guessed value thresholds, keeping this safe
-    // if a low-end palette's bins or intervals change later.
-    const satelliteCompositeNeutralTransparency =
-        satelliteFill &&
-        (satelliteFieldType === "stp" ||
-         satelliteFieldType === "scp" ||
-         satelliteFieldType === "srh" ||
-         satelliteFieldType === "ehi");
+    // V78: In Satellite mode, hide ONLY the first five white-to-light-gray
+    // palette bins. The first visible bin is the darker #a5a5a5 (index 5).
+    // Work from the EXACT color-table boundaries, not RGB gray detection:
+    // STP >= 0.5; SCP >= 2.5; SRH >= 50; EHI >= 0.5.
+    // All remaining gray and colored bins are preserved, as is Plain mode.
+    const satelliteCompositeFirstVisible = satelliteFill
+        ? SPCOA_SATELLITE_COMPOSITE_FIRST_VISIBLE[satelliteFieldType]
+        : undefined;
 
     const useSatelliteNeutralTransparency =
         satelliteFill &&
@@ -9434,7 +9451,7 @@ async function renderWeather() {
 
 
                 /*
-                 * Satellite imagery shows through the neutral-gray low-end
+                 * Satellite imagery shows through the five pale low-end
                  * STP/SCP/SRH/EHI composite bins, the existing pale low-end
                  * wind bins, and neutral zero advection/frontogenesis bins.
                  * CAPE colors (including white) remain unchanged.
@@ -9450,14 +9467,13 @@ async function renderWeather() {
                     Number.isFinite(value) &&
                     value >= -0.5 && value <= 0.5 &&
                     color.r === 255 && color.g === 255 && color.b === 255;
-                // Low-end STP, SCP, SRH and EHI neutral gray shades should
-                // reveal the basemap instead of forming a white/gray blanket.
-                // This applies only in Satellite mode and never affects other
-                // filled fields, contour layers, or colored composite values.
+                // Hide only palette indices 0–4 in Satellite view. This is
+                // independent of the actual RGB color and intentionally keeps
+                // the darker grays at indices 5–9 visible over the imagery.
                 const satelliteLowCompositeBin =
-                    satelliteCompositeNeutralTransparency &&
+                    satelliteCompositeFirstVisible !== undefined &&
                     Number.isFinite(value) &&
-                    color.r === color.g && color.g === color.b;
+                    value < satelliteCompositeFirstVisible;
 
                 pixels[
                     pixelIndex + 3
@@ -13987,7 +14003,7 @@ function updateLegend() {
     /* Significant Tornado Parameter (Effective Layer). */
     else if (field.type === "stp") {
 
-        drawColorLegend(STP_COLORS);
+        drawColorLegend(spcoaSatelliteCompositeLegendColors("stp", STP_COLORS));
 
         renderLegendLabels(
             [0, 1, 2, 3, 4, 5, 6, 8, { value: 10.5, label: "10.5+" }],
@@ -13999,7 +14015,7 @@ function updateLegend() {
     /* Right- / Left-moving Supercell Composite Parameter. */
     else if (field.type === "scp") {
 
-        drawColorLegend(SCP_COLORS);
+        drawColorLegend(spcoaSatelliteCompositeLegendColors("scp", SCP_COLORS));
 
         renderLegendLabels(
             [0, 2, 5, 10, 20, 30, 40, { value: 48, label: "48+" }],
@@ -14053,7 +14069,7 @@ function updateLegend() {
 
     /* Storm-relative helicity. */
     else if (field.type === "srh") {
-        drawProportionalColorLegend(SRH_COLORS, SRH_BOUNDS);
+        drawProportionalColorLegend(spcoaSatelliteCompositeLegendColors("srh", SRH_COLORS), SRH_BOUNDS);
         renderProportionalLegendLabels(
             [0, 100, 200, 300, 400, 500, 600, 800, 1000],
             SRH_BOUNDS
@@ -14063,7 +14079,7 @@ function updateLegend() {
 
     /* Energy Helicity Index. */
     else if (field.type === "ehi") {
-        drawProportionalColorLegend(EHI_COLORS, EHI_BOUNDS);
+        drawProportionalColorLegend(spcoaSatelliteCompositeLegendColors("ehi", EHI_COLORS), EHI_BOUNDS);
         renderProportionalLegendLabels(
             [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16],
             EHI_BOUNDS
