@@ -9319,9 +9319,11 @@ async function renderWeather() {
     const fastMapping = getFlatMapTileCoordinates(width, height, z);
     const fastEncoding = getEncoding(fieldMetadata[activeField]);
 
-    // V34: On Satellite ONLY, let terrain show through the palest low-end
-    // bins of WIND-SPEED fields. CAPE and all other weather colormaps retain
-    // their original shading, data values, contours, and legends.
+    // Satellite-only transparency: neutral low-end bins of composite fields
+    // (STP/SCP/SRH/EHI) and the existing pale low-end wind bins reveal imagery.
+    // CAPE and all other fields preserve their original fills.  This changes
+    // pixel alpha only; color tables, numerical values, contours, and legends
+    // remain intact.
     // Plain mode remains unchanged.
     // Important: make this decision using the numerical bin, not a general
     // RGB=white test: white can represent a valid high-value data category
@@ -9329,6 +9331,22 @@ async function renderWeather() {
     const satelliteFill =
         spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
     const satelliteFieldType = WEATHER_FIELDS[activeField]?.type;
+
+    // V77: On imagery backgrounds, SPC-style gray ramps hide the satellite
+    // across very low STP/SCP (and similarly SRH/EHI) values.  These four
+    // palettes begin with *neutral gray bins* before their blue/yellow/red
+    // categories.  Remove ONLY that neutral ramp's fill on Satellite;
+    // preserve the complete palette in Plain mode and preserve every
+    // non-gray meteorological category on Satellite.  Check the ACTUAL
+    // mapped color rather than guessed value thresholds, keeping this safe
+    // if a low-end palette's bins or intervals change later.
+    const satelliteCompositeNeutralTransparency =
+        satelliteFill &&
+        (satelliteFieldType === "stp" ||
+         satelliteFieldType === "scp" ||
+         satelliteFieldType === "srh" ||
+         satelliteFieldType === "ehi");
+
     const useSatelliteNeutralTransparency =
         satelliteFill &&
         (satelliteFieldType === "temperature_advection" ||
@@ -9416,12 +9434,12 @@ async function renderWeather() {
 
 
                 /*
-                 * Satellite imagery shows through the palest low-end WIND
-                 * bins only. CAPE colors (including white) remain unchanged.
-                 * Keep the pre-existing near-zero neutral cutouts for
-                 * temperature advection and frontogenesis. This is alpha-only:
-                 * underlying values, other colors and legends are unchanged.
-                 * Plain mode retains the original 235 alpha everywhere.
+                 * Satellite imagery shows through the neutral-gray low-end
+                 * STP/SCP/SRH/EHI composite bins, the existing pale low-end
+                 * wind bins, and neutral zero advection/frontogenesis bins.
+                 * CAPE colors (including white) remain unchanged.
+                 * Alpha-only: numerical values, other colors and legends are
+                 * unchanged. Plain mode retains the original fill opacity.
                  */
                 const satellitePaleBin =
                     satellitePaleThreshold != null &&
@@ -9432,10 +9450,19 @@ async function renderWeather() {
                     Number.isFinite(value) &&
                     value >= -0.5 && value <= 0.5 &&
                     color.r === 255 && color.g === 255 && color.b === 255;
+                // Low-end STP, SCP, SRH and EHI neutral gray shades should
+                // reveal the basemap instead of forming a white/gray blanket.
+                // This applies only in Satellite mode and never affects other
+                // filled fields, contour layers, or colored composite values.
+                const satelliteLowCompositeBin =
+                    satelliteCompositeNeutralTransparency &&
+                    Number.isFinite(value) &&
+                    color.r === color.g && color.g === color.b;
 
                 pixels[
                     pixelIndex + 3
-                ] = (satellitePaleBin || satelliteNeutralBin) ? 0 : 235;
+                ] = (satellitePaleBin || satelliteNeutralBin || satelliteLowCompositeBin)
+                    ? 0 : 235;
 
             }
             else {
@@ -18620,6 +18647,7 @@ const SPCOA_SOUNDING = {
     // Diagnostics originate ONLY from spcoa_sounding_diagnostics.py V3.
     // Per-point sidecar JSON is optional until a production publisher is built.
     diagnostic: null, previousDiagnostic: null, diagnosticError: '',
+    omegaState: 'idle',
     parcelMode: 'ml', comparing: false,
     loadingDiagnostics: false, diagnosticsStartedAt: 0, diagnosticsTimer: null
 };
@@ -18783,27 +18811,50 @@ async function spcoaSndSamePoint(run,j,i) {
  * j0/i0/rows/cols/levels/fields=1, then int16 omega[levels,rows,cols],
  * Pa/s x1000, -32768 missing. Level zero is missing (not a model layer).
  */
+/* V76: use explicit omega availability states; a blank gutter is not proof of
+ * zero vertical velocity. Keep this separate from diagnostics/Lambda loading. */
+function spcoaSndOmegaStatus(message, state='idle') {
+    SPCOA_SOUNDING.omegaState=state;
+    const el=document.getElementById('ss-omega-status');
+    if(!el)return;
+    el.textContent=message;
+    el.dataset.state=state;
+    el.title=message;
+}
 async function spcoaSndFetchNativeOmega(run,profile){
     const marker=await fetch(spcoaSndUrl(run,'omega/v1/manifest.json'),{cache:'no-store'});
-    if(marker.status===403||marker.status===404)return null;
-    if(!marker.ok)throw new Error('Omega manifest HTTP '+marker.status);
+    if(marker.status===404)return null;
+    // Missing S3 keys sometimes appear as 403 without ListBucket permission.
+    // Do not mislabel a 403 as 'published and valid' or a model value of zero.
+    if(!marker.ok)throw new Error(`manifest HTTP ${marker.status} (not accessible)`);
     const manifest=await marker.json();
     if(manifest?.complete!==true || manifest.run_id!==run ||
-       manifest.schema!=='spcoa.native_hrrr_f00_omega.v1')return null;
+       manifest.schema!=='spcoa.native_hrrr_f00_omega.v1')
+        throw new Error('omega manifest is incomplete or for another run');
     const block=32,j0=Math.floor(profile.j/block)*block,i0=Math.floor(profile.i/block)*block;
     const key=`omega/v1/tiles/j${String(j0).padStart(4,'0')}/i${String(i0).padStart(4,'0')}.bin`;
     const response=await fetch(spcoaSndUrl(run,key));
-    if(!response.ok)throw new Error('Omega tile HTTP '+response.status);
-    // Fetch API transparently decompresses gzip Content-Encoding from S3.
-    const bytes=await response.arrayBuffer(),dv=new DataView(bytes);
+    if(!response.ok)throw new Error(`tile HTTP ${response.status} (${key})`);
+    let bytes=await response.arrayBuffer();
+    let dv=new DataView(bytes);
+    // S3 should send Content-Encoding: gzip, which browsers decode. Also
+    // support proxy/CDN responses that expose still-compressed tile bytes.
+    if(bytes.byteLength>=2 && dv.getUint8(0)===31 && dv.getUint8(1)===139){
+        if(typeof DecompressionStream!=='function')
+            throw new Error('omega tile still gzip-compressed; browser cannot decompress');
+        bytes=await new Response(new Blob([bytes]).stream().pipeThrough(
+            new DecompressionStream('gzip'))).arrayBuffer();
+        dv=new DataView(bytes);
+    }
+    if(bytes.byteLength<20)throw new Error('omega tile truncated');
     const magic=String.fromCharCode(...new Uint8Array(bytes,0,8));
-    if(magic!=='SPCOMG01')throw new Error('Unexpected HRRR omega tile format');
+    if(magic!=='SPCOMG01')throw new Error('unexpected omega tile format');
     const jj=dv.getUint16(8,true),ii=dv.getUint16(10,true),h=dv.getUint16(12,true),w=dv.getUint16(14,true);
     const n=dv.getUint16(16,true),fields=dv.getUint16(18,true);
     if(jj!==j0||ii!==i0||fields!==1||n!==profile.pressure_hpa.length||
-       bytes.byteLength!==20+2*n*h*w)throw new Error('Native omega dimensions differ from profile');
+       bytes.byteLength!==20+2*n*h*w)throw new Error('omega tile/grid/vertical-level mismatch');
     const dj=profile.j-j0,di=profile.i-i0;
-    if(dj<0||di<0||dj>=h||di>=w)throw new Error('Omega tile coordinates do not match');
+    if(dj<0||di<0||dj>=h||di>=w)throw new Error('omega tile point mismatch');
     const omega=[];
     for(let k=0;k<n;k++){
         const raw=dv.getInt16(20+2*(k*h*w+dj*w+di),true);
@@ -18812,13 +18863,29 @@ async function spcoaSndFetchNativeOmega(run,profile){
     return omega;
 }
 async function spcoaSndLoadOmega(run,profile,serial){
+    const stillCurrent=()=>serial===SPCOA_SOUNDING.serial && run===currentRun &&
+        SPCOA_SOUNDING.current?.profile===profile;
+    spcoaSndOmegaStatus('Omega: loading…','loading');
     try{
         const values=await spcoaSndFetchNativeOmega(run,profile);
-        if(!values||serial!==SPCOA_SOUNDING.serial||run!==currentRun||
-           SPCOA_SOUNDING.current?.profile!==profile)return;
+        if(!stillCurrent())return;
+        if(!values){
+            spcoaSndOmegaStatus('Omega: not published for this hour','missing');
+            return;
+        }
+        const valid=values.filter(v=>typeof v==='number'&&Number.isFinite(v)).length;
+        if(!valid){
+            spcoaSndOmegaStatus('Omega: tile has no valid values','missing');
+            return;
+        }
         profile.omega_pa_s=values;
+        spcoaSndOmegaStatus(`Omega: loaded (${valid} native levels)`,'loaded');
         spcoaSndRender();
-    }catch(error){console.warn('SPCOA optional HRRR omega unavailable:',error);}
+    }catch(error){
+        if(!stillCurrent())return;
+        spcoaSndOmegaStatus(`Omega: unavailable — ${error.message}`,'error');
+        console.warn('SPCOA native HRRR omega unavailable:',error);
+    }
 }
 function spcoaSndFormatted(value,digits=0) {
     return Number.isFinite(value)?value.toLocaleString('en-US',{maximumFractionDigits:digits,minimumFractionDigits:digits}):'—';
@@ -19390,13 +19457,12 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         }
     }
 
-    // V66: separate, narrow WeatherFront-style omega GUTTER, left of the
-    // pressure/isobar plotting region. Magenta-only baseline and micro-ticks.
-    // No red/blue bars. Micro-ticks are drawn ONLY when the optional real
-    // native-HRRR VVEL sidecar is present; otherwise the strip stays empty.
-    // Data are Pa/s; pressure heights use exactly the Skew-T's y() mapping.
+    // V76: omega is drawn ONLY from the native HRRR VVEL sidecar, not inferred.
+    // Preserve the original magenta-only style and separate left gutter.
+    // Negative omega (rising air) extends RIGHT; positive (subsidence) LEFT.
+    // Wider, 1.5px strokes make genuine values perceptible without filling it.
     ctx.save();
-    const omegaLeft=3, omegaRight=37, omegaZeroX=15.5;
+    const omegaLeft=3, omegaRight=37, omegaZeroX=19;
     ctx.fillStyle='#020305';ctx.fillRect(omegaLeft,T,omegaRight-omegaLeft,B-T);
     ctx.strokeStyle='#596068';ctx.lineWidth=.8;
     ctx.beginPath();ctx.moveTo(omegaLeft+.5,T);ctx.lineTo(omegaLeft+.5,B);
@@ -19410,15 +19476,16 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
             if(!Number.isFinite(a.omega)||!Number.isFinite(a.p)||
                a.p<top||a.p>bottom)continue;
             const yy=y(a.p);
-            // Prevent adjacent native hybrid levels from forming a filled bar.
-            if(yy-lastTickY<2.5)continue;
-            const microbarPerSecond=a.omega*10; // 1 Pa/s = 10 μbar/s
-            if(Math.abs(microbarPerSecond)<0.12)continue;
-            const tinyTick=clamp(Math.abs(microbarPerSecond)*0.25,1,3.2);
+            // Profiles are surface-to-top: y pixels DECREASE upward.
+            // Use absolute separation or every tick above the first vanishes.
+            if(Math.abs(yy-lastTickY)<2.5)continue;
+            const microbarPerSecond=a.omega*10; // Pa/s to μbar/s
+            if(Math.abs(microbarPerSecond)<0.08)continue;
+            const tick=clamp(Math.abs(microbarPerSecond)*1.7,1.8,13);
             const direction=a.omega<0?1:-1;
-            ctx.strokeStyle='#cb3a9b';ctx.lineWidth=.85;
+            ctx.strokeStyle='#ed48b5';ctx.lineWidth=1.5;
             ctx.beginPath();ctx.moveTo(omegaZeroX,yy);
-            ctx.lineTo(omegaZeroX+direction*tinyTick,yy);ctx.stroke();
+            ctx.lineTo(omegaZeroX+direction*tick,yy);ctx.stroke();
             lastTickY=yy;
         }
     }
@@ -20197,6 +20264,10 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-tor-note{font:9px/1.22 Arial,sans-serif;color:#98acb9;margin-top:4px}
 
 
+#spcoa-sounding-panel #ss-omega-status{font:10px/1.25 ui-monospace,Consolas,monospace;color:#b2c2cf;white-space:normal;margin-left:auto;padding:1px 5px;border:1px solid #43515b;border-radius:3px}
+#spcoa-sounding-panel #ss-omega-status[data-state="loaded"]{color:#a4e5bb;border-color:#477b5e}
+#spcoa-sounding-panel #ss-omega-status[data-state="error"]{color:#ffbf94;border-color:#956349}
+#spcoa-sounding-panel #ss-omega-status[data-state="missing"]{color:#d4c19b}
 @media(max-width:950px){#spcoa-sounding-panel .ss-tables{grid-template-columns:480px 170px 190px 200px 150px 150px 128px}#spcoa-sounding-panel .ss-tables>.ss-box{min-height:197px}}
 @media(max-width:680px){#spcoa-sounding-panel .ss-figures{grid-template-columns:1fr}#spcoa-sounding-panel .ss-tables{grid-template-columns:480px 170px 190px 200px 150px 150px 128px}#spcoa-sounding-panel .ss-figures canvas{height:430px}#spcoa-sounding-panel .ss-head{flex-wrap:wrap}}
 `;
@@ -20211,7 +20282,7 @@ function spcoaSndBuildPanel() {
       <div class="ss-actions"><label>Parcel <select id="ss-parcel-mode"><option value="ml" selected>Mixed Layer</option><option value="sb">Surface Based</option><option value="mu">Most Unstable</option></select></label>
       <label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
-      <div class="ss-body"><div class="ss-meta-row"><span id="ss-credit">Sounding created by: Matthew Labenz · NWS North Platte, NE · Built with SHARPpy + Peters ECAPE</span><span id="ss-status" role="status" aria-live="polite"></span></div>
+      <div class="ss-body"><div class="ss-meta-row"><span id="ss-credit">Sounding created by: Matthew Labenz · NWS North Platte, NE · Built with SHARPpy + Peters ECAPE</span><span id="ss-omega-status" role="status" aria-live="polite">Omega: waiting</span><span id="ss-status" role="status" aria-live="polite"></span></div>
       <div class="ss-figures"><div class="ss-chart"><canvas id="ss-skew"></canvas></div>
       <div class="ss-chart"><canvas id="ss-hodo"></canvas></div></div>
       <div class="ss-tables" aria-label="Compact SPCOA sounding diagnostics">
@@ -20327,6 +20398,7 @@ async function spcoaSndLoadSelection() {
     spcoaSndHideInspect();
     SPCOA_SOUNDING.diagnostic=null;SPCOA_SOUNDING.previousDiagnostic=null;
     SPCOA_SOUNDING.diagnosticError='';
+    spcoaSndOmegaStatus('Omega: waiting for profile','idle');
     spcoaSndStatus('Loading sounding');
     try {
         const result=await spcoaSndNearest(run,point.lat,point.lon);
