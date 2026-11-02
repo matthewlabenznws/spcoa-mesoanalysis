@@ -2224,7 +2224,7 @@ if (!__MP_CHILD) {
         async function spcoaVideoPanelImages(windows, captureW) {
             // Exactly the same underlying capture routine as Save PNG, including
             // the export-only satellite tiles, vector colors, legend and footer.
-            const captures = await Promise.all(windows.map(w => w.__mpCapturePanel(captureW)));
+            const captures = await Promise.all(windows.map(w => w.__mpCapturePanel(captureW, {video:true})));
             return Promise.all(captures.map(src => new Promise((resolve, reject) => {
                 const img = new Image();
                 img.onload = () => resolve(img);
@@ -2311,16 +2311,18 @@ if (!__MP_CHILD) {
                     ctx.imageSmoothingEnabled=true;
                     ctx.imageSmoothingQuality="high";
                     ctx.drawImage(firstComposed,0,0,evenW,evenH);
-                    const avc = await media.getFirstEncodableVideoCodec(["avc"],{width:evenW,height:evenH});
-                    const webm = avc ? null : await media.getFirstEncodableVideoCodec(["vp9","vp8"],{width:evenW,height:evenH});
+                    const probeQuality = new media.Quality({bitrate: 24000000, bitrateMode: "constant"});
+                    const avc = await media.getFirstEncodableVideoCodec(["avc"],
+                        {width:evenW,height:evenH,quality:probeQuality,frameRate:5});
+                    const webm = avc ? null : await media.getFirstEncodableVideoCodec(["vp9","vp8"],
+                        {width:evenW,height:evenH,quality:probeQuality,frameRate:5});
                     if (avc || webm) {
                         codecCandidates.push({panelW,videoW:evenW,videoH:evenH,canvas,ctx,
                             codec:avc || webm,ext:avc?"mp4":"webm"});
                     }
-                    // Other candidate widths are only attempted if unsupported.
-                    if (!codecCandidates.length && panelW !== alternatives[alternatives.length-1]) {
-                        continue;
-                    }
+                    // Do not re-render two more first frames once a working
+                    // encoder size is found. All selected runs use this size.
+                    if (codecCandidates.length) break;
                 }
                 const selected = codecCandidates[0];
                 if (!selected) throw new Error("This browser cannot encode H.264, VP9 or VP8 at available resolutions. Try current Chrome or Edge.");
@@ -2329,8 +2331,15 @@ if (!__MP_CHILD) {
                 output = new media.Output({format,target:new media.BufferTarget()});
                 // High bitrate keeps labels, contour lines and satellite gradients
                 // substantially clearer than V81's real-time MediaRecorder output.
-                const bitRate = Math.round((count === 1 ? 15000000 : 19000000) * (videoW/2560));
-                const source = new media.CanvasSource(canvas,{codec,quality:new media.Quality({bitrate:bitRate})});
+                const bitRate = Math.round((count === 1 ? 24000000 : 30000000) * (videoW/2560));
+                const source = new media.CanvasSource(canvas,{
+                    codec,
+                    quality: new media.Quality({bitrate: bitRate, bitrateMode: "constant"}),
+                    bitrateMode: "constant",
+                    latencyMode: "quality",
+                    contentHint: "detail",
+                    onEncoderConfig: cfg => console.info("SPCOA V83 MP4/WebM encoder configuration", cfg)
+                });
                 output.addVideoTrack(source);
                 await output.start();
 
@@ -2364,7 +2373,7 @@ if (!__MP_CHILD) {
                 };
                 const filename = `3km_Mesoscale_${count}Panel_${stamp(runs[0])}_to_${stamp(runs[runs.length-1])}.${ext}`;
                 spcoaVideoDownload(new Blob([buffer],{type:ext==="mp4"?"video/mp4":"video/webm"}),filename);
-                report(`Saved ${ext.toUpperCase()} · ${runs.length} hourly analyses · ${(runs.length*.4).toFixed(1)} s · ${videoW}×${videoH}`);
+                report(`Saved ${ext.toUpperCase()} · ${runs.length} hourly analyses · ${(runs.length*.4).toFixed(1)} s · ${videoW}×${videoH} · ${(buffer.byteLength/1e6).toFixed(1)} MB`);
             } catch (error) {
                 console.error("SPCOA high-quality video export failed:",error);
                 report(`Video export failed: ${error.message || error}`);
@@ -13786,9 +13795,16 @@ function renderGeography() {
    DRAW COLOR LEGEND
    ========================================================================================= */
 
+/* V83: remember the underlying ramp for high-resolution video legends.
+ * Values and palette are identical to the on-screen legend. */
+let spcoaExportLegendRamp = null;
+
 function drawColorLegend(
     colors
 ) {
+    if (Array.isArray(colors) && colors.length) {
+        spcoaExportLegendRamp = { colors: colors.slice(), bounds: null };
+    }
 
     /*
      * Your existing HTML uses #legend-bar.
@@ -13933,6 +13949,9 @@ function drawColorLegend(
 
 function drawProportionalColorLegend(colors, bounds) {
     if (!legendCanvas || !legendCtx || !Array.isArray(bounds) || bounds.length < 2) return;
+    if (Array.isArray(colors) && colors.length) {
+        spcoaExportLegendRamp = {colors: colors.slice(), bounds: bounds.slice()};
+    }
     const rect = legendCanvas.getBoundingClientRect();
     const width = Math.max(1, Math.round(rect.width || legendCanvas.clientWidth || 240));
     const height = Math.max(1, Math.round(rect.height || legendCanvas.clientHeight || 18));
@@ -18783,7 +18802,33 @@ document.addEventListener("visibilitychange", () => {
         }
     };
 
-    window.__mpCapturePanel = async function(outW = 1800) {
+    /* V83: draw actual palette bins, rather than stretching a small DOM canvas.
+     * This is for VIDEO only; the PNG export legend is unchanged. */
+    function spcoaDrawCrispVideoLegendBar(ctx, x, y, width, height) {
+        const ramp = spcoaExportLegendRamp;
+        if (!ramp?.colors?.length) return false;
+        const colors = ramp.colors;
+        const bounds = ramp.bounds;
+        const proportional = Array.isArray(bounds) && bounds.length === colors.length + 1
+            && Number.isFinite(bounds[0]) && Number.isFinite(bounds[bounds.length - 1])
+            && bounds[bounds.length - 1] > bounds[0];
+        for (let i = 0; i < colors.length; i++) {
+            const start = proportional
+                ? (bounds[i] - bounds[0]) / (bounds[bounds.length - 1] - bounds[0])
+                : i / colors.length;
+            const end = proportional
+                ? (bounds[i + 1] - bounds[0]) / (bounds[bounds.length - 1] - bounds[0])
+                : (i + 1) / colors.length;
+            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+            const x1 = x + Math.round(width * Math.max(0, Math.min(1,start)));
+            const x2 = x + Math.round(width * Math.max(0, Math.min(1,end)));
+            ctx.fillStyle = colors[i];
+            ctx.fillRect(x1, y, Math.max(1,x2-x1), height);
+        }
+        return true;
+    }
+
+    window.__mpCapturePanel = async function(outW = 1800, options = {}) {
         renderAnnotations();
         await spcoaRefreshVectorColorsForExport();
         if (hodoToggle?.checked) await hodoPendingPromise;
@@ -18814,20 +18859,24 @@ document.addEventListener("visibilitychange", () => {
             const leftFrac = Math.max(0, (lr.left - rect.left) / srcW);
             const bottomFrac = Math.max(0, (rect.bottom - lr.bottom) / srcH);
 
-            // V80: about 25-30% smaller than the prior PNG legend.
-            // This changes only export layout, never the data ramp or live legend.
-            const w = Math.round(Math.max(310, Math.min(420, outW * 0.21)));
-            const h = 92;
+            // PNG keeps the V80 compact legend. The video has a dedicated,
+            // proportionate high-resolution card: labels were tiny in V82.
+            const isVideo = options?.video === true;
+            const w = isVideo
+                ? Math.round(Math.max(480, Math.min(720, outW * 0.21)))
+                : Math.round(Math.max(310, Math.min(420, outW * 0.21)));
+            const h = isVideo ? Math.round(w * 0.225) : 92;
+            const vScale = isVideo ? w/538 : 1;
             const x = Math.max(18, Math.min(outW - w - 18, Math.round(leftFrac * outW)));
             const y = Math.max(18, Math.min(mapH - h - 18, Math.round(mapH - bottomFrac * mapH - h)));
 
-            const padX = 16;
-            const titleY = y + 24;
+            const padX = Math.round(16*vScale);
+            const titleY = y + Math.round(26*vScale);
             const barX = x + padX;
-            const barY = y + 34;
+            const barY = y + Math.round(39*vScale);
             const barW = w - padX * 2;
-            const barH = 16;
-            const labelY = barY + barH + 22;
+            const barH = Math.round(23*vScale);
+            const labelY = barY + barH + Math.round(27*vScale);
 
             ctx.fillStyle = "rgba(20,40,57,.96)";
             ctx.fillRect(x, y, w, h);
@@ -18836,12 +18885,13 @@ document.addEventListener("visibilitychange", () => {
             ctx.strokeRect(x, y, w, h);
 
             ctx.fillStyle = "#f4f8fb";
-            ctx.font = '600 17px Inter, Arial, sans-serif';
+            ctx.font = `600 ${isVideo ? Math.round(20*vScale) : 17}px Inter, Arial, sans-serif`;
             ctx.textAlign = "left";
             ctx.textBaseline = "alphabetic";
             ctx.fillText(legendTitle?.textContent || "", x + padX, titleY);
 
-            if (legendCanvas && legendCanvas.width) {
+            if (!(isVideo && spcoaDrawCrispVideoLegendBar(ctx,barX,barY,barW,barH))
+                    && legendCanvas && legendCanvas.width) {
                 ctx.drawImage(legendCanvas, barX, barY, barW, barH);
             }
 
@@ -18859,8 +18909,8 @@ document.addEventListener("visibilitychange", () => {
 
                 // Thin only when labels would collide at export resolution.
                 // Endpoints are always preserved.
-                ctx.font = '500 13px Inter, Arial, sans-serif';
-                const minGap = 44;
+                ctx.font = `500 ${isVideo ? Math.round(17*vScale) : 13}px Inter, Arial, sans-serif`;
+                const minGap = isVideo ? Math.round(58*vScale) : 44;
                 const kept = [];
                 allLabels.forEach((d, i) => {
                     const px = barX + d.pct * barW;
