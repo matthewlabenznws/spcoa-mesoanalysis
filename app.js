@@ -1078,6 +1078,20 @@ if (!__MP_CHILD) {
         const timeline = document.getElementById("timeline-bar");
         const savePng = document.getElementById("save-png");
         const saveGif = document.getElementById("save-gif");
+        // V81: video export uses the PNG compositor and preserves every shared hour.
+        // Inject the control here so index.html needs no changes.
+        const saveVideo = document.getElementById("save-video") || (() => {
+            const anchor = saveGif || savePng;
+            if (!anchor) return null;
+            const button = document.createElement("button");
+            button.type = "button";
+            button.id = "save-video";
+            button.className = anchor.className;
+            button.textContent = "Save Video";
+            button.title = "Export every available hour as MP4 (WebM fallback), using the PNG layout";
+            anchor.insertAdjacentElement("afterend", button);
+            return button;
+        })();
         const panelGrid = document.createElement("div");
         panelGrid.id = "panel-grid";
         panelGrid.className = "layout-1";
@@ -1770,6 +1784,7 @@ if (!__MP_CHILD) {
             if (!button) return;
             if (button.id === "save-png") { event.preventDefault(); event.stopImmediatePropagation(); saveCombinedPng(); return; }
             if (button.id === "save-gif") { event.preventDefault(); event.stopImmediatePropagation(); void saveCombinedGif(); return; }
+            if (button.id === "save-video") { event.preventDefault(); event.stopImmediatePropagation(); void saveCombinedVideo(); return; }
             // History controls are actions, not tools. Consume their host clicks
             // so index.html cannot accidentally treat them as a tool selection.
             if (button.id === "draw-undo" || button.id === "draw-redo") {
@@ -2093,6 +2108,37 @@ if (!__MP_CHILD) {
             }
         }
 
+        /* V81: this is the exact existing host PNG compositor, now also reused for
+           every encoded video frame. Keep this shared to prevent layout drift. */
+        function composePngPanelLayout(images, count) {
+            const cols = count === 1 ? 1 : 2;
+            const rows = count === 4 ? 2 : 1;
+            const gap = 8;
+            const headerH = 92;
+            const panelW = 1920;
+            const panelH = Math.max(...images.map(img => Math.round(panelW * img.height / img.width)));
+            const outW = cols * panelW + (cols - 1) * gap;
+            const outH = headerH + rows * panelH + (rows - 1) * gap;
+            const out = document.createElement("canvas"); out.width = outW; out.height = outH;
+            const ctx = out.getContext("2d", { alpha: false });
+            ctx.fillStyle = "#102433"; ctx.fillRect(0, 0, outW, headerH);
+            ctx.fillStyle = "#d7e7f2"; ctx.font = '600 25px Inter, "Segoe UI", Arial, sans-serif'; ctx.textBaseline = "middle"; ctx.textAlign = "left";
+            ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42, headerH / 2);
+            ctx.fillStyle = "#ffffff"; ctx.font = '700 29px Inter, "Segoe UI", Arial, sans-serif'; ctx.textAlign = "right";
+            ctx.fillText(`${count}-Panel · 3-km Mesoscale Analysis Data`, outW - 42, headerH / 2);
+            images.forEach((img, i) => {
+                const col = count === 1 ? 0 : i % 2, row = count === 4 ? Math.floor(i / 2) : 0;
+                const x = col * (panelW + gap), y = headerH + row * (panelH + gap);
+                ctx.fillStyle = "#ffffff"; ctx.fillRect(x, y, panelW, panelH);
+                const h = Math.round(panelW * img.height / img.width);
+                ctx.drawImage(img, x, y, panelW, h);
+                ctx.strokeStyle = i === activePanel ? "#2f9be8" : "#425766"; ctx.lineWidth = 5; ctx.strokeRect(x + 2.5, y + 2.5, panelW - 5, panelH - 5);
+                ctx.fillStyle = "rgba(13,27,39,.9)"; ctx.fillRect(x + 14, y + 14, 122, 42);
+                ctx.fillStyle = "#fff"; ctx.font = '700 21px Inter, Arial, sans-serif'; ctx.textAlign = "center"; ctx.fillText(`Panel ${i + 1}`, x + 75, y + 35);
+            });
+            return out;
+        }
+
         async function saveCombinedPng() {
             const old = savePng.textContent;
             savePng.disabled = true;
@@ -2119,31 +2165,7 @@ if (!__MP_CHILD) {
                 const images = await Promise.all(captures.map(src => new Promise((resolve, reject) => {
                     const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = src;
                 })));
-                const cols = count === 1 ? 1 : 2;
-                const rows = count === 4 ? 2 : 1;
-                const gap = 8;
-                const headerH = 92;
-                const panelW = 1920;
-                const panelH = Math.max(...images.map(img => Math.round(panelW * img.height / img.width)));
-                const outW = cols * panelW + (cols - 1) * gap;
-                const outH = headerH + rows * panelH + (rows - 1) * gap;
-                const out = document.createElement("canvas"); out.width = outW; out.height = outH;
-                const ctx = out.getContext("2d", { alpha: false });
-                ctx.fillStyle = "#102433"; ctx.fillRect(0, 0, outW, headerH);
-                ctx.fillStyle = "#d7e7f2"; ctx.font = '600 25px Inter, "Segoe UI", Arial, sans-serif'; ctx.textBaseline = "middle"; ctx.textAlign = "left";
-                ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42, headerH / 2);
-                ctx.fillStyle = "#ffffff"; ctx.font = '700 29px Inter, "Segoe UI", Arial, sans-serif'; ctx.textAlign = "right";
-                ctx.fillText(`${count}-Panel · 3-km Mesoscale Analysis Data`, outW - 42, headerH / 2);
-                images.forEach((img, i) => {
-                    const col = count === 1 ? 0 : i % 2, row = count === 4 ? Math.floor(i / 2) : 0;
-                    const x = col * (panelW + gap), y = headerH + row * (panelH + gap);
-                    ctx.fillStyle = "#ffffff"; ctx.fillRect(x, y, panelW, panelH);
-                    const h = Math.round(panelW * img.height / img.width);
-                    ctx.drawImage(img, x, y, panelW, h);
-                    ctx.strokeStyle = i === activePanel ? "#2f9be8" : "#425766"; ctx.lineWidth = 5; ctx.strokeRect(x + 2.5, y + 2.5, panelW - 5, panelH - 5);
-                    ctx.fillStyle = "rgba(13,27,39,.9)"; ctx.fillRect(x + 14, y + 14, 122, 42);
-                    ctx.fillStyle = "#fff"; ctx.font = '700 21px Inter, Arial, sans-serif'; ctx.textAlign = "center"; ctx.fillText(`Panel ${i + 1}`, x + 75, y + 35);
-                });
+                const out = composePngPanelLayout(images, count);
                 const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
                 if (!blob) throw new Error("PNG encoding failed.");
                 const url = URL.createObjectURL(blob), a = document.createElement("a");
@@ -2155,6 +2177,191 @@ if (!__MP_CHILD) {
                 alert(`Combined PNG export failed: ${err.message || err}`);
             } finally {
                 savePng.disabled = false; savePng.textContent = old || "Save PNG";
+            }
+        }
+
+        /* =====================================================================================
+           V81 — MP4 / WEBM VIDEO OF EVERY AVAILABLE ANALYSIS
+           Render each hour with the SAME compositor as Save PNG. Video is a stream,
+           not an array of all frames, so no GIF frame cap or 256-color palette.
+           MP4 is selected only if this browser actually supports it.
+           ===================================================================================== */
+        function chooseSpcoaVideoFormat() {
+            if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported)
+                throw new Error("Video recording is unavailable in this browser.");
+            const choices = [
+                {mime: 'video/mp4;codecs="avc1.42E01E"', ext: "mp4"},
+                {mime: 'video/mp4;codecs="avc1.4D401F"', ext: "mp4"},
+                {mime: "video/mp4", ext: "mp4"},
+                {mime: 'video/webm;codecs="vp9"', ext: "webm"},
+                {mime: 'video/webm;codecs="vp8"', ext: "webm"},
+                {mime: "video/webm", ext: "webm"}
+            ];
+            const match = choices.find(v => MediaRecorder.isTypeSupported(v.mime));
+            if (!match) throw new Error("No MP4 or WebM encoder was found in this browser.");
+            return match;
+        }
+
+        async function spcoaVideoPanelImages(windows) {
+            // Capture exactly the same data/compositor as host Save PNG.
+            const captures = await Promise.all(windows.map(w => w.__mpCapturePanel(1800)));
+            return Promise.all(captures.map(src => new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error("A panel PNG frame could not be decoded."));
+                img.src = src;
+            })));
+        }
+
+        async function saveCombinedVideo() {
+            if (hostGifExporting || savedLayoutApplying) return;
+            const oldLabel = saveVideo?.textContent || "Save Video";
+            const status = document.getElementById("status");
+            const snapshots = [];
+            const previousAnnotations = [];
+            let stream = null, recorder = null;
+            let recordedChunks = [];
+            let completed = false;
+            const report = msg => {
+                if (status) status.textContent = msg;
+                if (saveVideo) saveVideo.title = msg;
+            };
+            hostGifExporting = true;
+            if (saveVideo) { saveVideo.disabled = true; saveVideo.textContent = "Preparing…"; }
+            if (saveGif) saveGif.disabled = true;
+            if (savePng) savePng.disabled = true;
+            try {
+                if (!HTMLCanvasElement.prototype.captureStream)
+                    throw new Error("Canvas video export requires a browser with captureStream support.");
+                const format = chooseSpcoaVideoFormat();
+                const count = visiblePanelCount();
+                await Promise.all(Array.from({length:count},(_,i)=>configuredPanel(i)));
+                const windows = Array.from({length:count},(_,i)=>panels[i].frame.contentWindow);
+                for (const w of windows) {
+                    if (!w || ["__mpGifState", "__mpGifBegin", "__mpGifSetRun", "__mpGifFinish", "__mpCapturePanel"]
+                            .some(name => typeof w[name] !== "function")) {
+                        throw new Error("A map panel is not ready for video export.");
+                    }
+                }
+                const mainRuns = windows[Math.min(activePanel,count-1)].__mpGifState().runs;
+                const runs = mainRuns.filter(item => windows.every(w =>
+                    w.__mpGifState().runs.some(other => other.run === item.run)));
+                if (!runs.length) throw new Error("No analyses are shared by every visible panel.");
+                // All available shared analyses are exported, IN ORDER; never subsample.
+                const maxOutputW = count === 1 ? 1920 : 2560;
+                const ctxOptions = {alpha:false};
+                const videoCanvas = document.createElement("canvas");
+                const ctx = videoCanvas.getContext("2d",ctxOptions);
+                if (!ctx) throw new Error("Unable to initialize video drawing canvas.");
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = "high";
+
+                for (let i=0;i<count;i++) {
+                    snapshots.push({window:windows[i],state:windows[i].__mpGifBegin()});
+                    if (drawingScope?.value === "all" && windows[i].__mpGetAnnotations && windows[i].__mpSetAnnotations) {
+                        previousAnnotations[i] = windows[i].__mpGetAnnotations();
+                        windows[i].__mpSetAnnotations(sharedAnnotations);
+                    }
+                }
+                report(`Preparing video — ${runs.length} analyses, ${count} panel(s)…`);
+                await Promise.all(windows.map(w => w.__mpGifSetRun(runs[0])));
+                let images = await spcoaVideoPanelImages(windows);
+                let composed = composePngPanelLayout(images, count);
+                // Downscale the PNG-composed frame if the combined image is very wide.
+                // Dimensions are even for H.264 support; geometry and layout are identical.
+                const ratio = Math.min(1,maxOutputW/composed.width);
+                videoCanvas.width = Math.max(2,Math.floor(composed.width*ratio/2)*2);
+                videoCanvas.height = Math.max(2,Math.floor(composed.height*ratio/2)*2);
+                if (!videoCanvas.width || !videoCanvas.height) throw new Error("Invalid video dimensions.");
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = "high";
+                const drawFrame = canvas => {
+                    ctx.clearRect(0,0,videoCanvas.width,videoCanvas.height);
+                    ctx.drawImage(canvas,0,0,videoCanvas.width,videoCanvas.height);
+                };
+                drawFrame(composed);
+
+                // Manual frame requests avoid capturing partially rendered analysis fields.
+                // 700 ms/h yields readable labels and allows the media encoder to keep up.
+                stream = videoCanvas.captureStream(0);
+                const track = stream.getVideoTracks()[0];
+                if (!track || typeof track.requestFrame !== "function") {
+                    // Some browsers lack manually requested canvas frames.
+                    stream.getTracks().forEach(t => t.stop());
+                    stream = videoCanvas.captureStream(12);
+                }
+                const captureTrack = stream.getVideoTracks()[0];
+                const options = {mimeType:format.mime,
+                    videoBitsPerSecond:count === 1 ? 12000000 : 18000000};
+                recorder = new MediaRecorder(stream,options);
+                const chunks = recordedChunks;
+                const finished = new Promise((resolve,reject) => {
+                    recorder.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+                    recorder.onerror = e => reject(e.error || new Error("Video encoder failed."));
+                    recorder.onstop = resolve;
+                });
+                recorder.start(1000);
+                const capture = () => {
+                    if (captureTrack?.readyState !== "live") throw new Error("Video capture track has stopped.");
+                    if (typeof captureTrack.requestFrame === "function") captureTrack.requestFrame();
+                };
+                const dwell = ms => new Promise(resolve=>setTimeout(resolve,ms));
+                const frameDelayMs = 700;
+                for (let i=0; i<runs.length; i++) {
+                    if (i>0) {
+                        await Promise.all(windows.map(w=>w.__mpGifSetRun(runs[i])));
+                        images = await spcoaVideoPanelImages(windows);
+                        composed = composePngPanelLayout(images,count);
+                        drawFrame(composed);
+                    }
+                    report(`Encoding video ${i+1}/${runs.length} — ${runs[i].analysis_time || runs[i].run}`);
+                    if (saveVideo) saveVideo.textContent = `${i+1}/${runs.length}`;
+                    capture();
+                    // This is real-time recording: hold each complete hour long enough
+                    // for the browser video encoder to preserve it.
+                    await dwell(frameDelayMs);
+                }
+                if (recorder.state === "recording") recorder.stop();
+                await finished;
+                completed = true;
+                const actualMime = recorder.mimeType || format.mime;
+                const actualExt = actualMime.toLowerCase().includes("mp4") ? "mp4" : "webm";
+                const blob = new Blob(recordedChunks,{type:actualMime});
+                if (!blob.size) throw new Error("Video encoder returned an empty recording.");
+                const stamp = item => {
+                    const d = new Date(item.analysis_time || item.run);
+                    if (isNaN(d.getTime())) return String(item.run).replace(/[^0-9A-Za-z]+/g,"_");
+                    const p=n=>String(n).padStart(2,"0");
+                    return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}_${p(d.getUTCHours())}Z`;
+                };
+                const file = `3km_Mesoscale_${count}Panel_${stamp(runs[0])}_to_${stamp(runs[runs.length-1])}.${actualExt}`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url; a.download = file;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(()=>URL.revokeObjectURL(url),30000);
+                report(`Saved ${actualExt.toUpperCase()} video — ${runs.length} analyses (${videoCanvas.width}×${videoCanvas.height}).`);
+            } catch (error) {
+                console.error("SPCOA video export failed:",error);
+                report(`Video export failed: ${error.message || error}`);
+                if (recorder && recorder.state !== "inactive") {
+                    try {recorder.stop();} catch (_) {}
+                }
+            } finally {
+                if (stream) stream.getTracks().forEach(track => track.stop());
+                await Promise.allSettled(snapshots.map(async ({window:w,state},i)=>{
+                    try {await w.__mpGifFinish(state);}
+                    finally {
+                        if (previousAnnotations[i] && w.__mpSetAnnotations)
+                            w.__mpSetAnnotations(previousAnnotations[i]);
+                    }
+                }));
+                if (saveVideo) { saveVideo.disabled=false; saveVideo.textContent=oldLabel; }
+                if (saveGif) saveGif.disabled=false;
+                if (savePng) savePng.disabled=false;
+                hostGifExporting=false;
+                lastTimelineValue=null;
+                syncHostFromActiveChild();
             }
         }
 
