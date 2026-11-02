@@ -17362,8 +17362,20 @@ function renderAnnotations() {
     resizeAnnotationCanvas();
     const rect = mapWrapper.getBoundingClientRect();
     annotationCtx.clearRect(0, 0, rect.width, rect.height);
-    annotations.forEach(renderAnnotation);
-    if (currentAnnotation) renderAnnotation(currentAnnotation);
+
+    const lineAnnotations = [];
+    const symbolAnnotations = [];
+    const queueAnnotation = (annotation) => {
+        if (!annotation) return;
+        if (annotation.type === "high" || annotation.type === "low") symbolAnnotations.push(annotation);
+        else lineAnnotations.push(annotation);
+    };
+
+    annotations.forEach(queueAnnotation);
+    queueAnnotation(currentAnnotation);
+
+    lineAnnotations.forEach(renderAnnotation);
+    symbolAnnotations.forEach(renderAnnotation);
 }
 
 function pointSegmentDistance(px, py, ax, ay, bx, by) {
@@ -17570,6 +17582,23 @@ function spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY = 0) {
     ctx.restore();
 }
 
+/* V80: export the actual selected barb colors, not a stale canvas or black defaults.
+ * The 1-panel host PNG uses __mpCapturePanel (not saveCurrentMapPng4k).
+ * Refresh vectors once before that capture, using the same rendering routine
+ * as the live map, without modifying the user's saved color preferences. */
+async function spcoaRefreshVectorColorsForExport() {
+    const selected = VECTOR_OVERLAY_CONFIG.filter(item => activeOverlays[item.stateKey]);
+    if (!selected.length) return;
+    for (const item of selected) {
+        const input = vectorColorElements[item.field] ||
+            document.querySelector(`input[type="color"][data-vector-field="${item.field}"]`);
+        if (input && /^#[0-9a-fA-F]{6}$/.test(input.value)) {
+            vectorColors[item.field] = input.value;
+        }
+    }
+    await renderVectors();
+}
+
 async function spcoaDrawExportMapLayers(ctx, outW, mapH, mapY = 0) {
     await spcoaDrawExportMapBase(ctx, outW, mapH, mapY);
     const layers = [
@@ -17617,6 +17646,7 @@ async function saveCurrentMapPng4k() {
 
     try {
         renderAnnotations();
+        await spcoaRefreshVectorColorsForExport();
         if (hodoToggle?.checked) await hodoPendingPromise;
         requestHodographDraw();
         if (statusElement) statusElement.textContent = "Preparing PNG...";
@@ -18524,6 +18554,7 @@ document.addEventListener("visibilitychange", () => {
 
     window.__mpCapturePanel = async function(outW = 1800) {
         renderAnnotations();
+        await spcoaRefreshVectorColorsForExport();
         if (hodoToggle?.checked) await hodoPendingPromise;
         requestHodographDraw();
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -18552,18 +18583,20 @@ document.addEventListener("visibilitychange", () => {
             const leftFrac = Math.max(0, (lr.left - rect.left) / srcW);
             const bottomFrac = Math.max(0, (rect.bottom - lr.bottom) / srcH);
 
-            const w = Math.round(Math.max(470, Math.min(620, outW * 0.30)));
-            const h = 118;
+            // V80: about 25-30% smaller than the prior PNG legend.
+            // This changes only export layout, never the data ramp or live legend.
+            const w = Math.round(Math.max(310, Math.min(420, outW * 0.21)));
+            const h = 92;
             const x = Math.max(18, Math.min(outW - w - 18, Math.round(leftFrac * outW)));
             const y = Math.max(18, Math.min(mapH - h - 18, Math.round(mapH - bottomFrac * mapH - h)));
 
-            const padX = 22;
-            const titleY = y + 29;
+            const padX = 16;
+            const titleY = y + 24;
             const barX = x + padX;
-            const barY = y + 43;
+            const barY = y + 34;
             const barW = w - padX * 2;
-            const barH = 22;
-            const labelY = barY + barH + 27;
+            const barH = 16;
+            const labelY = barY + barH + 22;
 
             ctx.fillStyle = "rgba(20,40,57,.96)";
             ctx.fillRect(x, y, w, h);
@@ -18572,7 +18605,7 @@ document.addEventListener("visibilitychange", () => {
             ctx.strokeRect(x, y, w, h);
 
             ctx.fillStyle = "#f4f8fb";
-            ctx.font = '600 21px Inter, Arial, sans-serif';
+            ctx.font = '600 17px Inter, Arial, sans-serif';
             ctx.textAlign = "left";
             ctx.textBaseline = "alphabetic";
             ctx.fillText(legendTitle?.textContent || "", x + padX, titleY);
@@ -18595,8 +18628,8 @@ document.addEventListener("visibilitychange", () => {
 
                 // Thin only when labels would collide at export resolution.
                 // Endpoints are always preserved.
-                ctx.font = '500 17px Inter, Arial, sans-serif';
-                const minGap = 58;
+                ctx.font = '500 13px Inter, Arial, sans-serif';
+                const minGap = 44;
                 const kept = [];
                 allLabels.forEach((d, i) => {
                     const px = barX + d.pct * barW;
@@ -18628,11 +18661,58 @@ document.addEventListener("visibilitychange", () => {
 
         ctx.fillStyle = "#f7f8fa"; ctx.fillRect(0, mapH, outW, footerH);
         ctx.strokeStyle = "#aeb7bf"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,mapH+.5); ctx.lineTo(outW,mapH+.5); ctx.stroke();
-        ctx.fillStyle = "#17232d"; ctx.font = '650 22px Inter, "Segoe UI", Arial, sans-serif'; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        const footerText = document.getElementById("active-layers-text")?.textContent || `Valid: ${formatAnalysisTime(currentAnalysisTime)}`;
-        let text = footerText.replace(/\s*\|\s*/g, " | ").replace(/\s+/g, " ").trim();
-        while (ctx.measureText(text).width > outW - 70 && text.length > 20) text = text.slice(0, -4) + "…";
-        ctx.fillText(text, outW/2, mapH + footerH/2);
+        // V80: the former footer flattened colored vector descriptors to plain
+        // text. Preserve a line swatch for each active barb/arrow/axis layer,
+        // using the SAME chosen color as the actual map vectors.
+        const footerItems = [
+            ...getActiveLayerDescriptions().map(item => ({
+                text: String(item.text || ""), color: item.color || null
+            })),
+            { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
+        ];
+        const separator = " | ";
+        const swatchW = 27, swatchGap = 8, separatorGap = 13;
+        ctx.textAlign = "left"; ctx.textBaseline = "middle";
+        let fontSize = 22;
+        const measure = () => {
+            ctx.font = `650 ${fontSize}px Inter, "Segoe UI", Arial, sans-serif`;
+            return footerItems.reduce((sum, item) => sum + ctx.measureText(item.text).width +
+                (item.color ? swatchW + swatchGap : 0), 0) +
+                (footerItems.length - 1) * (ctx.measureText(separator).width + separatorGap);
+        };
+        let totalWidth = measure();
+        while (fontSize > 13 && totalWidth > outW - 56) {
+            fontSize--;
+            totalWidth = measure();
+        }
+        // If there are more active overlays than can fit, clip the footer
+        // rather than silently removing the barb color indicators.
+        ctx.save();
+        ctx.beginPath(); ctx.rect(18, mapH, outW - 36, footerH); ctx.clip();
+        let footerX = Math.max(28, (outW - totalWidth) / 2);
+        const footerY = mapH + footerH / 2;
+        footerItems.forEach((item, index) => {
+            if (item.color) {
+                ctx.beginPath();
+                ctx.strokeStyle = item.color;
+                ctx.lineWidth = 6;
+                ctx.lineCap = "round";
+                ctx.moveTo(footerX, footerY);
+                ctx.lineTo(footerX + swatchW, footerY);
+                ctx.stroke();
+                ctx.lineCap = "butt";
+                footerX += swatchW + swatchGap;
+            }
+            ctx.fillStyle = "#17232d";
+            ctx.fillText(item.text, footerX, footerY);
+            footerX += ctx.measureText(item.text).width;
+            if (index < footerItems.length - 1) {
+                ctx.fillStyle = "#8b969f";
+                ctx.fillText(separator, footerX + separatorGap / 2, footerY);
+                footerX += ctx.measureText(separator).width + separatorGap;
+            }
+        });
+        ctx.restore();
         return out.toDataURL("image/png");
     };
 
