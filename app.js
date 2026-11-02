@@ -1088,7 +1088,7 @@ if (!__MP_CHILD) {
             button.id = "save-video";
             button.className = anchor.className;
             button.textContent = "Save Video";
-            button.title = "Export every available hour as MP4 (WebM fallback), using the PNG layout";
+            button.title = "High-quality video: every hour, 0.4 s per analysis, MP4/WebM with PNG layout";
             anchor.insertAdjacentElement("afterend", button);
             return button;
         })();
@@ -2110,31 +2110,46 @@ if (!__MP_CHILD) {
 
         /* V81: this is the exact existing host PNG compositor, now also reused for
            every encoded video frame. Keep this shared to prevent layout drift. */
-        function composePngPanelLayout(images, count) {
+        function composePngPanelLayout(images, count, panelW = 1920) {
+            // V82: an optional high-resolution panel width for video. The default
+            // (used by Save PNG) is identical to V81/V80, preserving its layout.
             const cols = count === 1 ? 1 : 2;
             const rows = count === 4 ? 2 : 1;
-            const gap = 8;
-            const headerH = 92;
-            const panelW = 1920;
+            const s = panelW / 1920;
+            const gap = Math.max(2, Math.round(8 * s));
+            const headerH = Math.round(92 * s);
             const panelH = Math.max(...images.map(img => Math.round(panelW * img.height / img.width)));
             const outW = cols * panelW + (cols - 1) * gap;
             const outH = headerH + rows * panelH + (rows - 1) * gap;
             const out = document.createElement("canvas"); out.width = outW; out.height = outH;
             const ctx = out.getContext("2d", { alpha: false });
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
             ctx.fillStyle = "#102433"; ctx.fillRect(0, 0, outW, headerH);
-            ctx.fillStyle = "#d7e7f2"; ctx.font = '600 25px Inter, "Segoe UI", Arial, sans-serif'; ctx.textBaseline = "middle"; ctx.textAlign = "left";
-            ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42, headerH / 2);
-            ctx.fillStyle = "#ffffff"; ctx.font = '700 29px Inter, "Segoe UI", Arial, sans-serif'; ctx.textAlign = "right";
-            ctx.fillText(`${count}-Panel · 3-km Mesoscale Analysis Data`, outW - 42, headerH / 2);
-            images.forEach((img, i) => {
-                const col = count === 1 ? 0 : i % 2, row = count === 4 ? Math.floor(i / 2) : 0;
+            ctx.fillStyle = "#d7e7f2";
+            ctx.font = `600 ${Math.round(25*s)}px Inter, "Segoe UI", Arial, sans-serif`;
+            ctx.textBaseline = "middle"; ctx.textAlign = "left";
+            ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE", 42*s, headerH/2);
+            ctx.fillStyle = "#ffffff";
+            ctx.font = `700 ${Math.round(29*s)}px Inter, "Segoe UI", Arial, sans-serif`;
+            ctx.textAlign = "right";
+            ctx.fillText(`${count}-Panel · 3-km Mesoscale Analysis Data`, outW-42*s, headerH/2);
+            images.forEach((img,i) => {
+                const col = count === 1 ? 0 : i % 2;
+                const row = count === 4 ? Math.floor(i/2) : 0;
                 const x = col * (panelW + gap), y = headerH + row * (panelH + gap);
-                ctx.fillStyle = "#ffffff"; ctx.fillRect(x, y, panelW, panelH);
+                ctx.fillStyle = "#ffffff"; ctx.fillRect(x,y,panelW,panelH);
                 const h = Math.round(panelW * img.height / img.width);
-                ctx.drawImage(img, x, y, panelW, h);
-                ctx.strokeStyle = i === activePanel ? "#2f9be8" : "#425766"; ctx.lineWidth = 5; ctx.strokeRect(x + 2.5, y + 2.5, panelW - 5, panelH - 5);
-                ctx.fillStyle = "rgba(13,27,39,.9)"; ctx.fillRect(x + 14, y + 14, 122, 42);
-                ctx.fillStyle = "#fff"; ctx.font = '700 21px Inter, Arial, sans-serif'; ctx.textAlign = "center"; ctx.fillText(`Panel ${i + 1}`, x + 75, y + 35);
+                ctx.drawImage(img,x,y,panelW,h);
+                ctx.strokeStyle = i === activePanel ? "#2f9be8" : "#425766";
+                ctx.lineWidth = 5*s;
+                ctx.strokeRect(x + 2.5*s,y + 2.5*s,panelW-5*s,panelH-5*s);
+                ctx.fillStyle = "rgba(13,27,39,.9)";
+                ctx.fillRect(x+14*s,y+14*s,122*s,42*s);
+                ctx.fillStyle = "#fff";
+                ctx.font = `700 ${Math.round(21*s)}px Inter, Arial, sans-serif`;
+                ctx.textAlign = "center";
+                ctx.fillText(`Panel ${i+1}`,x+75*s,y+35*s);
             });
             return out;
         }
@@ -2181,36 +2196,50 @@ if (!__MP_CHILD) {
         }
 
         /* =====================================================================================
-           V81 — MP4 / WEBM VIDEO OF EVERY AVAILABLE ANALYSIS
-           Render each hour with the SAME compositor as Save PNG. Video is a stream,
-           not an array of all frames, so no GIF frame cap or 256-color palette.
-           MP4 is selected only if this browser actually supports it.
+           V82 — HIGH-FIDELITY, FIXED-TIMESTAMPS MP4 / WEBM EXPORT
+           V81's MediaRecorder captured in real time while each SPCOA hour was
+           fetched, producing a ~64 second, 0.36 fps video of 25 hourly fields.
+           This version uses Mediabunny's CanvasSource and explicit frame times.
+           Fetch/renderer waits affect EXPORT TIME, never PLAYBACK TIME.
+
+           MP4/H.264 preferred; WebM VP9/VP8 fallback, when encoder supported.
+           Mediabunny is loaded via version-pinned jsDelivr ESM at export time.
+           No index.html change, no background Python/ffmpeg service needed.
            ===================================================================================== */
-        function chooseSpcoaVideoFormat() {
-            if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported)
-                throw new Error("Video recording is unavailable in this browser.");
-            const choices = [
-                {mime: 'video/mp4;codecs="avc1.42E01E"', ext: "mp4"},
-                {mime: 'video/mp4;codecs="avc1.4D401F"', ext: "mp4"},
-                {mime: "video/mp4", ext: "mp4"},
-                {mime: 'video/webm;codecs="vp9"', ext: "webm"},
-                {mime: 'video/webm;codecs="vp8"', ext: "webm"},
-                {mime: "video/webm", ext: "webm"}
-            ];
-            const match = choices.find(v => MediaRecorder.isTypeSupported(v.mime));
-            if (!match) throw new Error("No MP4 or WebM encoder was found in this browser.");
-            return match;
+        const SPCOA_VIDEO_MODULE_URL = "https://cdn.jsdelivr.net/npm/mediabunny@1.65.0/+esm";
+        const SPCOA_VIDEO_FRAME_SECONDS = 0.20; // 5 fps; each analysis shown twice (0.40 s)
+        const SPCOA_VIDEO_REPEATS_PER_HOUR = 2;
+        let spcoaVideoLibraryPromise = null;
+
+        function spcoaVideoLibrary() {
+            if (!spcoaVideoLibraryPromise) {
+                spcoaVideoLibraryPromise = import(SPCOA_VIDEO_MODULE_URL).catch(error => {
+                    spcoaVideoLibraryPromise = null;
+                    throw new Error("High-quality MP4 encoder could not load (check internet access or CDN): " + (error?.message || error));
+                });
+            }
+            return spcoaVideoLibraryPromise;
         }
 
-        async function spcoaVideoPanelImages(windows) {
-            // Capture exactly the same data/compositor as host Save PNG.
-            const captures = await Promise.all(windows.map(w => w.__mpCapturePanel(1800)));
+        async function spcoaVideoPanelImages(windows, captureW) {
+            // Exactly the same underlying capture routine as Save PNG, including
+            // the export-only satellite tiles, vector colors, legend and footer.
+            const captures = await Promise.all(windows.map(w => w.__mpCapturePanel(captureW)));
             return Promise.all(captures.map(src => new Promise((resolve, reject) => {
                 const img = new Image();
                 img.onload = () => resolve(img);
-                img.onerror = () => reject(new Error("A panel PNG frame could not be decoded."));
+                img.onerror = () => reject(new Error("A high-resolution panel export could not be decoded."));
                 img.src = src;
             })));
+        }
+
+        function spcoaVideoDownload(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
         }
 
         async function saveCombinedVideo() {
@@ -2219,9 +2248,8 @@ if (!__MP_CHILD) {
             const status = document.getElementById("status");
             const snapshots = [];
             const previousAnnotations = [];
-            let stream = null, recorder = null;
-            let recordedChunks = [];
-            let completed = false;
+            let output = null;
+            let finalized = false;
             const report = msg => {
                 if (status) status.textContent = msg;
                 if (saveVideo) saveVideo.title = msg;
@@ -2231,9 +2259,6 @@ if (!__MP_CHILD) {
             if (saveGif) saveGif.disabled = true;
             if (savePng) savePng.disabled = true;
             try {
-                if (!HTMLCanvasElement.prototype.captureStream)
-                    throw new Error("Canvas video export requires a browser with captureStream support.");
-                const format = chooseSpcoaVideoFormat();
                 const count = visiblePanelCount();
                 await Promise.all(Array.from({length:count},(_,i)=>configuredPanel(i)));
                 const windows = Array.from({length:count},(_,i)=>panels[i].frame.contentWindow);
@@ -2247,116 +2272,115 @@ if (!__MP_CHILD) {
                 const runs = mainRuns.filter(item => windows.every(w =>
                     w.__mpGifState().runs.some(other => other.run === item.run)));
                 if (!runs.length) throw new Error("No analyses are shared by every visible panel.");
-                // All available shared analyses are exported, IN ORDER; never subsample.
-                const maxOutputW = count === 1 ? 1920 : 2560;
-                const ctxOptions = {alpha:false};
-                const videoCanvas = document.createElement("canvas");
-                const ctx = videoCanvas.getContext("2d",ctxOptions);
-                if (!ctx) throw new Error("Unable to initialize video drawing canvas.");
-                ctx.imageSmoothingEnabled = true;
-                ctx.imageSmoothingQuality = "high";
 
-                for (let i=0;i<count;i++) {
-                    snapshots.push({window:windows[i],state:windows[i].__mpGifBegin()});
-                    if (drawingScope?.value === "all" && windows[i].__mpGetAnnotations && windows[i].__mpSetAnnotations) {
-                        previousAnnotations[i] = windows[i].__mpGetAnnotations();
-                        windows[i].__mpSetAnnotations(sharedAnnotations);
+                report("Loading high-quality video encoder…");
+                const media = await spcoaVideoLibrary();
+                // Prefer ~2.5K single-panel output. For 2/4 panels use two
+                // 1600px panels (~3208px total) to avoid extreme encoder sizes.
+                const preferredW = count === 1 ? 2560 : 1600;
+                // Fall back to lower output dimensions ONLY if neither codec can
+                // encode the requested high-resolution frame on this machine.
+                const alternatives = count === 1 ? [preferredW,1920,1600] : [preferredW,1280,960];
+                const codecCandidates = [];
+
+                for (const panelW of alternatives) {
+                    for (let i=0;i<count;i++) {
+                        if (!snapshots.some(item=>item.window === windows[i])) {
+                            snapshots.push({window:windows[i],state:windows[i].__mpGifBegin()});
+                            if (drawingScope?.value === "all" && windows[i].__mpGetAnnotations && windows[i].__mpSetAnnotations) {
+                                previousAnnotations[i] = windows[i].__mpGetAnnotations();
+                                windows[i].__mpSetAnnotations(sharedAnnotations);
+                            }
+                        }
+                    }
+                    // Prepare the first frame at each candidate resolution to
+                    // accurately determine the encoder's height and aspect ratio.
+                    report(`Rendering first video frame (${panelW}px per panel)…`);
+                    await Promise.all(windows.map(w=>w.__mpGifSetRun(runs[0])));
+                    const firstImages = await spcoaVideoPanelImages(windows,panelW);
+                    const firstComposed = composePngPanelLayout(firstImages,count,panelW);
+                    const videoW = firstComposed.width;
+                    const videoH = firstComposed.height;
+                    // Video encoders generally need even dimensions.
+                    const evenW = videoW & ~1;
+                    const evenH = videoH & ~1;
+                    const canvas = document.createElement("canvas");
+                    canvas.width = evenW; canvas.height = evenH;
+                    const ctx = canvas.getContext("2d",{alpha:false});
+                    if (!ctx) throw new Error("Couldn't make video composition canvas.");
+                    ctx.imageSmoothingEnabled=true;
+                    ctx.imageSmoothingQuality="high";
+                    ctx.drawImage(firstComposed,0,0,evenW,evenH);
+                    const avc = await media.getFirstEncodableVideoCodec(["avc"],{width:evenW,height:evenH});
+                    const webm = avc ? null : await media.getFirstEncodableVideoCodec(["vp9","vp8"],{width:evenW,height:evenH});
+                    if (avc || webm) {
+                        codecCandidates.push({panelW,videoW:evenW,videoH:evenH,canvas,ctx,
+                            codec:avc || webm,ext:avc?"mp4":"webm"});
+                    }
+                    // Other candidate widths are only attempted if unsupported.
+                    if (!codecCandidates.length && panelW !== alternatives[alternatives.length-1]) {
+                        continue;
                     }
                 }
-                report(`Preparing video — ${runs.length} analyses, ${count} panel(s)…`);
-                await Promise.all(windows.map(w => w.__mpGifSetRun(runs[0])));
-                let images = await spcoaVideoPanelImages(windows);
-                let composed = composePngPanelLayout(images, count);
-                // Downscale the PNG-composed frame if the combined image is very wide.
-                // Dimensions are even for H.264 support; geometry and layout are identical.
-                const ratio = Math.min(1,maxOutputW/composed.width);
-                videoCanvas.width = Math.max(2,Math.floor(composed.width*ratio/2)*2);
-                videoCanvas.height = Math.max(2,Math.floor(composed.height*ratio/2)*2);
-                if (!videoCanvas.width || !videoCanvas.height) throw new Error("Invalid video dimensions.");
-                ctx.imageSmoothingEnabled = true;
-                ctx.imageSmoothingQuality = "high";
-                const drawFrame = canvas => {
-                    ctx.clearRect(0,0,videoCanvas.width,videoCanvas.height);
-                    ctx.drawImage(canvas,0,0,videoCanvas.width,videoCanvas.height);
-                };
-                drawFrame(composed);
+                const selected = codecCandidates[0];
+                if (!selected) throw new Error("This browser cannot encode H.264, VP9 or VP8 at available resolutions. Try current Chrome or Edge.");
+                const {panelW,videoW,videoH,canvas,ctx,codec,ext} = selected;
+                const format = ext === "mp4" ? new media.Mp4OutputFormat() : new media.WebMOutputFormat();
+                output = new media.Output({format,target:new media.BufferTarget()});
+                // High bitrate keeps labels, contour lines and satellite gradients
+                // substantially clearer than V81's real-time MediaRecorder output.
+                const bitRate = Math.round((count === 1 ? 15000000 : 19000000) * (videoW/2560));
+                const source = new media.CanvasSource(canvas,{codec,quality:new media.Quality({bitrate:bitRate})});
+                output.addVideoTrack(source);
+                await output.start();
 
-                // Manual frame requests avoid capturing partially rendered analysis fields.
-                // 700 ms/h yields readable labels and allows the media encoder to keep up.
-                stream = videoCanvas.captureStream(0);
-                const track = stream.getVideoTracks()[0];
-                if (!track || typeof track.requestFrame !== "function") {
-                    // Some browsers lack manually requested canvas frames.
-                    stream.getTracks().forEach(t => t.stop());
-                    stream = videoCanvas.captureStream(12);
-                }
-                const captureTrack = stream.getVideoTracks()[0];
-                const options = {mimeType:format.mime,
-                    videoBitsPerSecond:count === 1 ? 12000000 : 18000000};
-                recorder = new MediaRecorder(stream,options);
-                const chunks = recordedChunks;
-                const finished = new Promise((resolve,reject) => {
-                    recorder.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
-                    recorder.onerror = e => reject(e.error || new Error("Video encoder failed."));
-                    recorder.onstop = resolve;
-                });
-                recorder.start(1000);
-                const capture = () => {
-                    if (captureTrack?.readyState !== "live") throw new Error("Video capture track has stopped.");
-                    if (typeof captureTrack.requestFrame === "function") captureTrack.requestFrame();
-                };
-                const dwell = ms => new Promise(resolve=>setTimeout(resolve,ms));
-                const frameDelayMs = 700;
-                for (let i=0; i<runs.length; i++) {
+                for (let i=0;i<runs.length;i++) {
                     if (i>0) {
                         await Promise.all(windows.map(w=>w.__mpGifSetRun(runs[i])));
-                        images = await spcoaVideoPanelImages(windows);
-                        composed = composePngPanelLayout(images,count);
-                        drawFrame(composed);
+                        const images = await spcoaVideoPanelImages(windows,panelW);
+                        const composed = composePngPanelLayout(images,count,panelW);
+                        ctx.drawImage(composed,0,0,videoW,videoH);
                     }
-                    report(`Encoding video ${i+1}/${runs.length} — ${runs[i].analysis_time || runs[i].run}`);
+                    report(`Encoding fixed-time ${ext.toUpperCase()} ${i+1}/${runs.length} — ${runs[i].analysis_time || runs[i].run}`);
                     if (saveVideo) saveVideo.textContent = `${i+1}/${runs.length}`;
-                    capture();
-                    // This is real-time recording: hold each complete hour long enough
-                    // for the browser video encoder to preserve it.
-                    await dwell(frameDelayMs);
+                    // Explicit timestamps (not wall-clock timestamps): 2 frames
+                    // per analysis, 5 fps gives exactly 0.4 seconds per hour.
+                    for (let repeat=0;repeat<SPCOA_VIDEO_REPEATS_PER_HOUR;repeat++) {
+                        const frameNumber = i*SPCOA_VIDEO_REPEATS_PER_HOUR+repeat;
+                        await source.add(frameNumber*SPCOA_VIDEO_FRAME_SECONDS,SPCOA_VIDEO_FRAME_SECONDS,
+                            {keyFrame: repeat===0 && i%6===0});
+                    }
                 }
-                if (recorder.state === "recording") recorder.stop();
-                await finished;
-                completed = true;
-                const actualMime = recorder.mimeType || format.mime;
-                const actualExt = actualMime.toLowerCase().includes("mp4") ? "mp4" : "webm";
-                const blob = new Blob(recordedChunks,{type:actualMime});
-                if (!blob.size) throw new Error("Video encoder returned an empty recording.");
+                report("Finalizing high-quality video file…");
+                await output.finalize();
+                finalized = true;
+                const buffer = output.target.buffer;
+                if (!buffer || !buffer.byteLength) throw new Error("Video encoder produced no output data.");
                 const stamp = item => {
                     const d = new Date(item.analysis_time || item.run);
                     if (isNaN(d.getTime())) return String(item.run).replace(/[^0-9A-Za-z]+/g,"_");
                     const p=n=>String(n).padStart(2,"0");
                     return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}_${p(d.getUTCHours())}Z`;
                 };
-                const file = `3km_Mesoscale_${count}Panel_${stamp(runs[0])}_to_${stamp(runs[runs.length-1])}.${actualExt}`;
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url; a.download = file;
-                document.body.appendChild(a); a.click(); a.remove();
-                setTimeout(()=>URL.revokeObjectURL(url),30000);
-                report(`Saved ${actualExt.toUpperCase()} video — ${runs.length} analyses (${videoCanvas.width}×${videoCanvas.height}).`);
+                const filename = `3km_Mesoscale_${count}Panel_${stamp(runs[0])}_to_${stamp(runs[runs.length-1])}.${ext}`;
+                spcoaVideoDownload(new Blob([buffer],{type:ext==="mp4"?"video/mp4":"video/webm"}),filename);
+                report(`Saved ${ext.toUpperCase()} · ${runs.length} hourly analyses · ${(runs.length*.4).toFixed(1)} s · ${videoW}×${videoH}`);
             } catch (error) {
-                console.error("SPCOA video export failed:",error);
+                console.error("SPCOA high-quality video export failed:",error);
                 report(`Video export failed: ${error.message || error}`);
-                if (recorder && recorder.state !== "inactive") {
-                    try {recorder.stop();} catch (_) {}
-                }
+                // Deliberately do not silently fall back to V81's MediaRecorder,
+                // which produced extremely long and blurry videos.
             } finally {
-                if (stream) stream.getTracks().forEach(track => track.stop());
+                if (output && !finalized) {
+                    try { await output.cancel(); } catch (_) {}
+                }
                 await Promise.allSettled(snapshots.map(async ({window:w,state},i)=>{
                     try {await w.__mpGifFinish(state);}
                     finally {
-                        if (previousAnnotations[i] && w.__mpSetAnnotations)
-                            w.__mpSetAnnotations(previousAnnotations[i]);
+                        if (previousAnnotations[i] && w.__mpSetAnnotations) w.__mpSetAnnotations(previousAnnotations[i]);
                     }
                 }));
-                if (saveVideo) { saveVideo.disabled=false; saveVideo.textContent=oldLabel; }
+                if (saveVideo) {saveVideo.disabled=false;saveVideo.textContent=oldLabel;}
                 if (saveGif) saveGif.disabled=false;
                 if (savePng) savePng.disabled=false;
                 hostGifExporting=false;
