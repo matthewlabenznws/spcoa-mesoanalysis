@@ -1088,7 +1088,7 @@ if (!__MP_CHILD) {
             button.id = "save-video";
             button.className = anchor.className;
             button.textContent = "Save Video";
-            button.title = "High-quality video: every hour, 0.4 s per analysis, MP4/WebM with PNG layout";
+            button.title = "V84 high-detail video: 0.4 s per hourly analysis, sharp keyframes, MP4/WebM with PNG layout";
             anchor.insertAdjacentElement("afterend", button);
             return button;
         })();
@@ -1319,7 +1319,7 @@ if (!__MP_CHILD) {
             warm:       { line: "#ed1010", width: 3.2, spacing: 38, size: 10 },
             stationary: { line: "#111111", width: 3.0, spacing: 40, size: 10 },
             occluded:   { line: "#8d009f", width: 3.2, spacing: 38, size: 10 },
-            dryline:    { line: "#f28a00", width: 3.0, spacing: 34, size: 9 },
+            dryline:    { line: "#8B5A2B", width: 3.0, spacing: 34, size: 9 },
             trough:     { line: "#8b4a12", width: 3.0 }
         };
 
@@ -1461,7 +1461,7 @@ if (!__MP_CHILD) {
                     } else if(annotation.type==="occluded"){
                         if(k%2===0) sharedTriangle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#8d009f");
                         else sharedSemicircle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#8d009f");
-                    } else if(annotation.type==="dryline") sharedSemicircle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#f28a00");
+                    } else if(annotation.type==="dryline") sharedSemicircle(sharedCtx,m.x,m.y,m.angle,-1,style.size,"#8B5A2B");
                 });
             }
             sharedCtx.restore();
@@ -2207,8 +2207,10 @@ if (!__MP_CHILD) {
            No index.html change, no background Python/ffmpeg service needed.
            ===================================================================================== */
         const SPCOA_VIDEO_MODULE_URL = "https://cdn.jsdelivr.net/npm/mediabunny@1.65.0/+esm";
-        const SPCOA_VIDEO_FRAME_SECONDS = 0.20; // 5 fps; each analysis shown twice (0.40 s)
-        const SPCOA_VIDEO_REPEATS_PER_HOUR = 2;
+        // V84: one high-quality intra-coded frame per hourly analysis.
+        // Keeps 0.4 seconds per hour but avoids interpolated/delta frames.
+        const SPCOA_VIDEO_FRAME_SECONDS = 0.40; // 2.5 fps, exact analysis cadence
+        const SPCOA_VIDEO_REPEATS_PER_HOUR = 1;
         let spcoaVideoLibraryPromise = null;
 
         function spcoaVideoLibrary() {
@@ -2311,11 +2313,13 @@ if (!__MP_CHILD) {
                     ctx.imageSmoothingEnabled=true;
                     ctx.imageSmoothingQuality="high";
                     ctx.drawImage(firstComposed,0,0,evenW,evenH);
-                    const probeQuality = new media.Quality({bitrate: 24000000, bitrateMode: "constant"});
+                    // Probe with the same low-quantizer quality requested for actual encoding.
+                    // Mediabunny falls back to target bitrate if quantizer is unsupported.
+                    const probeQuality = new media.Quality({quantizer: 12, bitrate: 30000000});
                     const avc = await media.getFirstEncodableVideoCodec(["avc"],
-                        {width:evenW,height:evenH,quality:probeQuality,frameRate:5});
+                        {width:evenW,height:evenH,quality:probeQuality,frameRate:2.5});
                     const webm = avc ? null : await media.getFirstEncodableVideoCodec(["vp9","vp8"],
-                        {width:evenW,height:evenH,quality:probeQuality,frameRate:5});
+                        {width:evenW,height:evenH,quality:probeQuality,frameRate:2.5});
                     if (avc || webm) {
                         codecCandidates.push({panelW,videoW:evenW,videoH:evenH,canvas,ctx,
                             codec:avc || webm,ext:avc?"mp4":"webm"});
@@ -2329,16 +2333,22 @@ if (!__MP_CHILD) {
                 const {panelW,videoW,videoH,canvas,ctx,codec,ext} = selected;
                 const format = ext === "mp4" ? new media.Mp4OutputFormat() : new media.WebMOutputFormat();
                 output = new media.Output({format,target:new media.BufferTarget()});
-                // High bitrate keeps labels, contour lines and satellite gradients
-                // substantially clearer than V81's real-time MediaRecorder output.
-                const bitRate = Math.round((count === 1 ? 24000000 : 30000000) * (videoW/2560));
+                // V84: a low AVC quantizer (12) preserves high-frequency map detail,
+                // with a bitrate fallback if the browser lacks quantizer support.
+                // Keyframes every 0.4 s make each hourly map fully independent.
+                const bitRate = Math.round((count === 1 ? 30000000 : 36000000) * (videoW/2560));
                 const source = new media.CanvasSource(canvas,{
                     codec,
-                    quality: new media.Quality({bitrate: bitRate, bitrateMode: "constant"}),
-                    bitrateMode: "constant",
+                    quality: new media.Quality({quantizer: 12, bitrate: bitRate}),
+                    bitrateMode: "variable",
+                    keyFrameInterval: SPCOA_VIDEO_FRAME_SECONDS,
                     latencyMode: "quality",
+                    hardwareAcceleration: "prefer-software",
                     contentHint: "detail",
-                    onEncoderConfig: cfg => console.info("SPCOA V83 MP4/WebM encoder configuration", cfg)
+                    onEncoderConfig: cfg => {
+                        console.info("SPCOA V84 MP4/WebM encoder configuration", cfg);
+                        report(`Encoding ${ext.toUpperCase()} with ${cfg.bitrate || "browser-selected bitrate"} bps · keyframes every hour`);
+                    }
                 });
                 output.addVideoTrack(source);
                 await output.start();
@@ -2352,13 +2362,11 @@ if (!__MP_CHILD) {
                     }
                     report(`Encoding fixed-time ${ext.toUpperCase()} ${i+1}/${runs.length} — ${runs[i].analysis_time || runs[i].run}`);
                     if (saveVideo) saveVideo.textContent = `${i+1}/${runs.length}`;
-                    // Explicit timestamps (not wall-clock timestamps): 2 frames
-                    // per analysis, 5 fps gives exactly 0.4 seconds per hour.
-                    for (let repeat=0;repeat<SPCOA_VIDEO_REPEATS_PER_HOUR;repeat++) {
-                        const frameNumber = i*SPCOA_VIDEO_REPEATS_PER_HOUR+repeat;
-                        await source.add(frameNumber*SPCOA_VIDEO_FRAME_SECONDS,SPCOA_VIDEO_FRAME_SECONDS,
-                            {keyFrame: repeat===0 && i%6===0});
-                    }
+                    // Each hourly map is a standalone keyframe. Do not generate duplicate
+                    // frames or let 6 hours of maps depend on older reference frames.
+                    const frameNumber = i;
+                    await source.add(frameNumber*SPCOA_VIDEO_FRAME_SECONDS,SPCOA_VIDEO_FRAME_SECONDS,
+                        {keyFrame: true});
                 }
                 report("Finalizing high-quality video file…");
                 await output.finalize();
@@ -2373,7 +2381,9 @@ if (!__MP_CHILD) {
                 };
                 const filename = `3km_Mesoscale_${count}Panel_${stamp(runs[0])}_to_${stamp(runs[runs.length-1])}.${ext}`;
                 spcoaVideoDownload(new Blob([buffer],{type:ext==="mp4"?"video/mp4":"video/webm"}),filename);
-                report(`Saved ${ext.toUpperCase()} · ${runs.length} hourly analyses · ${(runs.length*.4).toFixed(1)} s · ${videoW}×${videoH} · ${(buffer.byteLength/1e6).toFixed(1)} MB`);
+                const actualMbps = buffer.byteLength * 8 / (runs.length * SPCOA_VIDEO_FRAME_SECONDS) / 1e6;
+                report(`Saved ${ext.toUpperCase()} · ${runs.length} hourly keyframes · ${(runs.length*.4).toFixed(1)} s · ${videoW}×${videoH} · ${(buffer.byteLength/1e6).toFixed(1)} MB · ${actualMbps.toFixed(1)} Mbps actual`);
+                console.info(`SPCOA V84 actual video bitrate: ${actualMbps.toFixed(2)} Mbps; the quality depends on the browser encoder and source-layer resolution.`);
             } catch (error) {
                 console.error("SPCOA high-quality video export failed:",error);
                 report(`Video export failed: ${error.message || error}`);
@@ -17353,7 +17363,7 @@ const ANNOTATION_STYLE = {
     warm:       { line: "#ed1010", width: 3.2, spacing: 38, size: 10 },
     stationary: { line: "#111111", width: 3.0, spacing: 40, size: 10 },
     occluded:   { line: "#8d009f", width: 3.2, spacing: 38, size: 10 },
-    dryline:    { line: "#f28a00", width: 3.0, spacing: 34, size: 9 },
+    dryline:    { line: "#8B5A2B", width: 3.0, spacing: 34, size: 9 },
     trough:     { line: "#8b4a12", width: 3.0 }
 };
 
@@ -17571,7 +17581,7 @@ function renderFront(annotation, points) {
             if (index % 2 === 0) drawTriangle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#8d009f");
             else drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#8d009f", true);
         } else if (annotation.type === "dryline") {
-            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#f28a00", true);
+            drawSemicircle(annotationCtx, mark.x, mark.y, mark.angle, -1, style.size, "#8B5A2B", true);
         }
     });
     annotationCtx.restore();
