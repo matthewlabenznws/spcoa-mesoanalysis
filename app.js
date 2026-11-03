@@ -1263,7 +1263,7 @@ if (!__MP_CHILD) {
             button.id = "save-video";
             button.className = anchor.className;
             button.textContent = "Save Video";
-            button.title = "V84 high-detail video: 0.4 s per hourly analysis, sharp keyframes, MP4/WebM with PNG layout";
+            button.title = "V101 high-detail MP4: PNG-matched composition, up to 4K per single panel, near-lossless target, 0.4 s per analysis";
             anchor.insertAdjacentElement("afterend", button);
             return button;
         })();
@@ -2371,21 +2371,38 @@ if (!__MP_CHILD) {
         }
 
         /* =====================================================================================
-           V82 — HIGH-FIDELITY, FIXED-TIMESTAMPS MP4 / WEBM EXPORT
-           V81's MediaRecorder captured in real time while each SPCOA hour was
-           fetched, producing a ~64 second, 0.36 fps video of 25 hourly fields.
-           This version uses Mediabunny's CanvasSource and explicit frame times.
-           Fetch/renderer waits affect EXPORT TIME, never PLAYBACK TIME.
-
-           MP4/H.264 preferred; WebM VP9/VP8 fallback, when encoder supported.
-           Mediabunny is loaded via version-pinned jsDelivr ESM at export time.
-           No index.html change, no background Python/ffmpeg service needed.
+           V101 — HIGH-QUALITY, PNG-MATCHED MP4 / WEBM EXPORT
+           Each frame uses the EXACT same __mpCapturePanel and
+           composePngPanelLayout path as Save PNG (including the normal PNG
+           legend, annotation layers, logos, colored barbs, and footer).
+           The PNG compositor defines the visual design; video only encodes it.
+           Mediabunny encodes at fixed timestamps independent of load time.
+           MP4/H.264 is preferred; WebM fallback is used only if required.
            ===================================================================================== */
         const SPCOA_VIDEO_MODULE_URL = "https://cdn.jsdelivr.net/npm/mediabunny@1.65.0/+esm";
-        // V84: one high-quality intra-coded frame per hourly analysis.
-        // Keeps 0.4 seconds per hour but avoids interpolated/delta frames.
+        // Match Save PNG's 1800px source capture / 1920px composed panel.
+        // For smaller fallback resolutions, preserve the same capture ratio.
+        const SPCOA_PNG_PANEL_WIDTH = 1920;
+        const SPCOA_PNG_CAPTURE_WIDTH = 1800;
+        // V101: request AVC near-lossless QP 2 when browser supports quantizer
+        // mode. Some browsers only accept bitrate mode; the explicit high-bitrate
+        // constant-mode fallback is preferred to V100's variable-rate fallback.
+        // Bitrate is a target, not an enforced final file size.
+        const SPCOA_VIDEO_TARGET_QUANTIZER = 2;
         const SPCOA_VIDEO_FRAME_SECONDS = 0.40; // 2.5 fps, exact analysis cadence
-        const SPCOA_VIDEO_REPEATS_PER_HOUR = 1;
+        const SPCOA_VIDEO_MIN_FALLBACK_BITRATE = 48000000; // 48 Mb/s at ~1920px
+        const SPCOA_VIDEO_MAX_FALLBACK_BITRATE = 120000000; // 120 Mb/s for 4K
+        const SPCOA_VIDEO_FRAME_RATE = 1 / SPCOA_VIDEO_FRAME_SECONDS;
+        function spcoaVideoQuality(media, outputWidth) {
+            const bitrate = Math.min(SPCOA_VIDEO_MAX_FALLBACK_BITRATE,
+                Math.max(SPCOA_VIDEO_MIN_FALLBACK_BITRATE,
+                    Math.round(60000000 * outputWidth / SPCOA_PNG_PANEL_WIDTH)));
+            return {quality: new media.Quality({
+                quantizer: SPCOA_VIDEO_TARGET_QUANTIZER,
+                bitrate,
+                bitrateMode: "constant"
+            }), bitrate};
+        }
         let spcoaVideoLibraryPromise = null;
 
         function spcoaVideoLibrary() {
@@ -2398,14 +2415,16 @@ if (!__MP_CHILD) {
             return spcoaVideoLibraryPromise;
         }
 
-        async function spcoaVideoPanelImages(windows, captureW) {
-            // Exactly the same underlying capture routine as Save PNG, including
-            // the export-only satellite tiles, vector colors, legend and footer.
-            const captures = await Promise.all(windows.map(w => w.__mpCapturePanel(captureW, {video:true})));
+        async function spcoaVideoPanelImages(windows, panelW) {
+            // PNG-IDENTICAL panel capture: Save PNG passes 1800 to this exact
+            // child function and leaves options.video unset.  Do not use the
+            // video-only large legend: it creates visibly different frames.
+            const captureW = Math.round(panelW * SPCOA_PNG_CAPTURE_WIDTH / SPCOA_PNG_PANEL_WIDTH);
+            const captures = await Promise.all(windows.map(w => w.__mpCapturePanel(captureW)));
             return Promise.all(captures.map(src => new Promise((resolve, reject) => {
                 const img = new Image();
                 img.onload = () => resolve(img);
-                img.onerror = () => reject(new Error("A high-resolution panel export could not be decoded."));
+                img.onerror = () => reject(new Error("A PNG-matched video frame could not be decoded."));
                 img.src = src;
             })));
         }
@@ -2452,13 +2471,17 @@ if (!__MP_CHILD) {
 
                 report("Loading high-quality video encoder…");
                 const media = await spcoaVideoLibrary();
-                // Prefer ~2.5K single-panel output. For 2/4 panels use two
-                // 1600px panels (~3208px total) to avoid extreme encoder sizes.
-                const preferredW = count === 1 ? 2560 : 1600;
-                // Fall back to lower output dimensions ONLY if neither codec can
-                // encode the requested high-resolution frame on this machine.
-                const alternatives = count === 1 ? [preferredW,1920,1600] : [preferredW,1280,960];
+                // Single panel: prefer a real 3840px 4K-class capture, with the
+                // EXACT PNG composition/layout scaled proportionally.
+                // Multi-panel: 1920px *each* => nearly 4K across two columns.
+                // Do not silently downgrade a panel to V100's 1280px fallback.
+                // The browser's codec probe determines the maximum encodable
+                // dimensions; the user sees the actual chosen output size.
+                const alternatives = count === 1
+                    ? [3840, 3200, 2560, SPCOA_PNG_PANEL_WIDTH]
+                    : [SPCOA_PNG_PANEL_WIDTH, 1800, 1600];
                 const codecCandidates = [];
+                let webmFallback = null;
 
                 for (const panelW of alternatives) {
                     for (let i=0;i<count;i++) {
@@ -2478,51 +2501,94 @@ if (!__MP_CHILD) {
                     const firstComposed = composePngPanelLayout(firstImages,count,panelW);
                     const videoW = firstComposed.width;
                     const videoH = firstComposed.height;
-                    // Video encoders generally need even dimensions.
-                    const evenW = videoW & ~1;
-                    const evenH = videoH & ~1;
+                    // Video encoders prefer even dimensions. ROUND UP by a
+                    // single pixel; never resize/stretch the PNG image to fit.
+                    // Re-sampling the full composite was softening labels/lines.
+                    const evenW = videoW + (videoW % 2);
+                    const evenH = videoH + (videoH % 2);
                     const canvas = document.createElement("canvas");
                     canvas.width = evenW; canvas.height = evenH;
                     const ctx = canvas.getContext("2d",{alpha:false});
                     if (!ctx) throw new Error("Couldn't make video composition canvas.");
-                    ctx.imageSmoothingEnabled=true;
-                    ctx.imageSmoothingQuality="high";
-                    ctx.drawImage(firstComposed,0,0,evenW,evenH);
-                    // Probe with the same low-quantizer quality requested for actual encoding.
-                    // Mediabunny falls back to target bitrate if quantizer is unsupported.
-                    const probeQuality = new media.Quality({quantizer: 12, bitrate: 30000000});
-                    const avc = await media.getFirstEncodableVideoCodec(["avc"],
-                        {width:evenW,height:evenH,quality:probeQuality,frameRate:2.5});
-                    const webm = avc ? null : await media.getFirstEncodableVideoCodec(["vp9","vp8"],
-                        {width:evenW,height:evenH,quality:probeQuality,frameRate:2.5});
-                    if (avc || webm) {
-                        codecCandidates.push({panelW,videoW:evenW,videoH:evenH,canvas,ctx,
-                            codec:avc || webm,ext:avc?"mp4":"webm"});
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = "high";
+                    ctx.fillStyle = "#ffffff";
+                    ctx.fillRect(0,0,evenW,evenH);
+                    ctx.drawImage(firstComposed,0,0); // 1:1, lossless canvas copy
+                    // Probe near-lossless mode first. If the browser rejects
+                    // high-QP+CBR for a given size, retry with a high-bitrate
+                    // variable-quality H.264 mode BEFORE reducing resolution.
+                    // MP4 is preferred over WebM even if WebM supports 4K.
+                    const target = spcoaVideoQuality(media, evenW);
+                    const backupBitrate = Math.round(Math.max(24000000,
+                        Math.min(60000000, 36000000 * evenW / SPCOA_PNG_PANEL_WIDTH)));
+                    const modes = [
+                        {quality: target.quality, bitrate:target.bitrate, bitrateMode:"constant"},
+                        {quality: new media.Quality({bitrate:backupBitrate}),
+                         bitrate:backupBitrate, bitrateMode:"variable"}
+                    ];
+                    for (const mode of modes) {
+                        const probe = {
+                            width: evenW, height: evenH,
+                            quality: mode.quality,
+                            frameRate: SPCOA_VIDEO_FRAME_RATE,
+                            bitrateMode: mode.bitrateMode,
+                            hardwareAcceleration: "prefer-software"
+                        };
+                        let avc = null;
+                        try { avc = await media.getFirstEncodableVideoCodec(["avc"], probe); }
+                        catch (err) { console.warn("SPCOA MP4 encoder probe:",err); }
+                        if (avc) {
+                            codecCandidates.push({panelW,videoW:evenW,videoH:evenH,canvas,ctx,
+                                bitRate: mode.bitrate, videoQuality: mode.quality,
+                                bitrateMode:mode.bitrateMode,
+                                codec:avc, ext:"mp4"});
+                            break;
+                        }
+                        // Record WebM only as a last resort, after trying MP4
+                        // at all suitable resolutions.
+                        if (!webmFallback) {
+                            try {
+                                const webm = await media.getFirstEncodableVideoCodec(["vp9","vp8"], probe);
+                                if (webm) webmFallback = {
+                                    panelW,videoW:evenW,videoH:evenH,canvas,ctx,
+                                    bitRate:mode.bitrate,videoQuality:mode.quality,
+                                    bitrateMode:mode.bitrateMode,
+                                    codec:webm,ext:"webm"
+                                };
+                            } catch (err) { console.warn("SPCOA WebM fallback probe:",err); }
+                        }
                     }
-                    // Do not re-render two more first frames once a working
-                    // encoder size is found. All selected runs use this size.
                     if (codecCandidates.length) break;
                 }
-                const selected = codecCandidates[0];
-                if (!selected) throw new Error("This browser cannot encode H.264, VP9 or VP8 at available resolutions. Try current Chrome or Edge.");
-                const {panelW,videoW,videoH,canvas,ctx,codec,ext} = selected;
+                const selected = codecCandidates[0] || webmFallback;
+                if (!selected) throw new Error("No compatible high-quality H.264/VP9/VP8 encoder at 1600px+ per panel. Try current Chrome or Edge with hardware acceleration enabled.");
+                const {panelW,videoW,videoH,canvas,ctx,codec,ext,bitRate,videoQuality,bitrateMode} = selected;
+                report(`High-quality ${ext.toUpperCase()} selected: ${videoW}×${videoH} · ${panelW}px per panel`);
+                if (count === 1 && panelW < 3840) console.warn(
+                    `SPCOA V101: 4K could not be encoded by this browser; using ${panelW}px panel instead.`);
                 const format = ext === "mp4" ? new media.Mp4OutputFormat() : new media.WebMOutputFormat();
                 output = new media.Output({format,target:new media.BufferTarget()});
-                // V84: a low AVC quantizer (12) preserves high-frequency map detail,
-                // with a bitrate fallback if the browser lacks quantizer support.
-                // Keyframes every 0.4 s make each hourly map fully independent.
-                const bitRate = Math.round((count === 1 ? 30000000 : 36000000) * (videoW/2560));
+                // Quantizer 2 targets near-lossless edges/fonts for capable
+                // encoders. If quantizer is unsupported, the 48–120 Mb/s CBR
+                // fallback signals a high-quality intent. Browser limits still
+                // apply; final bitrate is not guaranteed.
+                // Force an intra (I) frame for every new analysis hour.
                 const source = new media.CanvasSource(canvas,{
                     codec,
-                    quality: new media.Quality({quantizer: 12, bitrate: bitRate}),
-                    bitrateMode: "variable",
+                    quality: videoQuality,
+                    bitrateMode,
                     keyFrameInterval: SPCOA_VIDEO_FRAME_SECONDS,
                     latencyMode: "quality",
                     hardwareAcceleration: "prefer-software",
                     contentHint: "detail",
                     onEncoderConfig: cfg => {
-                        console.info("SPCOA V84 MP4/WebM encoder configuration", cfg);
-                        report(`Encoding ${ext.toUpperCase()} with ${cfg.bitrate || "browser-selected bitrate"} bps · keyframes every hour`);
+                        console.info("SPCOA V101 high-quality MP4/WebM encoder configuration", {
+                            ...cfg, requestedFallbackBitrate: bitRate,
+                            requestedQuantizer: SPCOA_VIDEO_TARGET_QUANTIZER,
+                            frameSize: `${videoW}x${videoH}`
+                        });
+                        report(`Encoding ${ext.toUpperCase()} ${videoW}×${videoH} · high-quality ${bitrateMode} mode · ${Math.round(bitRate/1e6)} Mb/s target`);
                     }
                 });
                 output.addVideoTrack(source);
@@ -2533,7 +2599,11 @@ if (!__MP_CHILD) {
                         await Promise.all(windows.map(w=>w.__mpGifSetRun(runs[i])));
                         const images = await spcoaVideoPanelImages(windows,panelW);
                         const composed = composePngPanelLayout(images,count,panelW);
-                        ctx.drawImage(composed,0,0,videoW,videoH);
+                        // Clear the optional 1px right/bottom padding and
+                        // copy PNG pixels exactly; avoid any second resample.
+                        ctx.fillStyle = "#ffffff";
+                        ctx.fillRect(0,0,videoW,videoH);
+                        ctx.drawImage(composed,0,0);
                     }
                     report(`Encoding fixed-time ${ext.toUpperCase()} ${i+1}/${runs.length} — ${runs[i].analysis_time || runs[i].run}`);
                     if (saveVideo) saveVideo.textContent = `${i+1}/${runs.length}`;
@@ -2558,7 +2628,7 @@ if (!__MP_CHILD) {
                 spcoaVideoDownload(new Blob([buffer],{type:ext==="mp4"?"video/mp4":"video/webm"}),filename);
                 const actualMbps = buffer.byteLength * 8 / (runs.length * SPCOA_VIDEO_FRAME_SECONDS) / 1e6;
                 report(`Saved ${ext.toUpperCase()} · ${runs.length} hourly keyframes · ${(runs.length*.4).toFixed(1)} s · ${videoW}×${videoH} · ${(buffer.byteLength/1e6).toFixed(1)} MB · ${actualMbps.toFixed(1)} Mbps actual`);
-                console.info(`SPCOA V84 actual video bitrate: ${actualMbps.toFixed(2)} Mbps; the quality depends on the browser encoder and source-layer resolution.`);
+                console.info(`SPCOA V101 actual average bitrate: ${actualMbps.toFixed(2)} Mbps. Source overlays may originate at lower screen resolution; codec bitrate is not a fidelity metric by itself.`);
             } catch (error) {
                 console.error("SPCOA high-quality video export failed:",error);
                 report(`Video export failed: ${error.message || error}`);
@@ -19366,7 +19436,12 @@ document.addEventListener("visibilitychange", () => {
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const rect = mapWrapper.getBoundingClientRect();
         const srcW = Math.max(1, rect.width), srcH = Math.max(1, rect.height);
-        const footerH = 72;
+        // V101: 4K video must preserve the PNG's relative legend/footer
+        // geometry, rather than retaining 1800px-capture font sizes.
+        // Exactly 1.0 for Save PNG, so normal PNG output is unchanged.
+        const captureScale = outW / 1800;
+        const px = n => Math.round(n * captureScale);
+        const footerH = px(72);
         const outH = Math.round(outW * srcH / srcW) + footerH;
         const out = document.createElement("canvas"); out.width = outW; out.height = outH;
         const ctx = out.getContext("2d", { alpha: false });
@@ -19393,12 +19468,13 @@ document.addEventListener("visibilitychange", () => {
             // proportionate high-resolution card: labels were tiny in V82.
             const isVideo = options?.video === true;
             const w = isVideo
-                ? Math.round(Math.max(480, Math.min(720, outW * 0.21)))
-                : Math.round(Math.max(310, Math.min(420, outW * 0.21)));
-            const h = isVideo ? Math.round(w * 0.225) : 92;
-            const vScale = isVideo ? w/538 : 1;
-            const x = Math.max(18, Math.min(outW - w - 18, Math.round(leftFrac * outW)));
-            const y = Math.max(18, Math.min(mapH - h - 18, Math.round(mapH - bottomFrac * mapH - h)));
+                ? Math.round(Math.max(480, Math.min(720, 1800 * 0.21)) * captureScale)
+                : Math.round(Math.max(310, Math.min(420, 1800 * 0.21)) * captureScale);
+            const h = isVideo ? Math.round(w * 0.225) : px(92);
+            const vScale = isVideo ? w/538 : captureScale;
+            const safePad = px(18);
+            const x = Math.max(safePad, Math.min(outW - w - safePad, Math.round(leftFrac * outW)));
+            const y = Math.max(safePad, Math.min(mapH - h - safePad, Math.round(mapH - bottomFrac * mapH - h)));
 
             const padX = Math.round(16*vScale);
             const titleY = y + Math.round(26*vScale);
@@ -19411,16 +19487,16 @@ document.addEventListener("visibilitychange", () => {
             ctx.fillStyle = "rgba(20,40,57,.96)";
             ctx.fillRect(x, y, w, h);
             ctx.strokeStyle = "#41647d";
-            ctx.lineWidth = 2;
+            ctx.lineWidth = px(2);
             ctx.strokeRect(x, y, w, h);
 
             ctx.fillStyle = "#f4f8fb";
-            ctx.font = `600 ${isVideo ? Math.round(20*vScale) : 17}px Inter, Arial, sans-serif`;
+            ctx.font = `600 ${isVideo ? Math.round(20*vScale) : px(17)}px Inter, Arial, sans-serif`;
             ctx.textAlign = "left";
             ctx.textBaseline = "alphabetic";
             ctx.fillText(legendTitle?.textContent || "", x + padX, titleY);
 
-            if (!(isVideo && spcoaDrawCrispVideoLegendBar(ctx,barX,barY,barW,barH))
+            if (!((isVideo || captureScale > 1.1) && spcoaDrawCrispVideoLegendBar(ctx,barX,barY,barW,barH))
                     && legendCanvas && legendCanvas.width) {
                 ctx.drawImage(legendCanvas, barX, barY, barW, barH);
             }
@@ -19439,8 +19515,8 @@ document.addEventListener("visibilitychange", () => {
 
                 // Thin only when labels would collide at export resolution.
                 // Endpoints are always preserved.
-                ctx.font = `500 ${isVideo ? Math.round(17*vScale) : 13}px Inter, Arial, sans-serif`;
-                const minGap = isVideo ? Math.round(58*vScale) : 44;
+                ctx.font = `500 ${isVideo ? Math.round(17*vScale) : px(13)}px Inter, Arial, sans-serif`;
+                const minGap = isVideo ? Math.round(58*vScale) : px(44);
                 const kept = [];
                 allLabels.forEach((d, i) => {
                     const px = barX + d.pct * barW;
@@ -19471,7 +19547,7 @@ document.addEventListener("visibilitychange", () => {
         }
 
         ctx.fillStyle = "#f7f8fa"; ctx.fillRect(0, mapH, outW, footerH);
-        ctx.strokeStyle = "#aeb7bf"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,mapH+.5); ctx.lineTo(outW,mapH+.5); ctx.stroke();
+        ctx.strokeStyle = "#aeb7bf"; ctx.lineWidth = Math.max(1, captureScale); ctx.beginPath(); ctx.moveTo(0,mapH+.5); ctx.lineTo(outW,mapH+.5); ctx.stroke();
         // V80: the former footer flattened colored vector descriptors to plain
         // text. Preserve a line swatch for each active barb/arrow/axis layer,
         // using the SAME chosen color as the actual map vectors.
@@ -19482,9 +19558,9 @@ document.addEventListener("visibilitychange", () => {
             { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
         ];
         const separator = " | ";
-        const swatchW = 27, swatchGap = 8, separatorGap = 13;
+        const swatchW = px(27), swatchGap = px(8), separatorGap = px(13);
         ctx.textAlign = "left"; ctx.textBaseline = "middle";
-        let fontSize = 22;
+        let fontSize = px(22);
         const measure = () => {
             ctx.font = `650 ${fontSize}px Inter, "Segoe UI", Arial, sans-serif`;
             return footerItems.reduce((sum, item) => sum + ctx.measureText(item.text).width +
@@ -19492,21 +19568,21 @@ document.addEventListener("visibilitychange", () => {
                 (footerItems.length - 1) * (ctx.measureText(separator).width + separatorGap);
         };
         let totalWidth = measure();
-        while (fontSize > 13 && totalWidth > outW - 56) {
-            fontSize--;
+        while (fontSize > px(13) && totalWidth > outW - px(56)) {
+            fontSize -= Math.max(1, px(1));
             totalWidth = measure();
         }
         // If there are more active overlays than can fit, clip the footer
         // rather than silently removing the barb color indicators.
         ctx.save();
-        ctx.beginPath(); ctx.rect(18, mapH, outW - 36, footerH); ctx.clip();
-        let footerX = Math.max(28, (outW - totalWidth) / 2);
+        ctx.beginPath(); ctx.rect(px(18), mapH, outW - px(36), footerH); ctx.clip();
+        let footerX = Math.max(px(28), (outW - totalWidth) / 2);
         const footerY = mapH + footerH / 2;
         footerItems.forEach((item, index) => {
             if (item.color) {
                 ctx.beginPath();
                 ctx.strokeStyle = item.color;
-                ctx.lineWidth = 6;
+                ctx.lineWidth = px(6);
                 ctx.lineCap = "round";
                 ctx.moveTo(footerX, footerY);
                 ctx.lineTo(footerX + swatchW, footerY);
