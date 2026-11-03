@@ -7769,8 +7769,16 @@ function getEncoding(
 /* V89 client-side numerical differences from the existing 24-hour S3 archive.
    The two analyses use the SAME z/x/y tile grid, but each uses its own encoding.
    We never substitute the nearest hour for a missing exact UTC reference. */
-const spcoaChangeSourceMetaCache = new Map();
+/* V93: Published source encodings are fixed in spcmesooa.py.  Referencing
+   these avoids a *second* dependency on historical metadata.json: the contour
+   tiles themselves are the authoritative arrays for change calculations.
+   These are physical units after decoding, as in the existing backend. */
+const SPCOA_CHANGE_SOURCE_ENCODING = Object.freeze({
+    hght_500mb: Object.freeze({scale: 1.0, offset: 0.0, nodata: 65535}),
+    sfc_mslp: Object.freeze({scale: 0.1, offset: 900.0, nodata: 65535})
+});
 const spcoaChangeIssues = new Map();
+const spcoaChangeStats = new Map();
 function spcoaChangeIssueKey(run, field) { return `${run}:${field}`; }
 function spcoaChangeIssueText(run, field) {
     return spcoaChangeIssues.get(spcoaChangeIssueKey(run, field)) || "";
@@ -7786,13 +7794,16 @@ function spcoaPreviousRunId(run, hours) {
     // a nearby hour. A missing older run will be reported after the S3 check.
     return candidate;
 }
-async function spcoaChangeSourceMeta(run, sourceField) {
-    const cacheKey = `${run}:${sourceField}`;
-    if (!spcoaChangeSourceMetaCache.has(cacheKey)) {
-        const task = fetchJSON(`${S3_BASE_URL}/runs/${run}/overlays/${sourceField}/metadata.json`);
-        spcoaChangeSourceMetaCache.set(cacheKey, task);
-    }
-    return spcoaChangeSourceMetaCache.get(cacheKey);
+/* V93: A small diagnostic sample captures whether the CURRENT or REFERENCE
+   contour tiles actually exist. Empty geographic buffer tiles are normal; we
+   decide whether a field is unavailable only after all visible tiles finish. */
+function spcoaChangeStatsFor(run, field) {
+    const key = spcoaChangeIssueKey(run, field);
+    if (!spcoaChangeStats.has(key)) spcoaChangeStats.set(key, {
+        requested:0, currentTiles:0, earlierTiles:0, pairedTiles:0, validPoints:0,
+        currentMissing:0, earlierMissing:0, lastError:""
+    });
+    return spcoaChangeStats.get(key);
 }
 async function loadSpcoaChangeTile(field, z, x, y, run = currentRun, priority = 0) {
     const def = SPCOA_CHANGE_FIELDS[field];
@@ -7808,32 +7819,42 @@ async function loadSpcoaChangeTile(field, z, x, y, run = currentRun, priority = 
         return await scalarTileCache.get(key);
     }
     const task = (async () => {
-        const [presentMeta, priorMeta, presentTile, priorTile] = await Promise.all([
-            spcoaChangeSourceMeta(run, def.sourceField),
-            spcoaChangeSourceMeta(previousRun, def.sourceField),
+        /* Both inputs are already published contour *numerical* tiles.
+           Metadata files are not necessary: scale/offset are fixed by the
+           publisher. Avoiding metadata fetches also avoids a widespread
+           all-blank failure when a historical metadata object is missing. */
+        const [presentTile, priorTile] = await Promise.all([
             loadContourTile(def.sourceField, z, nx, y, run, priority),
             loadContourTile(def.sourceField, z, nx, y, previousRun, priority)
         ]);
+        const stats = spcoaChangeStatsFor(run, field);
+        stats.requested++;
+        if (presentTile) stats.currentTiles++; else stats.currentMissing++;
+        if (priorTile) stats.earlierTiles++; else stats.earlierMissing++;
         if (!presentTile || !priorTile || presentTile.length !== priorTile.length) return null;
-        const presentEncoding = getEncoding(presentMeta);
-        const priorEncoding = getEncoding(priorMeta);
+        stats.pairedTiles++;
+        const sourceEncoding = SPCOA_CHANGE_SOURCE_ENCODING[def.sourceField];
         const out = new Uint16Array(presentTile.length);
         const missing = SPCOA_CHANGE_ENCODING.nodata;
+        let good = 0;
         for (let i = 0; i < out.length; i++) {
             const now = presentTile[i], then = priorTile[i];
-            if (now === presentEncoding.nodata || then === priorEncoding.nodata ||
+            if (now === sourceEncoding.nodata || then === sourceEncoding.nodata ||
                 now === SCALAR_NODATA || then === SCALAR_NODATA) {
                 out[i] = missing; continue;
             }
-            const currentValue = now * presentEncoding.scale + presentEncoding.offset;
-            const previousValue = then * priorEncoding.scale + priorEncoding.offset;
-            const delta = (currentValue - previousValue) * def.factor;
+            /* Decoding then subtraction avoids mixing encoded source units;
+               hght is metres -> dam, MSLP is hPa. */
+            const delta = (now - then) * sourceEncoding.scale * def.factor;
             if (!Number.isFinite(delta)) {out[i] = missing; continue;}
             out[i] = Math.max(0, Math.min(65534, Math.round(
                 (delta - SPCOA_CHANGE_ENCODING.offset) / SPCOA_CHANGE_ENCODING.scale
             )));
+            good++;
         }
-        return out;
+        stats.validPoints += good;
+        // No usable cells means this tile must not masquerade as valid data.
+        return good ? out : null;
     })();
     scalarTileCache.set(key, task);
     try {
@@ -7847,15 +7868,11 @@ async function loadSpcoaChangeTile(field, z, x, y, run = currentRun, priority = 
         return tile;
     } catch (error) {
         if (scalarTileCache.get(key) === task) scalarTileCache.delete(key);
-        const message = String(error?.message || error || "Unknown S3 error");
-        const issue = /HTTP 40[34]/.test(message)
-            ? "Prior/source analysis not accessible in S3 (403/404)"
-            : "Historical data request failed (see console)";
-        const key = spcoaChangeIssueKey(run, field);
-        if (!spcoaChangeIssues.has(key)) {
-            console.warn(`SPCOA ${field} unavailable for ${run}:`, error);
+        const stats = spcoaChangeStatsFor(run, field);
+        stats.lastError = String(error?.message || error || 'Unknown error');
+        if (!spcoaChangeIssues.has(spcoaChangeIssueKey(run, field))) {
+            console.warn(`SPCOA ${field}: change tile calculation failed:`, error);
         }
-        spcoaChangeIssues.set(key, issue);
         return null;
     }
 }
@@ -9761,28 +9778,72 @@ async function renderWeather() {
 
     }
 
-    // V92: make missing derived data obvious, instead of silently leaving
-    // an empty satellite background and a blank-looking legend.
+/* V94: show any actual missing-data reason directly in the map region.
+   A blank satellite background is not a valid indication of a zero change. */
+function spcoaSetChangeNotice(message) {
+    if (!mapWrapper) return;
+    let node = document.getElementById('spcoa-change-data-notice');
+    if (!node) {
+        node = document.createElement('div');
+        node.id = 'spcoa-change-data-notice';
+        node.setAttribute('role', 'status');
+        node.style.cssText = 'position:absolute;top:46px;left:50%;transform:translateX(-50%);' +
+            'max-width:min(650px,85%);padding:8px 12px;border-radius:6px;' +
+            'background:rgba(25,35,52,.95);color:#fff;border:1px solid #ffcd69;' +
+            'font:12px Arial,sans-serif;line-height:1.4;z-index:1000;pointer-events:none;' +
+            'text-align:center;overflow-wrap:anywhere;';
+        mapWrapper.appendChild(node);
+    }
+    node.textContent = message || '';
+    node.style.display = message ? 'block' : 'none';
+}
+
+    // V93: report the actual numerical tile source that is missing. This is
+    // displayed in the map, even when the colored legend is offscreen.
     if (SPCOA_CHANGE_FIELDS[activeField]) {
+        const def = SPCOA_CHANGE_FIELDS[activeField];
         const key = spcoaChangeIssueKey(currentRun, activeField);
+        const earlier = spcoaPreviousRunId(currentRun, def.hours);
         const range = getVisibleTileRange(z, 0);
-        let availableTiles = 0;
+        let availableTiles = 0, validCells = 0;
         for (let ty = range.y0; ty <= range.y1; ty++) {
             for (let tx = range.x0; tx <= range.x1; tx++) {
                 const tile = scalarTileCache.get(scalarTileKey(
                     activeField, currentRun, z, normalizeTileX(tx, z), ty));
-                if (tile instanceof Uint16Array) availableTiles++;
+                if (!(tile instanceof Uint16Array)) continue;
+                availableTiles++;
+                for (let i=0; i<tile.length; i+=16) {
+                    if (tile[i] !== SPCOA_CHANGE_ENCODING.nodata) validCells++;
+                }
             }
         }
-        if (availableTiles) spcoaChangeIssues.delete(key);
-        else if (!spcoaChangeIssues.has(key)) {
-            const earlier = spcoaPreviousRunId(currentRun, SPCOA_CHANGE_FIELDS[activeField].hours);
-            spcoaChangeIssues.set(key,
-                `No matching numerical tiles (check ${currentRun} and ${earlier} archives)`);
+        const stats = spcoaChangeStats.get(key);
+        if (availableTiles && validCells) {
+            spcoaChangeIssues.delete(key);
+        } else {
+            const cause = stats?.lastError
+                ? `Difference calculation error: ${stats.lastError}`
+                : !stats?.currentTiles
+                    ? `No current ${def.sourceField} numerical contour tiles (${currentRun})`
+                    : !stats?.earlierTiles
+                        ? `No ${def.hours}h-earlier ${def.sourceField} numerical contour tiles (${earlier})`
+                        : !stats?.pairedTiles
+                            ? `Current and earlier ${def.sourceField} tiles do not overlap`
+                            : `Matched source tiles contain no valid gridpoints`;
+            spcoaChangeIssues.set(key, cause);
+            console.warn(`SPCOA change map unavailable: ${cause}`, {field:activeField,
+                run:currentRun, earlier, zoom:z, observed:stats});
         }
+        const issue = spcoaChangeIssueText(currentRun, activeField);
+        if (statusElement) statusElement.textContent = issue
+            ? `Change unavailable: ${issue}` : `Change loaded: ${availableTiles} tiles`;
+        spcoaSetChangeNotice(issue
+            ? `Change unavailable: ${issue}. For 24-hour differences, select a time with a complete historical reference.`
+            : '');
         updateLegend();
+    } else {
+        spcoaSetChangeNotice('');
     }
-
 
 
     const rect =
@@ -14474,10 +14535,13 @@ function updateLegend() {
 
 
     if (field.type === "spcoa_change") {
+        // V94: repaint the full physical-value colorbar independently of S3
+        // success. The fixed -1..+1 white interval is accurately positioned.
         const bounds = spcoaChangeColorBounds(field);
         const cap = spcoaChangeColorMax(field);
-        drawColorLegend(spcoaChangeLegendColors());
-        renderLegendLabels([-cap,-cap/2,-1,0,1,cap/2,cap], bounds);
+        const colors = spcoaChangeLegendColors();
+        drawProportionalColorLegend(colors, bounds);
+        renderProportionalLegendLabels([-cap, -cap/2, -1, 0, 1, cap/2, cap], bounds);
     }
     if (field.type === "q_vector_divergence") {
         drawColorLegend(QDIV_COLORS);
