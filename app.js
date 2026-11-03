@@ -4754,39 +4754,82 @@ const numericalRequestQueue = [];
 let activeTileRequests = 0;
 let requestSequence = 0;
 
+/* V110 — obsolete queued and in-flight requests can be cancelled without
+   marking tiles as missing. Real 404s retain the existing 30 s retry policy. */
+const SPCOA_TILE_CANCELLED = Symbol('spcoa-obsolete-tile-request');
+const spcoaActiveTileJobs = new Set();
+function spcoaRequiredRunsForSelection(targetRun) {
+    const keep = new Set([targetRun]);
+    const chosen = selectedProductKeys();
+    for (const field of [...chosen.scalar,...chosen.contours]) {
+        const source = SPCOA_CHANGE_CONTOUR_FIELDS[field]?.sourceField || field;
+        const def = SPCOA_CHANGE_FIELDS[source];
+        if (def) {
+            const prior = spcoaPreviousRunId(targetRun,def.hours);
+            if (prior) keep.add(prior);
+        }
+    }
+    return keep;
+}
+function spcoaCancelObsoleteTileRequests(targetRun) {
+    const keep = spcoaRequiredRunsForSelection(targetRun);
+    for (let i=numericalRequestQueue.length-1;i>=0;i--) {
+        const job=numericalRequestQueue[i];
+        if (job.run && !keep.has(job.run)) {
+            numericalRequestQueue.splice(i,1);
+            job.cancelled=true;
+            job.resolve(SPCOA_TILE_CANCELLED);
+        }
+    }
+    for (const job of spcoaActiveTileJobs) {
+        if (job.run && !keep.has(job.run) && !job.cancelled) {
+            job.cancelled=true;
+            job.controller?.abort();
+        }
+    }
+}
 function queueNumericalTileFetch(url, priority = 0) {
     return new Promise(resolve => {
-        numericalRequestQueue.push({url, priority, sequence: requestSequence++, resolve});
-        numericalRequestQueue.sort((a, b) =>
-            a.priority - b.priority || a.sequence - b.sequence);
+        const match=/\/runs\/([^/]+)\//.exec(url);
+        numericalRequestQueue.push({url,priority,run:match?.[1]||null,
+            sequence:requestSequence++,resolve,cancelled:false,controller:null});
+        numericalRequestQueue.sort((a,b)=>a.priority-b.priority||a.sequence-b.sequence);
         pumpNumericalTileRequests();
     });
 }
-
 function pumpNumericalTileRequests() {
     while (activeTileRequests < MAX_ACTIVE_TILE_REQUESTS && numericalRequestQueue.length) {
-        const job = numericalRequestQueue.shift();
+        const job=numericalRequestQueue.shift();
+        if (job.cancelled) {job.resolve(SPCOA_TILE_CANCELLED);continue;}
+        job.controller = new AbortController();
+        spcoaActiveTileJobs.add(job);
         activeTileRequests++;
         (async () => {
-            for (let attempt = 0; attempt < 3; attempt++) {
+            for (let attempt=0;attempt<3;attempt++) {
+                if (job.cancelled) return SPCOA_TILE_CANCELLED;
                 try {
-                    const response = await fetch(job.url, {cache: "force-cache"});
-                    if (response.ok) return await response.arrayBuffer();
-                    // 404 usually means no data exists for that geographic tile.
-                    if (response.status !== 429 && response.status < 500) return null;
-                } catch (error) {
-                    if (attempt === 2) console.warn("Tile request failed:", job.url, error);
+                    const response=await fetch(job.url,{
+                        cache:'force-cache',signal:job.controller.signal
+                    });
+                    if (job.cancelled) return SPCOA_TILE_CANCELLED;
+                    if (response.ok) {
+                        const data=await response.arrayBuffer();
+                        return job.cancelled ? SPCOA_TILE_CANCELLED : data;
+                    }
+                    if (response.status!==429 && response.status<500) return null;
+                } catch(error) {
+                    if (job.cancelled || error?.name==='AbortError') return SPCOA_TILE_CANCELLED;
+                    if (attempt===2) console.warn('Tile request failed:',job.url,error);
                 }
-                if (attempt < 2) {
-                    await new Promise(resolve => setTimeout(resolve,
-                        (attempt + 1) * 350 + Math.round(Math.random() * 120)));
-                }
+                if (attempt<2) await new Promise(resolve=>setTimeout(resolve,
+                    (attempt+1)*350+Math.round(Math.random()*120)));
             }
-            return null;
-        })().then(job.resolve, error => {
-            console.warn("Tile fetch failed:", job.url, error);
-            job.resolve(null);
-        }).finally(() => {
+            return job.cancelled ? SPCOA_TILE_CANCELLED : null;
+        })().then(job.resolve,error=>{
+            if (!job.cancelled) console.warn('Tile fetch failed:',job.url,error);
+            job.resolve(job.cancelled?SPCOA_TILE_CANCELLED:null);
+        }).finally(()=>{
+            spcoaActiveTileJobs.delete(job);
             activeTileRequests--;
             pumpNumericalTileRequests();
         });
@@ -7172,54 +7215,104 @@ function formatTimelineUtc(value) {
     }).format(date).replace(/, (\d{2})$/, ", $1Z");
 }
 
+/* V110 — load the run's small root manifest first, then ONLY metadata for
+   visible products. Metadata for a newly enabled layer is fetched on demand.
+   The existing per-product JSON files and tile encodings are unchanged. */
+const SPCOA_METADATA_MISSING_RETRY_MS = 30000;
+const spcoaMissingProductMetadata = new Map();
 async function loadRunMetadata(runId) {
     if (runMetadataCache.has(runId)) return runMetadataCache.get(runId);
-    const promise = (async () => {
-        const metadata = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/metadata.json`);
-        const fields = {};
-        const vectors = {};
-        const contours = {};
-        const results = await Promise.allSettled([
-            ...(metadata.fields || []).map(async fieldKey => {
-                fields[fieldKey] = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/${fieldKey}/metadata.json`);
-            }),
-            ...(metadata.overlays || []).map(async overlayKey => {
-                const item = await fetchJSON(`${S3_BASE_URL}/runs/${runId}/overlays/${overlayKey}/metadata.json`);
-                const isContour = item.type === "scalar_contour" ||
-                    (item.display && item.display.type === "contour");
-                if (isContour) contours[overlayKey] = item; else vectors[overlayKey] = item;
-            })
-        ]);
-        const failures = results.filter(r => r.status === "rejected");
-        if (failures.length) console.warn(`${failures.length} product metadata files unavailable for ${runId}:`,
-            failures.slice(0, 5).map(r => r.reason));
-        if (results.length && failures.length === results.length) {
-            throw new Error(`No SPCOA product metadata could be loaded for ${runId}.`);
-        }
-        // Separate ECAPE backend publishes a per-run sidecar only after ALL
-        // native CONUS tiles finish. Its absence never blocks other products.
-        try {
-            const r = await fetch(`${S3_BASE_URL}/runs/${runId}/ecape/metadata.json`, {cache: 'no-store'});
-            if (r.ok) {
-                const ecapeMeta = await r.json();
-                if (ecapeMeta?.run === runId && ecapeMeta?.native_horizontal_stride === 1) {
-                    fields.ecape = ecapeMeta;
-                }
-            }
-        } catch (error) {
-            console.debug('ECAPE not yet available for', runId, error);
-        }
-        return { metadata, fields, vectors, contours };
-    })();
+    const promise = (async () => ({
+        metadata: await fetchJSON(`${S3_BASE_URL}/runs/${runId}/metadata.json`),
+        fields: {}, vectors: {}, contours: {}
+    }))();
     runMetadataCache.set(runId, promise);
     try {
-        const resolved = await promise;
-        runMetadataCache.set(runId, resolved);
-        return resolved;
+        const bundle = await promise;
+        runMetadataCache.set(runId, bundle);
+        // The retained timeline is bounded; older metadata need not grow forever.
+        while (runMetadataCache.size > 40) {
+            runMetadataCache.delete(runMetadataCache.keys().next().value);
+        }
+        return bundle;
     } catch (error) {
-        runMetadataCache.delete(runId);
+        if (runMetadataCache.get(runId) === promise) runMetadataCache.delete(runId);
         throw error;
     }
+}
+function spcoaDerivedMetadata(kind, field) {
+    if (kind === 'scalar' && SPCOA_CHANGE_FIELDS[field])
+        return {encoding:SPCOA_CHANGE_ENCODING,type:'scalar',derived:true};
+    if (kind === 'contour' && SPCOA_CHANGE_CONTOUR_FIELDS[field])
+        return {encoding:SPCOA_CHANGE_ENCODING,type:'scalar_contour',derived:true,
+            display:{type:'contour',color_scheme:'spcoa_change'}};
+    return null;
+}
+async function spcoaLoadProductMetadata(runId, bundle, kind, field) {
+    if (!field || field === 'none') return null;
+    const derived = spcoaDerivedMetadata(kind,field);
+    if (derived) return derived;
+    const store = kind === 'scalar' ? bundle.fields :
+        kind === 'vector' ? bundle.vectors : bundle.contours;
+    if (store[field]) return store[field];
+    const id = `${runId}:${kind}:${field}`;
+    const missingUntil = spcoaMissingProductMetadata.get(id);
+    if (missingUntil && missingUntil > Date.now()) return null;
+    if (missingUntil) spcoaMissingProductMetadata.delete(id);
+    if (runProductMetadataCache.has(id)) {
+        const cached=await runProductMetadataCache.get(id);
+        if (cached) store[field]=cached;
+        return cached;
+    }
+    const path = kind === 'scalar'
+        ? (field === 'ecape' ? `runs/${runId}/ecape/metadata.json` : `runs/${runId}/${field}/metadata.json`)
+        : `runs/${runId}/overlays/${field}/metadata.json`;
+    const task = (async () => {
+        const meta = await fetchJSON(`${S3_BASE_URL}/${path}`);
+        if (field === 'ecape' && (meta?.run !== runId || meta?.native_horizontal_stride !== 1)) {
+            throw new Error(`ECAPE metadata does not match ${runId}`);
+        }
+        store[field] = meta;
+        return meta;
+    })();
+    runProductMetadataCache.set(id, task);
+    try {
+        const meta = await task;
+        runProductMetadataCache.set(id, meta);
+        while (runProductMetadataCache.size > 400)
+            runProductMetadataCache.delete(runProductMetadataCache.keys().next().value);
+        return meta;
+    } catch (error) {
+        if (runProductMetadataCache.get(id) === task) runProductMetadataCache.delete(id);
+        spcoaMissingProductMetadata.set(id,Date.now()+SPCOA_METADATA_MISSING_RETRY_MS);
+        if (spcoaMissingProductMetadata.size > 512)
+            spcoaMissingProductMetadata.delete(spcoaMissingProductMetadata.keys().next().value);
+        console.debug(`SPCOA ${kind} metadata unavailable for ${field} (${runId}):`, error);
+        return null;
+    }
+}
+async function spcoaWarmSelectedMetadata(runId,bundle,selection=selectedProductKeys()) {
+    const jobs = [
+        ...selection.scalar.map(field=>spcoaLoadProductMetadata(runId,bundle,'scalar',field)),
+        ...selection.vectors.map(field=>spcoaLoadProductMetadata(runId,bundle,'vector',field)),
+        ...selection.contours.map(field=>spcoaLoadProductMetadata(runId,bundle,'contour',field))
+    ];
+    await Promise.all(jobs);
+}
+async function spcoaEnsureCurrentMetadata(kind,field) {
+    const run = currentRun;
+    if (!run || !field) return null;
+    const derived = spcoaDerivedMetadata(kind,field);
+    if (derived) return derived;
+    const bundle = await loadRunMetadata(run);
+    const meta = await spcoaLoadProductMetadata(run,bundle,kind,field);
+    if (run !== currentRun) return null;
+    if (meta) {
+        if (kind === 'scalar') fieldMetadata[field] = meta;
+        else if (kind === 'vector') vectorMetadata[field] = meta;
+        else contourMetadata[field] = meta;
+    }
+    return meta;
 }
 
 function ensureGifProductsAvailable() {
@@ -7243,9 +7336,14 @@ async function applyRun(runItem, { render = true, preload = true, scrub = false 
     }
     timelineState.switching = true;
     stopPlaybackTimer();
+    spcoaAdjacentPreloadToken++; // invalidate old idle warmups immediately
+    spcoaCancelObsoleteTileRequests(runItem.run);
     if (statusElement) statusElement.textContent = `Loading ${runItem.run}...`;
     try {
+        const metadataStart=__MP_PARAMS.get('perf')==='1'?performance.now():0;
         const bundle = await loadRunMetadata(runItem.run);
+        await spcoaWarmSelectedMetadata(runItem.run,bundle);
+        if (metadataStart) console.info(`[SPCOA V110] selected-product metadata ${runItem.run}: ${(performance.now()-metadataStart).toFixed(0)} ms`);
         // If the user dragged farther while metadata loaded, do not redraw a
         // frame that is already obsolete. The scrub queue will load the latest.
         if (scrub && timelineScrubPendingRun &&
@@ -7275,7 +7373,13 @@ async function applyRun(runItem, { render = true, preload = true, scrub = false 
         updateTimelineUi();
         updateLegend();
         requestAnimationFrame(updateActiveLayersStrip);
-        if (render) await renderAll();
+        if (render) {
+            if (scrub) {
+                // The next pointer position can start loading while this
+                // frame paints; render generations discard obsolete work.
+                void renderAll().catch(error=>console.warn('SPCOA scrub preview:',error));
+            } else await renderAll();
+        }
         if (statusElement) statusElement.textContent = `Loaded ${currentRun}`;
         if (currentRun === timelineState.latestRun) timelineState.pendingLiveSwitch = false;
         if (preload) scheduleAdjacentPreload();
@@ -7401,40 +7505,57 @@ function selectedProductKeys() {
     return { scalar: [...new Set(scalar)], vectors: [...new Set(vectors)], contours: [...new Set(contours)] };
 }
 
-async function preloadRunProducts(runItem) {
-    if (!runItem || !runItem.run || runItem.run === currentRun) return;
+/* V110 — warm the center-most VISIBLE numerical tiles for neighboring
+   hours. Avoid the old +1 tile buffer for all products in both directions. */
+const SPCOA_ADJACENT_TILE_LIMIT_PER_PRODUCT = 10;
+let spcoaAdjacentPreloadToken=0;
+async function preloadRunProducts(runItem,token=spcoaAdjacentPreloadToken) {
+    if (!runItem?.run || runItem.run === currentRun || document.hidden ||
+        token !== spcoaAdjacentPreloadToken || timelineSliderScrubbing) return;
     const run = runItem.run;
-    const z = getDataZoom();
-    const products = selectedProductKeys();
-    const jobs = [];
-    for (const field of products.scalar) jobs.push(preloadScalarTiles(field, z, run));
-    for (const field of products.vectors) jobs.push(preloadVectorTiles(field, z, run));
-    for (const field of products.contours) jobs.push(preloadContourTiles(field, z, run));
-    await Promise.allSettled(jobs);
+    try {
+        const bundle=await loadRunMetadata(run);
+        if (token !== spcoaAdjacentPreloadToken || document.hidden || timelineSliderScrubbing) return;
+        const products=selectedProductKeys();
+        await spcoaWarmSelectedMetadata(run,bundle,products);
+        if (token !== spcoaAdjacentPreloadToken || document.hidden || timelineSliderScrubbing) return;
+        const z=getDataZoom();
+        const coordinates=priorityOrderedTileCoordinates(z,getVisibleTileRange(z,0))
+            .slice(0,SPCOA_ADJACENT_TILE_LIMIT_PER_PRODUCT);
+        const jobs=[];
+        for (const f of products.scalar) for (const t of coordinates)
+            jobs.push(loadScalarTile(f,z,t.x,t.y,run,7));
+        for (const f of products.vectors) for (const t of coordinates)
+            jobs.push(loadVectorTile(f,z,t.x,t.y,run,7));
+        for (const f of products.contours) for (const t of coordinates)
+            jobs.push(loadContourTile(f,z,t.x,t.y,run,7));
+        await Promise.allSettled(jobs);
+    } catch(error) {console.debug('SPCOA adjacent warmup:',run,error);}
 }
-
 function scheduleAdjacentPreload() {
-    const runs = filteredTimelineRuns();
-    const index = runs.findIndex(item => item.run === currentRun);
-    if (index < 0) return;
-    const candidates = timelineState.playing
-        ? [runs[index + 1], runs[index + 2], runs[index - 1]]
-        : [runs[index + 1], runs[index - 1]];
-    const startPreload = () => {
-        if (document.hidden || timelineSliderScrubbing || timelineScrubPendingRun) return;
-        candidates.filter(Boolean).forEach(item => void preloadRunProducts(item));
-        // Most of the delay after picking an uncached hour is loading dozens
-        // of per-run metadata objects. Warm one nearby hour in idle time.
-        const neighbor = candidates.find(item => item && !runMetadataCache.has(item.run));
-        if (neighbor) void loadRunMetadata(neighbor.run).catch(error => {
-            console.debug('Adjacent analysis metadata not yet available:', neighbor.run, error);
-        });
+    const token=++spcoaAdjacentPreloadToken;
+    const runs=filteredTimelineRuns();
+    const index=runs.findIndex(item=>item.run===currentRun);
+    if (index<0) return;
+    const candidates=timelineState.playing
+        ? [runs[index+1],runs[index-1]]
+        : [runs[index+1],runs[index-1]];
+    const startPreload=()=>{
+        if (token!==spcoaAdjacentPreloadToken || document.hidden ||
+            timelineSliderScrubbing || timelineScrubPendingRun || timelineState.switching) return;
+        // Only launch one near-hour warmup initially; the other is queued once
+        // the first completes, leaving bandwidth for user interactions.
+        void (async()=>{
+            for (const item of candidates.filter(Boolean)) {
+                if (token!==spcoaAdjacentPreloadToken || document.hidden ||
+                    timelineSliderScrubbing || timelineScrubPendingRun || timelineState.switching) break;
+                await preloadRunProducts(item,token);
+            }
+        })();
     };
-    if ("requestIdleCallback" in window) {
-        window.requestIdleCallback(startPreload, { timeout: 350 });
-    } else {
-        setTimeout(startPreload, 120);
-    }
+    if ('requestIdleCallback' in window)
+        window.requestIdleCallback(startPreload,{timeout:650});
+    else setTimeout(startPreload,180);
 }
 
 async function refreshAvailableTimes() {
@@ -8123,6 +8244,7 @@ async function loadScalarTile(field, z, x, y, run = currentRun, priority = 0) {
     const url = `${S3_BASE_URL}/runs/${run}/${field}/z${z}/${wrappedX}/${y}.bin`;
     const promise = (async () => {
         const buffer = await queueNumericalTileFetch(url, priority);
+        if (buffer === SPCOA_TILE_CANCELLED) return SPCOA_TILE_CANCELLED;
         if (!buffer) return null;
         if (buffer.byteLength !== 131072) {
             console.warn("Unexpected scalar tile size:", field, z, wrappedX, y, buffer.byteLength);
@@ -8133,6 +8255,10 @@ async function loadScalarTile(field, z, x, y, run = currentRun, priority = 0) {
     scalarTileCache.set(key, promise);
 
     const tile = await promise;
+    if (tile === SPCOA_TILE_CANCELLED) {
+        if (scalarTileCache.get(key) === promise) scalarTileCache.delete(key);
+        return null;
+    }
     if (scalarTileCache.get(key) === promise) {
         if (tile) {
             scalarTileCache.set(key, tile);
@@ -8167,6 +8293,7 @@ async function loadVectorTile(field, z, x, y, run = currentRun, priority = 0) {
     const url = `${S3_BASE_URL}/runs/${run}/overlays/${field}/z${z}/${wrappedX}/${y}.bin`;
     const promise = (async () => {
         const buffer = await queueNumericalTileFetch(url, priority);
+        if (buffer === SPCOA_TILE_CANCELLED) return SPCOA_TILE_CANCELLED;
         if (!buffer) return null;
         if (buffer.byteLength !== 262144) {
             console.warn("Unexpected vector tile size:", field, z, wrappedX, y, buffer.byteLength);
@@ -8177,6 +8304,10 @@ async function loadVectorTile(field, z, x, y, run = currentRun, priority = 0) {
     vectorTileCache.set(key, promise);
 
     const tile = await promise;
+    if (tile === SPCOA_TILE_CANCELLED) {
+        if (vectorTileCache.get(key) === promise) vectorTileCache.delete(key);
+        return null;
+    }
     if (vectorTileCache.get(key) === promise) {
         if (tile) {
             vectorTileCache.set(key, tile);
@@ -8214,6 +8345,7 @@ async function loadContourTile(field, z, x, y, run = currentRun, priority = 0) {
     const url = `${S3_BASE_URL}/runs/${run}/overlays/${field}/z${z}/${wrappedX}/${y}.bin`;
     const promise = (async () => {
         const buffer = await queueNumericalTileFetch(url, priority);
+        if (buffer === SPCOA_TILE_CANCELLED) return SPCOA_TILE_CANCELLED;
         if (!buffer) return null;
         if (buffer.byteLength !== 131072) {
             console.warn("Unexpected contour tile size:", field, z, wrappedX, y, buffer.byteLength);
@@ -8224,6 +8356,10 @@ async function loadContourTile(field, z, x, y, run = currentRun, priority = 0) {
     contourTileCache.set(key, promise);
 
     const tile = await promise;
+    if (tile === SPCOA_TILE_CANCELLED) {
+        if (contourTileCache.get(key) === promise) contourTileCache.delete(key);
+        return null;
+    }
     if (contourTileCache.get(key) === promise) {
         if (tile) {
             contourTileCache.set(key, tile);
@@ -10072,7 +10208,8 @@ async function renderWeather() {
     const z =
         getDataZoom();
 
-
+    if (!await spcoaEnsureCurrentMetadata('scalar',activeField)) return;
+    if (generation !== scalarRenderGeneration) return;
     spcoaSetChangeNotice('');
 
     await preloadScalarTiles(
@@ -10995,6 +11132,8 @@ async function renderVectorField(
     field,
     generation
 ) {
+    if (!await spcoaEnsureCurrentMetadata('vector',field)) return;
+    if (generation !== vectorRenderGeneration) return;
 
     const z =
         getDataZoom();
@@ -12385,6 +12524,8 @@ async function renderContourField(
     generation,
     acceptedLabels
 ) {
+    if (!await spcoaEnsureCurrentMetadata('contour',field)) return;
+    if (generation !== contourRenderGeneration) return;
 
     const metadata =
         contourMetadata[field];
