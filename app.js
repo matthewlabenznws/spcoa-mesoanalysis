@@ -1121,9 +1121,13 @@ const SPCOA_CHANGE_COLOR_MAX = Object.freeze({
     hght_500mb: Object.freeze({3:8, 6:12, 12:20, 24:32})
 });
 const SPCOA_CHANGE_NEUTRAL_LIMIT = 1;
-// V98: visual smoothing applies ONLY to change-field shaded weather canvases.
-// Underlying physical differences, contour levels and sampling remain unchanged.
-const SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX = 2.8;
+// V99: smooth change-field NUMERICAL values with a spatial Gaussian, matching
+// the final-field smoothing methodology of the Q-vector divergence backend.
+// Q-vector divergence uses a 50 km final diagnostic sigma after its separate
+// 100 km input-field preparation; change fields need only the final-value pass.
+// This is a display-only fill treatment. Stored tiles and contour fields stay
+// in their original units and are not changed or blurred as painted RGB pixels.
+const SPCOA_CHANGE_FILL_GAUSSIAN_SIGMA_KM = 50;
 // Computed lazily: QDIV_COLORS is declared later in the file.
 function spcoaChangeLegendColors(sourceColors) {
     return sourceColors.map((color, index) => index === 9 ? '#ffffff' : color);
@@ -9756,6 +9760,85 @@ function spcoaSetChangeNotice(_message) {
 }
 
 /* =========================================================================================
+   V99: Q-VECTOR-STYLE NUMERICAL GAUSSIAN FOR CHANGE FILLS
+
+   Q-vector forcing in the Python backend is Gaussian-smoothed in physical
+   distance before its palette is applied. The change products are already
+   numerical differences from the archived tiles, so smooth *those differences*
+   (not their blue/red RGB pixels), then apply the unchanged palette.
+
+   A coarse screen-spaced mesh keeps the CPU cost practical at large map sizes;
+   the Gaussian sigma is still in kilometers, never a fixed CSS blur radius.
+   Every final pixel is masked using the original source value so this pass
+   cannot invent filled coverage outside available HRRR numerical tiles.
+   Contours remain on the original change values, unchanged by this display pass.
+   ========================================================================================= */
+function spcoaPrepareGaussianChangeFill(field, z, width, height, mapping, encoding) {
+    if (!SPCOA_CHANGE_FIELDS[field]) return null;
+    const latitude = Number(map.getCenter().lat);
+    const zoom = Number(map.getZoom());
+    const cosineLatitude = Math.max(0.15, Math.abs(Math.cos(latitude * Math.PI / 180)));
+    const metresPerScreenPixel = 156543.03392804097 * cosineLatitude / Math.pow(2, zoom);
+    if (!(metresPerScreenPixel > 0) || !Number.isFinite(metresPerScreenPixel)) return null;
+
+    const sigmaScreenPixels = 1000 * SPCOA_CHANGE_FILL_GAUSSIAN_SIGMA_KM / metresPerScreenPixel;
+    // About 4-5 samples per Gaussian sigma without over-sampling an already
+    // smoothed synoptic-scale field. Cap spacing to protect map edges at high zoom.
+    const step = Math.max(2, Math.min(12, Math.ceil(sigmaScreenPixels / 4.5)));
+    const columns = Math.ceil(width / step) + 1;
+    const rows = Math.ceil(height / step) + 1;
+    const sampled = new Float32Array(columns * rows);
+    sampled.fill(NaN);
+
+    for (let row = 0; row < rows; row++) {
+        const sy = Math.min(height - 0.5, row * step + 0.5);
+        for (let column = 0; column < columns; column++) {
+            const sx = Math.min(width - 0.5, column * step + 0.5);
+            const raw = mapping
+                ? sampleScalarGlobalPixelsFast(field, z,
+                    mapping.startX + sx * mapping.step,
+                    mapping.startY + sy * mapping.step,
+                    encoding, false)
+                : (() => {
+                    const ll = map.unproject([sx, sy]);
+                    return sampleScalar(field, ll.lng, ll.lat, z, false);
+                })();
+            if (Number.isFinite(raw)) sampled[row * columns + column] = raw;
+        }
+    }
+
+    const sigmaGridCells = sigmaScreenPixels / step;
+    return {
+        values: smoothContourGrid(sampled, columns, rows, sigmaGridCells),
+        columns, rows, step
+    };
+}
+
+function spcoaSampleGaussianChangeFill(prepared, x, y, fallback) {
+    if (!prepared || !Number.isFinite(fallback)) return fallback;
+    const { values, columns, rows, step } = prepared;
+    // The sampled mesh is anchored to pixel centers at 0.5, not pixel edges.
+    const gx = Math.max(0, Math.min(columns - 1, x / step));
+    const gy = Math.max(0, Math.min(rows - 1, y / step));
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const x1 = Math.min(columns - 1, x0 + 1);
+    const y1 = Math.min(rows - 1, y0 + 1);
+    const fx = gx - x0, fy = gy - y0;
+    // Avoid allocating 5 small arrays for every output pixel. Maps can contain
+    // millions of pixels, so interpolate directly with four scalar weights.
+    const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy);
+    const w01 = (1 - fx) * fy, w11 = fx * fy;
+    const v00 = values[y0 * columns + x0], v10 = values[y0 * columns + x1];
+    const v01 = values[y1 * columns + x0], v11 = values[y1 * columns + x1];
+    let weighted = 0, total = 0;
+    if (Number.isFinite(v00) && w00 > 0) { weighted += v00 * w00; total += w00; }
+    if (Number.isFinite(v10) && w10 > 0) { weighted += v10 * w10; total += w10; }
+    if (Number.isFinite(v01) && w01 > 0) { weighted += v01 * w01; total += w01; }
+    if (Number.isFinite(v11) && w11 > 0) { weighted += v11 * w11; total += w11; }
+    return total > 0 ? weighted / total : fallback;
+}
+
+/* =========================================================================================
    WEATHER RENDERER
    ========================================================================================= */
 
@@ -9979,6 +10062,15 @@ async function renderWeather() {
 
     const fastMapping = getFlatMapTileCoordinates(width, height, z);
     const fastEncoding = getEncoding(fieldMetadata[activeField]);
+    let gaussianChangeFill = null;
+    if (SPCOA_CHANGE_FIELDS[activeField]) {
+        try {
+            gaussianChangeFill = spcoaPrepareGaussianChangeFill(
+                activeField, z, width, height, fastMapping, fastEncoding);
+        } catch (error) {
+            console.warn('SPCOA change fill: numerical Gaussian smoothing unavailable; showing original field.', error);
+        }
+    }
 
     // Satellite-only transparency: very pale low-end bins of composite fields
     // (STP/SCP/SRH/EHI) and the existing pale low-end wind bins reveal imagery.
@@ -10046,7 +10138,7 @@ async function renderWeather() {
                 renderScale;
 
 
-            const value = fastMapping
+            const rawValue = fastMapping
                 ? sampleScalarGlobalPixelsFast(
                     activeField, z,
                     fastMapping.startX + screenX * fastMapping.step,
@@ -10056,6 +10148,8 @@ async function renderWeather() {
                     const ll = map.unproject([screenX, screenY]);
                     return sampleScalar(activeField, ll.lng, ll.lat, z, false);
                 })();
+            const value = spcoaSampleGaussianChangeFill(
+                gaussianChangeFill, screenX, screenY, rawValue);
 
 
             const color =
@@ -10214,42 +10308,21 @@ async function renderWeather() {
     );
 
 
-    if (SPCOA_CHANGE_FIELDS[activeField] && SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX > 0) {
-        const smoothCanvas = document.createElement("canvas");
-        smoothCanvas.width = renderWidth;
-        smoothCanvas.height = renderHeight;
-        const smoothCtx = smoothCanvas.getContext("2d");
-        smoothCtx.filter = `blur(${SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX}px)`;
-        smoothCtx.drawImage(offscreen, 0, 0);
-        smoothCtx.filter = "none";
-        weatherCtx.drawImage(
+    // The change fill has already been Gaussian-smoothed in physical values.
+    // Drawing straight onto the output canvas avoids any RGB/alpha blurring.
+    weatherCtx.drawImage(
 
-            smoothCanvas,
+        offscreen,
 
-            0,
+        0,
 
-            0,
+        0,
 
-            width,
+        width,
 
-            height
+        height
 
-        );
-    } else {
-        weatherCtx.drawImage(
-
-            offscreen,
-
-            0,
-
-            0,
-
-            width,
-
-            height
-
-        );
-    }
+    );
 
     if (perfStart) {
         console.info(`[SPCOA performance] ${activeField}: tiles=${(tilesReadyAt - perfStart).toFixed(0)}ms, ` +
