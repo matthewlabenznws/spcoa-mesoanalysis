@@ -1,3 +1,9 @@
+/* V96 SCOPE FIX — 2026-11-03
+   Restores rendering in the multi-panel map iframe: helper functions defined
+   outside the child block now receive activeField, activeOverlays, and the
+   Q-vector divergence palette from their child-scope callers.
+   Preserves V95 map diagnostics and the V94 25-hour Python archive.
+*/
 /* V75: optional Skew-T level sampling ON/OFF; V74 loading fix, V72 zoom/pan,
    V73 six-field inspector, V69-V70 tornado layout/diagnostics preserved. */
 /* V72: interactive Skew-T cursor-centered zoom, drag-to-pan, and expanded native-HRRR level inspection. V69-V71 preserved. */
@@ -1116,8 +1122,8 @@ const SPCOA_CHANGE_COLOR_MAX = Object.freeze({
 });
 const SPCOA_CHANGE_NEUTRAL_LIMIT = 1;
 // Computed lazily: QDIV_COLORS is declared later in the file.
-function spcoaChangeLegendColors() {
-    return QDIV_COLORS.map((color, index) => index === 9 ? '#ffffff' : color);
+function spcoaChangeLegendColors(sourceColors) {
+    return sourceColors.map((color, index) => index === 9 ? '#ffffff' : color);
 }
 /* V95: a HTML/CSS-backed change legend independent of tile availability.
    Still draw the original canvas for exports; show this strip on the website.
@@ -1153,19 +1159,19 @@ function spcoaShowChangeLegendStrip(colors, bounds) {
 function spcoaChangeColorMax(def) {
     return SPCOA_CHANGE_COLOR_MAX[def.sourceField]?.[def.hours] || 20;
 }
-function spcoaChangeColorBounds(def) {
+function spcoaChangeColorBounds(def, sourceBounds) {
     const cap = spcoaChangeColorMax(def);
     // QDIV_BOUNDS contains -50..-5, +5..+50, with the central gap at index 9.
     // Map that gap to a FIXED -1..+1 while retaining 19 proportional bins.
-    return QDIV_BOUNDS.map(v => v < 0
+    return sourceBounds.map(v => v < 0
         ? -SPCOA_CHANGE_NEUTRAL_LIMIT - ((-v - 5) / 45) * (cap - SPCOA_CHANGE_NEUTRAL_LIMIT)
         : SPCOA_CHANGE_NEUTRAL_LIMIT + ((v - 5) / 45) * (cap - SPCOA_CHANGE_NEUTRAL_LIMIT));
 }
-function spcoaSelectedChangeContourField() {
-    const def = SPCOA_CHANGE_FIELDS[activeField];
+function spcoaSelectedChangeContourField(selectedField, selectedOverlays) {
+    const def = SPCOA_CHANGE_FIELDS[selectedField];
     if (!def) return null;
     const config = SPCOA_CHANGE_CONTOUR_CONTROLS.find(c => c.sourceChangeField === def.field);
-    return config && activeOverlays[config.stateKey] ? `${def.field}_contours` : null;
+    return config && selectedOverlays[config.stateKey] ? `${def.field}_contours` : null;
 }
 
 
@@ -7273,7 +7279,7 @@ function selectedProductKeys() {
         ...FRONTOGENESIS_CONTOUR_OVERLAYS,
         ...THERMODYNAMIC_CONTOUR_OVERLAYS
     ].filter(c => !c.changeControl && activeOverlays[c.stateKey]).map(c => c.field);
-    const selectedChangeContour = spcoaSelectedChangeContourField();
+    const selectedChangeContour = spcoaSelectedChangeContourField(activeField, activeOverlays);
     if (selectedChangeContour) contours.push(selectedChangeContour);
     if (activeOverlays.mslp) contours.push("sfc_mslp");
     if (activeOverlays.dcape) contours.push("dcape");
@@ -9816,7 +9822,7 @@ async function renderWeather() {
 
     if (SPCOA_CHANGE_FIELDS[activeField]) {
         const def = SPCOA_CHANGE_FIELDS[activeField];
-        spcoaSetChangeNotice(`V95 · Loading ${def.hours}h ${def.sourceField} numerical tiles for ${currentRun} ` +
+        spcoaSetChangeNotice(`V96 · Loading ${def.hours}h ${def.sourceField} numerical tiles for ${currentRun} ` +
             `and ${spcoaPreviousRunId(currentRun, def.hours)}…`);
     } else {
         spcoaSetChangeNotice('');
@@ -9882,24 +9888,24 @@ async function renderWeather() {
         if (statusElement) statusElement.textContent = issue
             ? `Change unavailable: ${issue}` : `Change loaded: ${availableTiles} tiles`;
         if (issue) {
-            spcoaSetChangeNotice(`V95 · Change unavailable: ${issue}. Check browser Network requests for ` +
+            spcoaSetChangeNotice(`V96 · Change unavailable: ${issue}. Check browser Network requests for ` +
                 `the current and reference ${def.sourceField} overlay .bin files.`);
         } else if (stats && Number.isFinite(stats.minDelta) && Number.isFinite(stats.maxDelta)) {
             const lo = stats.minDelta.toFixed(2), hi = stats.maxDelta.toFixed(2);
             const neutralPct = stats.validPoints ? Math.round(stats.neutralPoints * 100 / stats.validPoints) : 0;
             if (!stats.changedPoints) {
-                spcoaSetChangeNotice(`V95 · Paired numerical tiles are IDENTICAL (${def.hours}h): ` +
+                spcoaSetChangeNotice(`V96 · Paired numerical tiles are IDENTICAL (${def.hours}h): ` +
                     `both runs encode the same values. Verify archived backend outputs. Range ${lo} to ${hi} ${def.units}.`);
             } else if (neutralPct >= 99) {
-                spcoaSetChangeNotice(`V95 · Data loaded but ${neutralPct}% of cells are within the ` +
+                spcoaSetChangeNotice(`V96 · Data loaded but ${neutralPct}% of cells are within the ` +
                     `white neutral interval (−1 to +1 ${def.units}). Δ range: ${lo} to +${hi} ${def.units}.`);
             } else {
                 // Short status is intentionally persistent so users can confirm real differences.
-                spcoaSetChangeNotice(`V95 · Change loaded: ${availableTiles} tiles, ` +
+                spcoaSetChangeNotice(`V96 · Change loaded: ${availableTiles} tiles, ` +
                     `Δ ${lo} to ${hi} ${def.units} · ${neutralPct}% neutral`);
             }
         } else {
-            spcoaSetChangeNotice(`V95 · Change data not yet decoded. Check browser console for any exceptions.`);
+            spcoaSetChangeNotice(`V96 · Change data not yet decoded. Check browser console for any exceptions.`);
         }
         updateLegend();
     } else {
@@ -13016,7 +13022,7 @@ async function renderContours() {
             fields.push(config.field);
         }
     }
-    const changeContour = spcoaSelectedChangeContourField();
+    const changeContour = spcoaSelectedChangeContourField(activeField, activeOverlays);
     if (changeContour) fields.push(changeContour);
 
     if (fields.length === 0) {
@@ -14592,7 +14598,7 @@ function updateLegend() {
     if (field.type === "spcoa_change") {
         // V95 marker also identifies the VERSION LOADED IN THE MAP IFRAME.
         // The host sidebar can cache separately from its map iframe.
-        legendTitle.textContent += " · V95";
+        legendTitle.textContent += " · V96";
         const issue = spcoaChangeIssueText(currentRun, activeField);
         if (issue) legendTitle.title = issue;
     }
@@ -14603,16 +14609,16 @@ function updateLegend() {
     if (field.type === "spcoa_change") {
         // V94: repaint the full physical-value colorbar independently of S3
         // success. The fixed -1..+1 white interval is accurately positioned.
-        const bounds = spcoaChangeColorBounds(field);
+        const bounds = spcoaChangeColorBounds(field, QDIV_BOUNDS);
         const cap = spcoaChangeColorMax(field);
-        const colors = spcoaChangeLegendColors();
+        const colors = spcoaChangeLegendColors(QDIV_COLORS);
         // CSS-backed bar is visible even if legend canvas repaints late/incorrectly.
         spcoaShowChangeLegendStrip(colors, bounds);
         try {
             drawProportionalColorLegend(colors, bounds);
             renderProportionalLegendLabels([-cap, -cap/2, -1, 0, 1, cap/2, cap], bounds);
         } catch (error) {
-            console.error('V95 change legend rendering failed:', error);
+            console.error('V96 change legend rendering failed:', error);
         }
     }
     if (field.type === "q_vector_divergence") {
@@ -14895,7 +14901,7 @@ function getActiveContourSamples() {
     for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
         if (!config.changeControl) add(activeOverlays[config.stateKey], config.field);
     }
-    const changeContour = spcoaSelectedChangeContourField();
+    const changeContour = spcoaSelectedChangeContourField(activeField, activeOverlays);
     if (changeContour) add(true, changeContour);
 
     for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
