@@ -1121,6 +1121,7 @@ const SPCOA_CHANGE_COLOR_MAX = Object.freeze({
     hght_500mb: Object.freeze({3:8, 6:12, 12:20, 24:32})
 });
 const SPCOA_CHANGE_NEUTRAL_LIMIT = 1;
+const SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX = 0.7;
 // Computed lazily: QDIV_COLORS is declared later in the file.
 function spcoaChangeLegendColors(sourceColors) {
     return sourceColors.map((color, index) => index === 9 ? '#ffffff' : color);
@@ -9887,26 +9888,7 @@ async function renderWeather() {
         const issue = spcoaChangeIssueText(currentRun, activeField);
         if (statusElement) statusElement.textContent = issue
             ? `Change unavailable: ${issue}` : `Change loaded: ${availableTiles} tiles`;
-        if (issue) {
-            spcoaSetChangeNotice(`V96 · Change unavailable: ${issue}. Check browser Network requests for ` +
-                `the current and reference ${def.sourceField} overlay .bin files.`);
-        } else if (stats && Number.isFinite(stats.minDelta) && Number.isFinite(stats.maxDelta)) {
-            const lo = stats.minDelta.toFixed(2), hi = stats.maxDelta.toFixed(2);
-            const neutralPct = stats.validPoints ? Math.round(stats.neutralPoints * 100 / stats.validPoints) : 0;
-            if (!stats.changedPoints) {
-                spcoaSetChangeNotice(`V96 · Paired numerical tiles are IDENTICAL (${def.hours}h): ` +
-                    `both runs encode the same values. Verify archived backend outputs. Range ${lo} to ${hi} ${def.units}.`);
-            } else if (neutralPct >= 99) {
-                spcoaSetChangeNotice(`V96 · Data loaded but ${neutralPct}% of cells are within the ` +
-                    `white neutral interval (−1 to +1 ${def.units}). Δ range: ${lo} to +${hi} ${def.units}.`);
-            } else {
-                // Short status is intentionally persistent so users can confirm real differences.
-                spcoaSetChangeNotice(`V96 · Change loaded: ${availableTiles} tiles, ` +
-                    `Δ ${lo} to ${hi} ${def.units} · ${neutralPct}% neutral`);
-            }
-        } else {
-            spcoaSetChangeNotice(`V96 · Change data not yet decoded. Check browser console for any exceptions.`);
-        }
+        spcoaSetChangeNotice('');
         updateLegend();
     } else {
         spcoaSetChangeNotice('');
@@ -10249,19 +10231,42 @@ async function renderWeather() {
     );
 
 
-    weatherCtx.drawImage(
+    if (SPCOA_CHANGE_FIELDS[activeField] && SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX > 0) {
+        const smoothCanvas = document.createElement("canvas");
+        smoothCanvas.width = renderWidth;
+        smoothCanvas.height = renderHeight;
+        const smoothCtx = smoothCanvas.getContext("2d");
+        smoothCtx.filter = `blur(${SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX}px)`;
+        smoothCtx.drawImage(offscreen, 0, 0);
+        smoothCtx.filter = "none";
+        weatherCtx.drawImage(
 
-        offscreen,
+            smoothCanvas,
 
-        0,
+            0,
 
-        0,
+            0,
 
-        width,
+            width,
 
-        height
+            height
 
-    );
+        );
+    } else {
+        weatherCtx.drawImage(
+
+            offscreen,
+
+            0,
+
+            0,
+
+            width,
+
+            height
+
+        );
+    }
 
     if (perfStart) {
         console.info(`[SPCOA performance] ${activeField}: tiles=${(tilesReadyAt - perfStart).toFixed(0)}ms, ` +
@@ -14596,11 +14601,8 @@ function updateLegend() {
             ? `${field.name} (${field.units})`
             : field.name;
     if (field.type === "spcoa_change") {
-        // V95 marker also identifies the VERSION LOADED IN THE MAP IFRAME.
-        // The host sidebar can cache separately from its map iframe.
-        legendTitle.textContent += " · V96";
         const issue = spcoaChangeIssueText(currentRun, activeField);
-        if (issue) legendTitle.title = issue;
+        legendTitle.title = issue || "";
     }
 
     // Restore the normal colorbar for every other product.
@@ -14616,9 +14618,9 @@ function updateLegend() {
         spcoaShowChangeLegendStrip(colors, bounds);
         try {
             drawProportionalColorLegend(colors, bounds);
-            renderProportionalLegendLabels([-cap, -cap/2, -1, 0, 1, cap/2, cap], bounds);
+            renderProportionalLegendLabels([-cap, -cap/2, 0, cap/2, cap], bounds);
         } catch (error) {
-            console.error('V96 change legend rendering failed:', error);
+            console.error('V97 change legend rendering failed:', error);
         }
     }
     if (field.type === "q_vector_divergence") {
