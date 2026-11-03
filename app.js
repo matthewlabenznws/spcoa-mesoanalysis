@@ -1121,7 +1121,9 @@ const SPCOA_CHANGE_COLOR_MAX = Object.freeze({
     hght_500mb: Object.freeze({3:8, 6:12, 12:20, 24:32})
 });
 const SPCOA_CHANGE_NEUTRAL_LIMIT = 1;
-const SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX = 0.7;
+// V98: visual smoothing applies ONLY to change-field shaded weather canvases.
+// Underlying physical differences, contour levels and sampling remain unchanged.
+const SPCOA_CHANGE_FILL_VISUAL_SMOOTHING_PX = 2.8;
 // Computed lazily: QDIV_COLORS is declared later in the file.
 function spcoaChangeLegendColors(sourceColors) {
     return sourceColors.map((color, index) => index === 9 ? '#ffffff' : color);
@@ -1168,11 +1170,12 @@ function spcoaChangeColorBounds(def, sourceBounds) {
         ? -SPCOA_CHANGE_NEUTRAL_LIMIT - ((-v - 5) / 45) * (cap - SPCOA_CHANGE_NEUTRAL_LIMIT)
         : SPCOA_CHANGE_NEUTRAL_LIMIT + ((v - 5) / 45) * (cap - SPCOA_CHANGE_NEUTRAL_LIMIT));
 }
-function spcoaSelectedChangeContourField(selectedField, selectedOverlays) {
-    const def = SPCOA_CHANGE_FIELDS[selectedField];
-    if (!def) return null;
-    const config = SPCOA_CHANGE_CONTOUR_CONTROLS.find(c => c.sourceChangeField === def.field);
-    return config && selectedOverlays[config.stateKey] ? `${def.field}_contours` : null;
+// V98: every change contour checkbox is independent of the active scalar fill.
+// Enables contour-only maps and independently selectable periods.
+function spcoaActiveChangeContourFields(selectedOverlays) {
+    return SPCOA_CHANGE_CONTOUR_CONTROLS
+        .filter(config => selectedOverlays[config.stateKey] === true)
+        .map(config => config.field);
 }
 
 
@@ -5935,9 +5938,7 @@ function getActiveLayerDescriptions() {
             field: config.field,
             stateKey: config.stateKey
         })),
-        ...THERMODYNAMIC_CONTOUR_OVERLAYS.filter(config =>
-            !config.changeControl || config.sourceChangeField === activeField
-        ).map(config => ({
+        ...THERMODYNAMIC_CONTOUR_OVERLAYS.map(config => ({
             field: config.field,
             stateKey: config.stateKey
         }))
@@ -7280,8 +7281,7 @@ function selectedProductKeys() {
         ...FRONTOGENESIS_CONTOUR_OVERLAYS,
         ...THERMODYNAMIC_CONTOUR_OVERLAYS
     ].filter(c => !c.changeControl && activeOverlays[c.stateKey]).map(c => c.field);
-    const selectedChangeContour = spcoaSelectedChangeContourField(activeField, activeOverlays);
-    if (selectedChangeContour) contours.push(selectedChangeContour);
+    contours.push(...spcoaActiveChangeContourFields(activeOverlays));
     if (activeOverlays.mslp) contours.push("sfc_mslp");
     if (activeOverlays.dcape) contours.push("dcape");
     if (activeOverlays.warmCloudDepth) contours.push("warm_cloud_depth");
@@ -9748,22 +9748,11 @@ function sampleScalarGlobalPixelsFast(field, z, gx, gy, encoding, contour = fals
 
 /* V94: show any actual missing-data reason directly in the map region.
    A blank satellite background is not a valid indication of a zero change. */
-function spcoaSetChangeNotice(message) {
-    if (!mapWrapper) return;
-    let node = document.getElementById('spcoa-change-data-notice');
-    if (!node) {
-        node = document.createElement('div');
-        node.id = 'spcoa-change-data-notice';
-        node.setAttribute('role', 'status');
-        node.style.cssText = 'position:absolute;top:46px;left:50%;transform:translateX(-50%);' +
-            'max-width:min(650px,85%);padding:8px 12px;border-radius:6px;' +
-            'background:rgba(25,35,52,.95);color:#fff;border:1px solid #ffcd69;' +
-            'font:12px Arial,sans-serif;line-height:1.4;z-index:1000;pointer-events:none;' +
-            'text-align:center;overflow-wrap:anywhere;';
-        mapWrapper.appendChild(node);
-    }
-    node.textContent = message || '';
-    node.style.display = message ? 'block' : 'none';
+function spcoaSetChangeNotice(_message) {
+    // V98: no persistent diagnostic banner on the map. Errors still go to
+    // Console and the existing status line, preserving troubleshooting access.
+    const existing = document.getElementById('spcoa-change-data-notice');
+    if (existing) existing.remove();
 }
 
 /* =========================================================================================
@@ -9821,13 +9810,7 @@ async function renderWeather() {
         getDataZoom();
 
 
-    if (SPCOA_CHANGE_FIELDS[activeField]) {
-        const def = SPCOA_CHANGE_FIELDS[activeField];
-        spcoaSetChangeNotice(`V96 · Loading ${def.hours}h ${def.sourceField} numerical tiles for ${currentRun} ` +
-            `and ${spcoaPreviousRunId(currentRun, def.hours)}…`);
-    } else {
-        spcoaSetChangeNotice('');
-    }
+    spcoaSetChangeNotice('');
 
     await preloadScalarTiles(
 
@@ -13027,8 +13010,7 @@ async function renderContours() {
             fields.push(config.field);
         }
     }
-    const changeContour = spcoaSelectedChangeContourField(activeField, activeOverlays);
-    if (changeContour) fields.push(changeContour);
+    fields.push(...spcoaActiveChangeContourFields(activeOverlays));
 
     if (fields.length === 0) {
         return;
@@ -14903,8 +14885,9 @@ function getActiveContourSamples() {
     for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
         if (!config.changeControl) add(activeOverlays[config.stateKey], config.field);
     }
-    const changeContour = spcoaSelectedChangeContourField(activeField, activeOverlays);
-    if (changeContour) add(true, changeContour);
+    for (const changeContour of spcoaActiveChangeContourFields(activeOverlays)) {
+        add(true, changeContour);
+    }
 
     for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
         add(activeOverlays[config.stateKey], config.field);
