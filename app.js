@@ -19249,6 +19249,17 @@ async function spcoaSndFetchNativeOmega(run,profile){
     }
     return omega;
 }
+// V87: identical Pa/s scale for upward and downward motion. The 90th
+// percentile avoids one extreme value compressing all other visible bars.
+// Scale is fixed per profile, not per zoomed viewport. Zero/invalid values
+// are ignored; 0.25 Pa/s is a stable minimum reference scale.
+function spcoaSndOmegaScale(values){
+    if(!Array.isArray(values))return 0.25;
+    const magnitudes=values.filter(v=>typeof v==='number'&&Number.isFinite(v))
+        .map(v=>Math.abs(v)).sort((a,b)=>a-b);
+    if(!magnitudes.length)return 0.25;
+    return Math.max(0.25,magnitudes[Math.floor(0.9*(magnitudes.length-1))]);
+}
 async function spcoaSndLoadOmega(run,profile,serial){
     const stillCurrent=()=>serial===SPCOA_SOUNDING.serial && run===currentRun &&
         SPCOA_SOUNDING.current?.profile===profile;
@@ -19266,7 +19277,7 @@ async function spcoaSndLoadOmega(run,profile,serial){
             return;
         }
         profile.omega_pa_s=values;
-        spcoaSndOmegaStatus(`Omega: loaded (${valid} native levels)`,'loaded');
+        spcoaSndOmegaStatus(`Omega: loaded (${valid} native levels); bar scale ±${spcoaSndOmegaScale(values).toFixed(2)} Pa/s`,'loaded');
         spcoaSndRender();
     }catch(error){
         if(!stillCurrent())return;
@@ -19844,38 +19855,52 @@ function spcoaSndSkew(canvas,current,previous,diagnostic) {
         }
     }
 
-    // V76: omega is drawn ONLY from the native HRRR VVEL sidecar, not inferred.
-    // Preserve the original magenta-only style and separate left gutter.
-    // Negative omega (rising air) extends RIGHT; positive (subsidence) LEFT.
-    // Wider, 1.5px strokes make genuine values perceptible without filling it.
+    // V88: native-HRRR omega (Pa/s), with ascent in PURPLE and descent in BLUE.
+    // Meteorological sign convention: positive omega = subsidence (LEFT, blue),
+    // negative omega = ascent (RIGHT, purple). Never infer missing values as 0.
+    // A single symmetric 90th-percentile scale keeps both signs comparable;
+    // use the FULL profile so zoom/pan do not change the bar-length scale.
     ctx.save();
-    const omegaLeft=3, omegaRight=37, omegaZeroX=19;
-    ctx.fillStyle='#020305';ctx.fillRect(omegaLeft,T,omegaRight-omegaLeft,B-T);
-    ctx.strokeStyle='#596068';ctx.lineWidth=.8;
+    const omegaLeft=3, omegaRight=43, omegaZeroX=22;
+    const omegaMaxPx=Math.min(omegaZeroX-omegaLeft-2,omegaRight-omegaZeroX-2);
+    const omegaScalePaS=spcoaSndOmegaScale(Array.isArray(current)?current.map(a=>a.omega):[]);
+    ctx.fillStyle='#020609';ctx.fillRect(omegaLeft,T,omegaRight-omegaLeft,B-T);
+    ctx.strokeStyle='#60707d';ctx.lineWidth=.8;
     ctx.beginPath();ctx.moveTo(omegaLeft+.5,T);ctx.lineTo(omegaLeft+.5,B);
     ctx.moveTo(omegaRight+.5,T);ctx.lineTo(omegaRight+.5,B);ctx.stroke();
-    ctx.beginPath();ctx.rect(omegaLeft+1,T,omegaRight-omegaLeft-2,B-T);ctx.clip();
-    ctx.strokeStyle='#ba289b';ctx.lineWidth=1.1;
-    ctx.beginPath();ctx.moveTo(omegaZeroX,T);ctx.lineTo(omegaZeroX,B);ctx.stroke();
+    // Zero/reference line is neutral; color belongs to the sign of the data.
+    ctx.strokeStyle='#8995a1';ctx.lineWidth=1.0;
+    ctx.beginPath();ctx.moveTo(omegaZeroX+.5,T);ctx.lineTo(omegaZeroX+.5,B);ctx.stroke();
+    ctx.save();ctx.beginPath();ctx.rect(omegaLeft+1,T,omegaRight-omegaLeft-2,B-T);ctx.clip();
     if(Array.isArray(current)) {
         let lastTickY=-Infinity;
+        ctx.lineCap='round';
         for(const a of current){
             if(!Number.isFinite(a.omega)||!Number.isFinite(a.p)||
                a.p<top||a.p>bottom)continue;
             const yy=y(a.p);
-            // Profiles are surface-to-top: y pixels DECREASE upward.
-            // Use absolute separation or every tick above the first vanishes.
+            if(!Number.isFinite(yy)||yy<T||yy>B)continue;
+            // Native hybrid levels can be tightly packed at low altitudes.
+            // Keep a thin separation between bars, regardless of sign.
             if(Math.abs(yy-lastTickY)<2.5)continue;
-            const microbarPerSecond=a.omega*10; // Pa/s to μbar/s
-            if(Math.abs(microbarPerSecond)<0.08)continue;
-            const tick=clamp(Math.abs(microbarPerSecond)*1.7,1.8,13);
+            if(Math.abs(a.omega)<0.02)continue; // suppress near-zero noise
+            const tick=clamp(Math.abs(a.omega)/omegaScalePaS*omegaMaxPx,1.25,omegaMaxPx);
             const direction=a.omega<0?1:-1;
-            ctx.strokeStyle='#ed48b5';ctx.lineWidth=1.5;
+            ctx.strokeStyle=a.omega<0?'#b65bd5':'#54bdf9';
+            ctx.lineWidth=2.1;
             ctx.beginPath();ctx.moveTo(omegaZeroX,yy);
             ctx.lineTo(omegaZeroX+direction*tick,yy);ctx.stroke();
             lastTickY=yy;
         }
     }
+    ctx.restore();
+    // Compact sign legend; the scale is also reported in the omega status row.
+    ctx.font='bold 9px '+fontMono;ctx.textAlign='center';
+    ctx.fillStyle='#c3ced7';ctx.fillText('ω',omegaZeroX,T-15);
+    ctx.fillStyle='#54bdf9';ctx.fillText('+↓',(omegaLeft+omegaZeroX)/2,T-3);
+    ctx.fillStyle='#b65bd5';ctx.fillText('−↑',(omegaZeroX+omegaRight)/2,T-3);
+    ctx.fillStyle='#a8b7c4';ctx.font='8px '+fontMono;
+    ctx.fillText('Pa/s',omegaZeroX,B+13);
     ctx.restore();
 
     // V53: move the shaft, every barb and the charcoal gutter together
