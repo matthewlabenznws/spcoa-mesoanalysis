@@ -915,12 +915,20 @@ spcoaInstallCategorizedContourControls();
 const SPCOA_BASEMAP_STORAGE_KEY = "spcoa_map_background_v1";
 const SPCOA_BASEMAP_PLAIN = "plain";
 const SPCOA_BASEMAP_SATELLITE = "satellite";
+// V116: The host sends the actual selected mode to each iframe. A child may
+// otherwise read a stale/partitioned localStorage value and draw white neutral
+// bins even while the parent selector says Satellite.
+let spcoaMapBackgroundOverride = null;
 // Defined in the shared scope: the parent dropdown and child maps both need it.
 const SPCOA_MAPBOX_PUBLIC_TOKEN = String(
     window.SPCOA_MAPBOX_PUBLIC_TOKEN || "pk.eyJ1IjoibWF0dGhld2xhYmVuejciLCJhIjoiY21zbjhxZ3ZkMXBoNDJ3cHl5eG5uNzlpZCJ9.UBy4k84SejJzzu2VF0TtcA"
 ).trim();
 
 function spcoaReadMapBackground() {
+    if (spcoaMapBackgroundOverride === SPCOA_BASEMAP_SATELLITE ||
+        spcoaMapBackgroundOverride === SPCOA_BASEMAP_PLAIN) {
+        return spcoaMapBackgroundOverride;
+    }
     try {
         const choice = localStorage.getItem(SPCOA_BASEMAP_STORAGE_KEY);
         // Preserve the previous satellite selection when upgrading from V24.
@@ -1000,7 +1008,7 @@ function spcoaInstallMapBackgroundSelector() {
             document.querySelectorAll("iframe").forEach(frame => {
                 try {
                     frame.contentWindow?.postMessage(
-                        { type: "spcoa-basemap-sync" }, window.location.origin
+                        { type: "spcoa-basemap-sync", choice }, window.location.origin
                     );
                 } catch (error) {
                     console.warn("Could not notify map panel about background change", error);
@@ -1064,10 +1072,11 @@ const SPCOA_CHANGE_CONTOUR_FIELDS = Object.freeze(Object.fromEntries(
         }];
     })
 ));
-/* V92: Keep the original Q-vector divergence blue/red bins, but give the
-   CHANGE fields a fixed, opaque white -1..+1 neutral interval (hPa or dam).
-   Preserve the per-duration extremes, spreading the colored bins over the
-   remaining range. The actual Q-vector divergence field is NOT modified. */
+/* V115: Keep the original Q-vector divergence blue/red bins and a fixed
+   -1..+1 neutral interval (hPa or dam) for CHANGE fields. As with Q-vector
+   divergence, the neutral interval is transparent over satellite imagery;
+   over the original Plain basemap it remains opaque white. Per-duration
+   extremes, underlying values and all contour fields are unchanged. */
 const SPCOA_CHANGE_COLOR_MAX = Object.freeze({
     sfc_mslp: Object.freeze({3:6, 6:10, 12:16, 24:24}),
     hght_500mb: Object.freeze({3:8, 6:12, 12:20, 24:32})
@@ -1081,8 +1090,12 @@ const SPCOA_CHANGE_NEUTRAL_LIMIT = 1;
 // in their original units and are not changed or blurred as painted RGB pixels.
 const SPCOA_CHANGE_FILL_GAUSSIAN_SIGMA_KM = 50;
 // Computed lazily: QDIV_COLORS is declared later in the file.
+// V115: Match Q-vector divergence's transparent neutral legend on Satellite,
+// while keeping the original opaque white band on the Plain background.
 function spcoaChangeLegendColors(sourceColors) {
-    return sourceColors.map((color, index) => index === 9 ? '#ffffff' : color);
+    const neutralColor = spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE
+        ? 'rgba(255,255,255,0)' : '#ffffff';
+    return sourceColors.map((color, index) => index === 9 ? neutralColor : color);
 }
 /* V95: a HTML/CSS-backed change legend independent of tile availability.
    Still draw the original canvas for exports; show this strip on the website.
@@ -2035,6 +2048,11 @@ if (!__MP_CHILD) {
                     }
                     try {
                         panels[i].frame.contentWindow.postMessage({ type: "mp-layout", count: layoutCount }, "*");
+                        // V116: explicit initial satellite mode after iframe starts.
+                        // Do not rely on cross-frame localStorage consistency.
+                        panels[i].frame.contentWindow.postMessage({
+                            type: "spcoa-basemap-sync", choice: spcoaReadMapBackground()
+                        }, window.location.origin);
                     } catch (_) {}
                 }
                 try { panels[i]?.frame?.contentWindow?.__mpRefreshSectorOptions?.(); } catch (_) {}
@@ -4017,13 +4035,16 @@ const WEATHER_FIELDS = {
 
 Object.assign(WEATHER_FIELDS, SPCOA_CHANGE_FIELDS);
 
-// The CHANGE fields use Q-vector divergence hues, but unlike Q-vector divergence
-// their FIXED -1..+1 neutral band is opaque white, not transparent.
-// Blue/red bins stretch from the neutral edges out to the per-period scale cap.
+// V116: CHANGE fields match Q-vector divergence's behavior at the SOURCE of
+// pixel color calculation: the fixed -1..+1 neutral interval returns no pixel
+// on Satellite, while remaining opaque white on Plain. This is more reliable
+// than painting white and trying to remove its alpha downstream.
+// The existing blue/red ranges, smoothing, contours, and numerical tiles stay.
 function spcoaChangeRgb(value, def) {
     if (!def || !Number.isFinite(value)) return null;
     if (Math.abs(value) <= SPCOA_CHANGE_NEUTRAL_LIMIT) {
-        return {r:255, g:255, b:255};
+        return spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE
+            ? null : {r:255, g:255, b:255};
     }
     const cap = spcoaChangeColorMax(def);
     const magnitude = Math.min(Math.abs(value), cap);
@@ -5043,6 +5064,9 @@ const hodographCtx = hodographCanvas.getContext("2d");
 
 weatherCanvas.style.zIndex =
     "2";
+// V116: a CSS background on the filled-field canvas would cover the Mapbox
+// raster even when every neutral pixel has zero alpha.
+weatherCanvas.style.background = "transparent";
 
 vectorCanvas.style.zIndex =
     "7";
@@ -6260,7 +6284,10 @@ function spcoaAddMapboxRasterBasemap(sourceId, tilesetId, opacity) {
                     // Mapbox Raster Tiles API: satellite/aerial images, NO labels or roads.
                     `https://api.mapbox.com/v4/${tilesetId}/{z}/{x}/{y}@2x.jpg90?access_token=${encodeURIComponent(SPCOA_MAPBOX_PUBLIC_TOKEN)}`
                 ],
-                tileSize: 512,
+                // Mapbox Raster Tiles API has a 256px *geographic* tile grid;
+                // @2x returns 512px images without changing that XYZ grid.
+                // tileSize:512 causes the wrong zoom/tile coordinates in MapLibre.
+                tileSize: 256,
                 maxzoom: 16,
                 attribution: '&copy; <a href="https://www.mapbox.com/about/maps/" target="_blank" rel="noopener noreferrer">Mapbox</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'
             });
@@ -6393,6 +6420,15 @@ window.addEventListener("storage", event => {
 window.addEventListener("message", event => {
     if (event.origin !== window.location.origin || !event.data) return;
     if (event.data.type === "spcoa-basemap-sync" && __MP_CHILD) {
+        const requested = event.data.choice;
+        const previous = spcoaReadMapBackground();
+        if (requested === SPCOA_BASEMAP_SATELLITE || requested === SPCOA_BASEMAP_PLAIN) {
+            spcoaMapBackgroundOverride = requested;
+            try { localStorage.setItem(SPCOA_BASEMAP_STORAGE_KEY, requested); } catch (_) {}
+        }
+        // If the host's choice differs from the child's old mode, force a
+        // numerical redraw even if a previous render-cache key matched.
+        if (previous !== spcoaReadMapBackground()) spcoaLastWhiteFillMode = previous === SPCOA_BASEMAP_SATELLITE;
         spcoaApplyMapBackground();
     } else if (event.data.type === "spcoa-basemap-status" && !__MP_CHILD) {
         spcoaMapBackgroundMessage(String(event.data.message || ""));
@@ -10341,15 +10377,13 @@ async function renderWeather() {
         }
     }
 
-    // Satellite-only transparency: very pale low-end bins of composite fields
-    // (STP/SCP/SRH/EHI) and the existing pale low-end wind bins reveal imagery.
-    // CAPE and all other fields preserve their original fills.  This changes
-    // pixel alpha only; color tables, numerical values, contours, and legends
-    // remain intact.
-    // Plain mode remains unchanged.
-    // Important: make this decision using the numerical bin, not a general
-    // RGB=white test: white can represent a valid high-value data category
-    // in other products and must not be indiscriminately removed.
+    // Satellite-only transparency: pale composite/wind bins and neutral
+    // temperature-advection/frontogenesis bins reveal imagery. V115 also
+    // reveals satellite imagery within the fixed -1..+1 neutral interval of
+    // MSLP and 500-mb height changes, matching Q-vector divergence's behavior.
+    // Numerical values, other colors, contour fields and Plain mode are intact.
+    // Important: use the numerical interval, never a general RGB=white test,
+    // because white can represent a valid category in other weather fields.
     const satelliteFill =
         spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
     const satelliteFieldType = WEATHER_FIELDS[activeField]?.type;
@@ -10453,11 +10487,11 @@ async function renderWeather() {
 
                 /*
                  * Satellite imagery shows through the five pale low-end
-                 * STP/SCP/SRH/EHI composite bins, the existing pale low-end
-                 * wind bins, and neutral zero advection/frontogenesis bins.
-                 * CAPE colors (including white) remain unchanged.
-                 * Alpha-only: numerical values, other colors and legends are
-                 * unchanged. Plain mode retains the original fill opacity.
+                 * STP/SCP/SRH/EHI composite bins, pale low-end wind bins,
+                 * neutral advection/frontogenesis bins, and the -1..+1 neutral
+                 * MSLP/500-mb height-change bins. CAPE white remains visible.
+                 * Numerical values are unchanged; the change legend matches
+                 * the neutral transparency on Satellite only.
                  */
                 const satellitePaleBin =
                     satellitePaleThreshold != null &&
@@ -10468,6 +10502,13 @@ async function renderWeather() {
                     Number.isFinite(value) &&
                     value >= -0.5 && value <= 0.5 &&
                     color.r === 255 && color.g === 255 && color.b === 255;
+                // V116 double safety: spcoaChangeRgb already returns null for
+                // neutral CHANGE pixels on Satellite. Keep the alpha guard so
+                // older cached palettes cannot reintroduce white in this band.
+                const satelliteChangeNeutralBin =
+                    satelliteFill && satelliteFieldType === "spcoa_change" &&
+                    Number.isFinite(value) &&
+                    Math.abs(value) <= SPCOA_CHANGE_NEUTRAL_LIMIT;
                 // Hide only palette indices 0–4 in Satellite view. This is
                 // independent of the actual RGB color and intentionally keeps
                 // the darker grays at indices 5–9 visible over the imagery.
@@ -10478,7 +10519,8 @@ async function renderWeather() {
 
                 pixels[
                     pixelIndex + 3
-                ] = (satellitePaleBin || satelliteNeutralBin || satelliteLowCompositeBin)
+                ] = (satellitePaleBin || satelliteNeutralBin ||
+                    satelliteChangeNeutralBin || satelliteLowCompositeBin)
                     ? 0 : 235;
 
             }
@@ -14995,8 +15037,8 @@ function updateLegend() {
     if (field.type !== "spcoa_change") spcoaShowChangeLegendStrip(null, null);
 
     if (field.type === "spcoa_change") {
-        // V94: repaint the full physical-value colorbar independently of S3
-        // success. The fixed -1..+1 white interval is accurately positioned.
+        // V115: the fixed -1..+1 gap is white on Plain and transparent on
+        // Satellite, matching its pixel shading and the Q-vector style.
         const bounds = spcoaChangeColorBounds(field, QDIV_BOUNDS);
         const cap = spcoaChangeColorMax(field);
         const colors = spcoaChangeLegendColors(QDIV_COLORS);
