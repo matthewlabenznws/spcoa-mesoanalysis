@@ -12516,6 +12516,137 @@ function smoothContourGrid(grid, columns, rows, sigma = 2.0) {
 
 
 /* =========================================================================================
+   V111 — CONTOUR COMPUTATION WEB WORKER
+   No extra hosted file: create a dedicated worker from the existing pure
+   smoothing/marching-squares/stitching functions. If the site CSP blocks Blob
+   Workers, retain the original exact synchronous rendering implementation.
+   Transfer typed buffers instead of serializing thousands of point objects.
+   ========================================================================================= */
+let spcoaContourWorker = null;
+let spcoaContourWorkerDisabled = false;
+let spcoaContourWorkerSerial = 0;
+const spcoaContourWorkerPending = new Map();
+function spcoaBuildContourWorkerSource() {
+    return [
+        interpolateContourPoint.toString(),
+        contourPointKey.toString(),
+        stitchContourSegments.toString(),
+        getMarchingSegments.toString(),
+        smoothContourGrid.toString(),
+        `self.onmessage = event => {
+            const d = event.data;
+            try {
+                const base = new Float32Array(d.gridBuffer);
+                const values = d.sigma > 0
+                    ? smoothContourGrid(base,d.columns,d.rows,d.sigma) : base;
+                const results = [], transfers = [];
+                for (const level of d.levels) {
+                    const segments = [];
+                    for (let row=0;row<d.rows-1;row++) {
+                        const y=row*d.step;
+                        for (let col=0;col<d.columns-1;col++) {
+                            const x=col*d.step, i=row*d.columns+col;
+                            const cells=getMarchingSegments(x,y,d.step,
+                                values[i],values[i+1],values[i+d.columns+1],
+                                values[i+d.columns],level);
+                            for (const seg of cells) segments.push(seg);
+                        }
+                    }
+                    if (d.smoothGeometry) {
+                        const lines=stitchContourSegments(segments).map(line=>{
+                            const flat=new Float32Array(line.length*2);
+                            for(let i=0;i<line.length;i++) {
+                                flat[i*2]=line[i].x;
+                                flat[i*2+1]=line[i].y;
+                            }
+                            transfers.push(flat.buffer);
+                            return flat;
+                        });
+                        results.push({lines});
+                    } else {
+                        const flat=new Float32Array(segments.length*4);
+                        for(let i=0;i<segments.length;i++) {
+                            flat[i*4]=segments[i][0].x;
+                            flat[i*4+1]=segments[i][0].y;
+                            flat[i*4+2]=segments[i][1].x;
+                            flat[i*4+3]=segments[i][1].y;
+                        }
+                        transfers.push(flat.buffer);
+                        results.push({segments:flat});
+                    }
+                }
+                self.postMessage({id:d.id,results},transfers);
+            } catch(error) {
+                self.postMessage({id:d.id,error:String(error?.stack||error)});
+            }
+        };`
+    ].join('\n\n');
+}
+function spcoaStopContourWorker(reason='obsolete contour work') {
+    if (spcoaContourWorker) {
+        try {spcoaContourWorker.terminate();} catch(_) {}
+        spcoaContourWorker = null;
+    }
+    for (const pending of spcoaContourWorkerPending.values())
+        pending.reject(new Error(reason));
+    spcoaContourWorkerPending.clear();
+}
+function spcoaGetContourWorker() {
+    if (spcoaContourWorkerDisabled || typeof Worker === 'undefined') return null;
+    if (spcoaContourWorker) return spcoaContourWorker;
+    try {
+        const blob=new Blob([spcoaBuildContourWorkerSource()],
+            {type:'text/javascript'});
+        const url=URL.createObjectURL(blob);
+        try {spcoaContourWorker=new Worker(url,{name:'spcoa-contours'});}
+        finally {URL.revokeObjectURL(url);}
+        spcoaContourWorker.onmessage = event => {
+            const d=event.data;
+            const task=spcoaContourWorkerPending.get(d.id);
+            if (!task) return;
+            spcoaContourWorkerPending.delete(d.id);
+            if (d.error) task.reject(new Error(d.error));
+            else task.resolve(d.results);
+        };
+        spcoaContourWorker.onerror = event => {
+            console.warn('SPCOA contour worker failed; using main-thread fallback',event.message);
+            spcoaStopContourWorker('worker failed');
+            spcoaContourWorkerDisabled=true;
+        };
+        return spcoaContourWorker;
+    } catch(error) {
+        spcoaContourWorkerDisabled=true;
+        console.info('SPCOA contour worker unavailable; existing renderer remains active:',error);
+        return null;
+    }
+}
+async function spcoaBuildContourGeometryWorker(grid,columns,rows,step,levels,sigma,smoothGeometry) {
+    if (!levels.length || columns*rows < 1000) return null;
+    const worker=spcoaGetContourWorker();
+    if (!worker) return null;
+    const id=++spcoaContourWorkerSerial;
+    const copy=new Float32Array(grid); // Keep original for reliable fallback.
+    try {
+        return await new Promise((resolve,reject)=>{
+            spcoaContourWorkerPending.set(id,{resolve,reject});
+            try {
+                worker.postMessage({id,gridBuffer:copy.buffer,columns,rows,step,
+                    levels,sigma,smoothGeometry},[copy.buffer]);
+            } catch(error) {
+                spcoaContourWorkerPending.delete(id);
+                reject(error);
+            }
+        });
+    } catch(error) {
+        // A generation change cancels a worker; the caller will discard its
+        // obsolete render before entering the synchronous fallback.
+        if (error.message !== 'obsolete contour work')
+            console.warn('SPCOA contour worker calculation unavailable; retrying locally:',error);
+        return null;
+    }
+}
+
+/* =========================================================================================
    GENERIC NUMERICAL CONTOUR FIELD RENDERER
    ========================================================================================= */
 
@@ -12668,6 +12799,13 @@ async function renderContourField(
                 );
 
         }
+        // The screen-grid sample still needs MapLibre's map projection.
+        // Yield periodically on 1px grids so slider/mouse events remain
+        // responsive before the worker starts its marching-squares task.
+        if (useHighResolutionContourGrid && row>0 && row%40===0) {
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if (generation !== contourRenderGeneration) return;
+        }
 
     }
 
@@ -12686,14 +12824,11 @@ async function renderContourField(
     const useGaussianContourSmoothing =
         definition.smoothGeometry === true && definition.compositeContour !== true;
 
-    const contourValues =
-        useGaussianContourSmoothing
-            ? smoothContourGrid(values, columns, rows, 2.0)
-            : (
-                (field === "dcape" || field === "warm_cloud_depth" || field === "freezing_level_height")
-                    ? smoothContourGrid(values, columns, rows, 1.0)
-                    : values
-            );
+    const contourSigma = useGaussianContourSmoothing ? 2.0 :
+        ((field === "dcape" || field === "warm_cloud_depth" ||
+          field === "freezing_level_height") ? 1.0 : 0.0);
+    // Delay local smoothing until we know whether the worker is available.
+    let contourValues = null;
 
     // DCAPE is fixed at 250 J/kg even if cached backend metadata is older.
     const interval = field === "dcape" ? 250 : (
@@ -12804,6 +12939,16 @@ async function renderContourField(
         return;
     }
 
+    const smoothGeometryInWorker =
+        definition.smoothGeometry === true || definition.compositeContour === true;
+    const workerGeometry = await spcoaBuildContourGeometryWorker(
+        values,columns,rows,step,levelsToRender,contourSigma,smoothGeometryInWorker);
+    if (generation !== contourRenderGeneration) return;
+    if (!workerGeometry) {
+        contourValues = contourSigma > 0
+            ? smoothContourGrid(values,columns,rows,contourSigma) : values;
+    }
+
     const metadataColorScheme =
         metadata.display &&
         metadata.display.color_scheme
@@ -12876,7 +13021,8 @@ async function renderContourField(
     contourCtx.lineJoin = "round";
     contourCtx.lineCap = "round";
 
-    for (const level of levelsToRender) {
+    for (let levelIndex=0;levelIndex<levelsToRender.length;levelIndex++) {
+        const level=levelsToRender[levelIndex];
         if (definition.changeContour && Math.abs(level) < 0.00001) continue;
 
         const contourColor =
@@ -12973,7 +13119,25 @@ async function renderContourField(
                 : 4;
 
         const levelSegments = [];
-
+        const precomputed = workerGeometry?.[levelIndex] || null;
+        if (precomputed) {
+            if (!smoothGeometry) {
+                const packed=precomputed.segments;
+                for (let i=0;packed && i<packed.length;i+=4) {
+                    const ax=packed[i],ay=packed[i+1],bx=packed[i+2],by=packed[i+3];
+                    contourCtx.moveTo(ax,ay);
+                    contourCtx.lineTo(bx,by);
+                    segmentCounter++;
+                    if (labelsEnabled && segmentCounter % 180 === 0) {
+                        const labelX=(ax+bx)/2,labelY=(ay+by)/2;
+                        if (labelX>35 && labelX<width-35 && labelY>20 && labelY<height-20) {
+                            labelCandidates.push({x:labelX,y:labelY,
+                                angle:Math.atan2(by-ay,bx-ax),level,color:contourColor});
+                        }
+                    }
+                }
+            }
+        } else {
         for (
             let row = 0;
             row < rows - 1;
@@ -13099,17 +13263,23 @@ async function renderContourField(
 
         }
 
+        }
+
         /*
          * MSLP, geopotential heights, divergence, and frontogenesis are
          * Gaussian-smoothed on the sampled scalar grid before marching squares.
          * Segments are stitched here only to draw continuous contour paths.
          */
-        if (smoothGeometry && levelSegments.length > 0) {
+        if (smoothGeometry && (precomputed?.lines?.length || levelSegments.length)) {
 
-            const polylines =
-                stitchContourSegments(
-                    levelSegments
-                );
+            const polylines = precomputed
+                ? precomputed.lines.map(flat => {
+                    const line=[];
+                    for(let i=0;i<flat.length;i+=2)
+                        line.push({x:flat[i],y:flat[i+1]});
+                    return line;
+                })
+                : stitchContourSegments(levelSegments);
 
             for (const rawLine of polylines) {
 
@@ -13355,6 +13525,8 @@ async function renderContours() {
 
     const generation =
         ++contourRenderGeneration;
+    if (spcoaContourWorkerPending.size)
+        spcoaStopContourWorker('obsolete contour work');
 
     prepareContext(
         contourCanvas,
@@ -15656,9 +15828,97 @@ function invalidateNumericalRenders() {
     contourRenderGeneration++;
 
     cursorGeneration++;
+    // Immediately release the worker when the user requests another hour.
+    // Stale calculations must not block the newest frame.
+    if (spcoaContourWorkerPending.size)
+        spcoaStopContourWorker('obsolete contour work');
 
 }
 
+
+/* =========================================================================================
+   V111 — BOUNDED EXACT-STATE RENDERED-FRAME CACHE
+   Cache ONLY numerical canvases. Geography, station observations, annotations,
+   legend and live map continue through their existing update paths.
+   Match run, field, overlays, camera, CSS size and DPR before reusing a frame.
+   ========================================================================================= */
+const SPCOA_FRAME_CACHE_MAX_ENTRIES=5;
+const SPCOA_FRAME_CACHE_MAX_BYTES=96*1024*1024;
+const SPCOA_FRAME_CACHE_TTL_MS=120000;
+const spcoaRenderedFrames=new Map();
+let spcoaRenderedFrameBytes=0;
+const spcoaFrameLayers=()=>[
+    weatherCanvas,vectorCanvas,contourCanvas,contourLabelCanvas
+];
+function spcoaRenderedFrameKey(camera=getNumericalCameraSnapshot()) {
+    const overlaySignature=Object.keys(activeOverlays).sort()
+        .filter(key=>activeOverlays[key] === true).join(',');
+    return JSON.stringify([
+        currentRun,activeField,overlaySignature,
+        spcoaReadMapBackground(),getDataZoom(),
+        camera.lng.toFixed(7),camera.lat.toFixed(7),camera.zoom.toFixed(7),
+        Math.round(camera.width),Math.round(camera.height),
+        map.getBearing().toFixed(5),map.getPitch().toFixed(5),
+        window.devicePixelRatio||1
+    ]);
+}
+function spcoaDropRenderedFrame(key) {
+    const entry=spcoaRenderedFrames.get(key);
+    if(!entry)return;
+    spcoaRenderedFrameBytes=Math.max(0,spcoaRenderedFrameBytes-entry.bytes);
+    spcoaRenderedFrames.delete(key);
+    for(const canvas of entry.layers){canvas.width=0;canvas.height=0;}
+}
+function spcoaUseRenderedFrame(key) {
+    const entry=spcoaRenderedFrames.get(key);
+    if(!entry)return false;
+    if(Date.now()-entry.created>SPCOA_FRAME_CACHE_TTL_MS) {
+        spcoaDropRenderedFrame(key);return false;
+    }
+    const targets=spcoaFrameLayers();
+    if(targets.some((canvas,i)=>!canvas ||
+        canvas.width!==entry.layers[i].width ||
+        canvas.height!==entry.layers[i].height)) return false;
+    // Invalidate asynchronous work before restoring earlier completed pixels.
+    invalidateNumericalRenders();
+    targets.forEach((canvas,i)=>{
+        const ctx=canvas.getContext('2d');
+        ctx.setTransform(1,0,0,1,0,0);
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(entry.layers[i],0,0);
+        const dpr=window.devicePixelRatio||1;
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        canvas.style.transform='none';
+    });
+    spcoaRenderedFrames.delete(key);
+    spcoaRenderedFrames.set(key,entry);
+    if(__MP_PARAMS.get('perf')==='1') console.info('[SPCOA V111] rendered-frame cache HIT',currentRun);
+    return true;
+}
+function spcoaRememberRenderedFrame(key) {
+    const sources=spcoaFrameLayers();
+    if(sources.some(canvas=>!canvas||!canvas.width||!canvas.height))return;
+    const bytes=sources.reduce((sum,c)=>sum+c.width*c.height*4,0);
+    if(bytes>SPCOA_FRAME_CACHE_MAX_BYTES/2)return;
+    const copies=[];
+    try {
+        for(const source of sources){
+            const copy=document.createElement('canvas');
+            copy.width=source.width;copy.height=source.height;
+            copy.getContext('2d').drawImage(source,0,0);
+            copies.push(copy);
+        }
+    } catch(error) {
+        console.debug('SPCOA rendered-frame cache skipped:',error);return;
+    }
+    spcoaDropRenderedFrame(key);
+    spcoaRenderedFrames.set(key,{layers:copies,bytes,created:Date.now()});
+    spcoaRenderedFrameBytes+=bytes;
+    while(spcoaRenderedFrames.size>SPCOA_FRAME_CACHE_MAX_ENTRIES ||
+          spcoaRenderedFrameBytes>SPCOA_FRAME_CACHE_MAX_BYTES) {
+        spcoaDropRenderedFrame(spcoaRenderedFrames.keys().next().value);
+    }
+}
 
 /* =========================================================================================
    RENDER ALL
@@ -15666,12 +15926,19 @@ function invalidateNumericalRenders() {
 
 async function renderAll() {
     const renderingCamera = getNumericalCameraSnapshot();
+    const requestedRun=currentRun;
 
     /*
      * Any camera CSS transform from an active pan/zoom must be removed
      * before producing a fresh numerical render.
      */
     resetNumericalCanvasTransforms();
+    const frameKey=spcoaRenderedFrameKey(renderingCamera);
+    if (spcoaUseRenderedFrame(frameKey)) {
+        renderGeography();
+        captureCanvasCamera(renderingCamera);
+        return;
+    }
 
 
     /*
@@ -15688,15 +15955,15 @@ async function renderAll() {
      *   wind barbs
      *   MSLP contours
      */
-    await Promise.all([
-
-        renderWeather(),
-
-        renderVectors(),
-
-        renderContours()
-
-    ]);
+    const renders=[renderWeather(),renderVectors(),renderContours()];
+    const expectedGenerations=[scalarRenderGeneration,vectorRenderGeneration,contourRenderGeneration];
+    await Promise.all(renders);
+    const renderStillCurrent = currentRun===requestedRun &&
+        matchesNumericalCamera(renderingCamera) &&
+        expectedGenerations[0]===scalarRenderGeneration &&
+        expectedGenerations[1]===vectorRenderGeneration &&
+        expectedGenerations[2]===contourRenderGeneration;
+    if (!renderStillCurrent) return;
 
 
     /*
@@ -15709,8 +15976,10 @@ async function renderAll() {
      * above geography, vectors, and annotations after this redraw.
      */
     renderGeography();
-
     captureCanvasCamera(renderingCamera);
+    // Completed numerical layers are kept independently of the MapLibre base
+    // map, so revisiting an exact view skips pixel shading/contour recomputation.
+    spcoaRememberRenderedFrame(frameKey);
 
 }
 
