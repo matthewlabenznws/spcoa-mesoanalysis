@@ -21168,7 +21168,7 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 #spcoa-sounding-panel button,#spcoa-sounding-panel select{background:#161616;color:#eee;border:1px solid #777;padding:4px 6px;border-radius:2px;cursor:pointer;font:11px Arial,sans-serif}
 #spcoa-sounding-panel button:hover{background:#343434}
-#spcoa-sounding-panel .ss-body{padding:2px}
+#spcoa-sounding-panel .ss-body{padding:2px;overflow:clip}
 #spcoa-sounding-panel .ss-figures{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:2px}
 #spcoa-sounding-panel .ss-chart{border:1px solid #6f6f6f;background:#020203;padding:1px 0 0}
 #spcoa-sounding-panel .ss-chart h3{color:#d0d0d0;margin:2px 7px;font-size:11px;font-weight:500}
@@ -21305,6 +21305,11 @@ function spcoaSndBuildPanel() {
       </div>
       <div class="ss-note" id="ss-archive-note" style="display:none"></div></div>`;
     document.body.appendChild(panel);
+    // V107: hidden children must never allow the viewer to scroll past the
+    // actual diagnostic table bottom. This listener applies to wheel, touch,
+    // trackpad and scrollbar dragging alike.
+    panel.addEventListener('scroll',()=>spcoaSndClampScroll(panel),{passive:true});
+    panel.dataset.layoutVersion='107';
     spcoaSndInstallInspect();
     document.getElementById('ss-close').addEventListener('click',()=>{
         spcoaSndHideInspect();
@@ -21410,7 +21415,18 @@ function spcoaSndFitPanelHeight(){
     panel.style.maxHeight=maxH+'px';
     panel.style.height=target+'px';
     panel.style.overflowY=natural>maxH+1?'auto':'hidden';
-    panel.scrollTop=Math.min(previousScroll,Math.max(0,panel.scrollHeight-panel.clientHeight));
+    panel.scrollTop=Math.min(previousScroll,Math.max(0,natural-panel.clientHeight));
+    spcoaSndClampScroll(panel);
+}
+/* V107: the visible diagnostic tables define the scroll endpoint. Browsers
+ * may count transparent/absolutely-positioned overlay pixels after this row
+ * in scrollHeight, even though no sounding content is there. Never use raw
+ * scrollHeight as the permitted maximum scroll offset. */
+function spcoaSndClampScroll(panel){
+    if(!panel || panel.style.display!=='block')return;
+    const contentBottom=spcoaSndContentHeight(panel);
+    const maxScroll=Math.max(0,Math.ceil(contentBottom-panel.clientHeight));
+    if(panel.scrollTop>maxScroll+1)panel.scrollTop=maxScroll;
 }
 /* V56: a small white loading spinner below the blue creator credit.
  * The label remains visible until profile and diagnostics have finished;
