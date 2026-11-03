@@ -18565,7 +18565,7 @@ async function saveCurrentMapPng4k() {
             const barY = titleY + Math.round(12 * exportScale) + titleFont * 0.55;
             const innerX = cardX + padX;
             const innerW = cardW - padX * 2;
-            const labelY = Math.min(cardY + cardH - Math.round(10 * exportScale), barY + barH + Math.round(16 * exportScale));
+            const labelY = Math.min(cardY + cardH - Math.round(10 * exportScale), barY + barH + Math.round(10 * exportScale));
 
             ctx.fillStyle = "rgba(20,40,57,.96)";
             ctx.fillRect(cardX, cardY, cardW, cardH);
@@ -18774,7 +18774,7 @@ async function buildGifFrameCanvas(outW = SPCOA_GIF_PANEL_WIDTH) {
         const barY = titleY + Math.round(12 * pngScale * layoutScale) + titleFont * 0.55;
         const innerX = cardX + padX;
         const innerW = cardW - padX * 2;
-        const labelY = Math.min(cardY + cardH - Math.round(10 * pngScale * layoutScale), barY + barH + Math.round(16 * pngScale * layoutScale));
+        const labelY = Math.min(cardY + cardH - Math.round(10 * pngScale * layoutScale), barY + barH + Math.round(10 * pngScale * layoutScale));
 
         ctx.fillStyle = "rgba(20,40,57,.96)";
         ctx.fillRect(cardX, cardY, cardW, cardH);
@@ -19482,7 +19482,7 @@ document.addEventListener("visibilitychange", () => {
             const barY = y + Math.round(39*vScale);
             const barW = w - padX * 2;
             const barH = Math.round(23*vScale);
-            const labelY = barY + barH + Math.round(27*vScale);
+            const labelY = barY + barH + Math.round(17*vScale);
 
             ctx.fillStyle = "rgba(20,40,57,.96)";
             ctx.fillRect(x, y, w, h);
