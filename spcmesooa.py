@@ -53,8 +53,6 @@
 # 1. INSTALL PACKAGES
 # ==========================================================================================
 
-# GitHub Actions: dependencies are installed by scripts/requirements_spcoa.txt.
-# Colab: run the equivalent pip command in a separate notebook cell.
 
 
 # ==========================================================================================
@@ -68,6 +66,7 @@ import math
 import time
 import shutil
 import warnings
+import getpass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import local
 
@@ -104,7 +103,7 @@ NOMADS_BASE = (
 )
 
 WORK_DIR = Path(
-    os.getenv("SPCOA_WORK_DIR", "/content/spcoa_mesoanalysis" if Path("/content").exists() else "./spcoa_mesoanalysis")
+    os.getenv("SPCOA_WORK_DIR", "/content/spcoa_mesoanalysis" if Path("/content").exists() else "spcoa_mesoanalysis")
 )
 
 DOWNLOAD_DIR = (
@@ -175,20 +174,20 @@ SURFACE_OBS_NETWORKS = [
 
 
 
-UPLOAD_TO_AWS = True
+UPLOAD_TO_AWS = False
 
 # Parallel S3 upload workers.
 # V4 uses the V2-tested worker count; higher V3 concurrency was slower in Colab.
-S3_UPLOAD_WORKERS = int(os.getenv("SPCOA_S3_UPLOAD_WORKERS", "96"))
+S3_UPLOAD_WORKERS = 96
 # Upload each finished zoom while generating the next zoom. Retain existing
 # public run-pointer safety and full per-object upload error propagation.
 STREAM_ZOOM_UPLOADS = False
-ZOOM_UPLOAD_WORKERS = int(os.getenv("SPCOA_ZOOM_UPLOAD_WORKERS", "48"))
+ZOOM_UPLOAD_WORKERS = 48
 
 # Parallel tile-position workers. Each worker handles one Web Mercator tile
 # position and writes every selected field for that position.
 # V4 uses the V2-tested worker count; higher V3 concurrency was slower in Colab.
-TILE_GENERATION_WORKERS = int(os.getenv("SPCOA_TILE_GENERATION_WORKERS", "12"))
+TILE_GENERATION_WORKERS = 12
 
 # ==========================================================================================
 # COMBINED GEOSTROPHIC Q-VECTORS + NUMBA TILE SAMPLER
@@ -204,9 +203,9 @@ TILE_GENERATION_WORKERS = int(os.getenv("SPCOA_TILE_GENERATION_WORKERS", "12"))
 # V13 defaults to local numerical tile verification; NO AWS publication.
 # After validation, explicitly set RUN_MODE="production" and
 # COMPOSITE_PRODUCTION_APPROVED=True to enable publishing.
-RUN_MODE = os.getenv("SPCOA_RUN_MODE", "production").strip().lower()
+RUN_MODE = os.getenv("SPCOA_RUN_MODE", "tile_verify")
 # An additional explicit gate protects existing AWS analysis products.
-COMPOSITE_PRODUCTION_APPROVED = os.getenv("SPCOA_PRODUCTION_APPROVED", "true").strip().lower() == "true"
+COMPOSITE_PRODUCTION_APPROVED = os.getenv("SPCOA_PRODUCTION_APPROVED", "false").lower() == "true"
 COMPOSITE_RUN_MODES = (
     "composites_preview", "composites_tile_verify", "qvector_preview",
     "local_full", "tile_verify", "production"
@@ -225,11 +224,6 @@ TILE_SAMPLER_VERIFY = True
 LOCAL_BENCHMARK_DISK_RESERVE_GIB = 3.0
 UPLOAD_TO_AWS = (RUN_MODE == "production")
 STREAM_ZOOM_UPLOADS = (RUN_MODE == "production")
-# CI: upload and validate each zoom before deleting its local .bin files.
-SPCOA_LOW_DISK_STREAMING = (
-    os.getenv("SPCOA_LOW_DISK_STREAMING", "false").strip().lower() == "true"
-    and RUN_MODE == "production"
-)
 OUTPUT_DIR = (WORK_DIR / "output" if RUN_MODE == "production"
               else WORK_DIR / ("combined_qvector_tile_verify_output" if RUN_MODE == "tile_verify"
                                else ("six_composites_local" if RUN_MODE.startswith("composites_")
@@ -252,11 +246,11 @@ TILE_VERIFY_RADIUS = 1
 # Tune this after comparing per-zoom timings; more workers are not always faster.
 
 # Rolling archive retained in S3 for timeline/playback.
-ARCHIVE_HOURS = 24
+ARCHIVE_HOURS = 25
 AVAILABLE_TIMES_FILENAME = "available_times.json"
 
 # Parallel S3 delete workers used only for expired run cleanup.
-S3_DELETE_WORKERS = int(os.getenv("SPCOA_S3_DELETE_WORKERS", "32"))
+S3_DELETE_WORKERS = 32
 
 # QC plots are useful while developing, but disabling them makes routine Colab runs faster.
 MAKE_QC_PLOTS = False
@@ -277,22 +271,16 @@ CLEAN_OUTPUT_FIRST = True
 # ==========================================================================================
 
 def prompt_for_aws_credentials():
-    """Read AWS credentials from GitHub Secrets or the runner's IAM role.
-
-    This intentionally never invokes input()/getpass(), which would hang CI.
-    """
+    """CI must use GitHub Secrets/IAM credentials, never an interactive prompt."""
     if not UPLOAD_TO_AWS:
         return
+    import boto3
     session = boto3.Session(region_name=AWS_REGION)
     credentials = session.get_credentials()
     if credentials is None:
-        raise RuntimeError(
-            "AWS credentials not found. Configure GitHub Actions secrets "
-            "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (and optional AWS_SESSION_TOKEN), "
-            "or an appropriately configured IAM role."
-        )
+        raise RuntimeError("AWS credentials not configured; set GitHub Actions Secrets")
     os.environ["AWS_DEFAULT_REGION"] = AWS_REGION
-    print(f"AWS credential chain resolved; S3 target: s3://{AWS_BUCKET}/{AWS_PREFIX}/")
+    print("AWS credentials provided by the environment/runner role (not echoed).")
 
 
 # ==========================================================================================
@@ -7435,22 +7423,12 @@ def generate_tiles(
           f"safety reserve: {LOCAL_BENCHMARK_DISK_RESERVE_GIB:.1f} GiB")
     print(f"Output target: {run_directory}")
     print(f"AWS uploads and archive cleanup: {'ENABLED' if UPLOAD_TO_AWS else 'DISABLED'}")
-    largest_zoom_positions = max(
-        (get_tile_range(z)[1] - get_tile_range(z)[0] + 1)
-        * (get_tile_range(z)[3] - get_tile_range(z)[2] + 1)
-        for z in ZOOM_LEVELS
-    )
-    minimum_tile_bytes = (
-        bytes_per_position * largest_zoom_positions
-        if SPCOA_LOW_DISK_STREAMING else expected_bytes
-    )
-    print(f"Disk mode: {'stream-upload/cleanup per zoom' if SPCOA_LOW_DISK_STREAMING else 'retain full tile archive'}")
-    if available_bytes < minimum_tile_bytes + reserve_bytes:
+    if available_bytes < expected_bytes + reserve_bytes:
         raise RuntimeError(
-            f"Insufficient free disk: need "
-            f"{(minimum_tile_bytes+reserve_bytes)/1e9:.2f} GB free, have "
-            f"{available_bytes/1e9:.2f} GB. Increase runner disk space; "
-            "publication pointer unchanged."
+            f"Insufficient local disk for full benchmark: need "
+            f"{(expected_bytes+reserve_bytes)/1e9:.2f} GB free, have "
+            f"{available_bytes/1e9:.2f} GB. Increase Colab disk capacity or "
+            "free local space; no S3 changes were made."
         )
 
     scalar_roots = {}
@@ -7643,39 +7621,21 @@ def generate_tiles(
     zoom_upload_executor = None
     zoom_upload_futures = []
     if UPLOAD_TO_AWS and STREAM_ZOOM_UPLOADS and not TILE_PROFILE_ONLY:
+        zoom_upload_executor = ThreadPoolExecutor(max_workers=1)
         zoom_s3 = create_s3_client()
-        if not SPCOA_LOW_DISK_STREAMING:
-            zoom_upload_executor = ThreadPoolExecutor(max_workers=1)
-
-        def upload_finished_zoom(z, expected_count):
+        def upload_finished_zoom(z):
             paths = []
             for root in roots:
-                product_paths = sorted((root / f'z{z}').rglob('*.bin'))
-                if len(product_paths) != expected_count:
-                    raise RuntimeError(
-                        f'z{z} {root.name}: expected {expected_count} tiles, '
-                        f'found {len(product_paths)}. Not publishing latest.json.'
-                    )
-                expected_size = (4 if root in vector_roots.values() else 2) * TILE_SIZE**2
-                for path in product_paths:
-                    if path.stat().st_size != expected_size:
-                        raise RuntimeError(f'Invalid tile size: {path}')
-                paths.extend(product_paths)
-
+                paths.extend(path for path in (root / f'z{z}').rglob('*.bin')
+                             if path.is_file())
             def send(path):
                 key = f'{AWS_PREFIX}/{path.relative_to(OUTPUT_DIR).as_posix()}'
                 upload_file_to_s3(zoom_s3, path, key)
-
             with ThreadPoolExecutor(max_workers=ZOOM_UPLOAD_WORKERS) as pool:
                 futures = [pool.submit(send, path) for path in paths]
                 for future in as_completed(futures):
-                    future.result()  # propagate failures; no pointer published
-
-            print(f'\nValidated and uploaded z{z}: {len(paths):,} binary tiles')
-            if SPCOA_LOW_DISK_STREAMING:
-                for root in roots:
-                    shutil.rmtree(root / f'z{z}')
-                print(f'z{z}: cleared local tile files after successful S3 upload')
+                    future.result()
+            print(f'\nUploaded z{z}: {len(paths):,} completed binary tiles')
             return len(paths)
 
     all_times = defaultdict(float)
@@ -7750,10 +7710,8 @@ def generate_tiles(
         positions_processed += total
         all_bytes += zoom_bytes
         all_valid_pixels += zoom_valid
-        if SPCOA_LOW_DISK_STREAMING:
-            upload_finished_zoom(zoom, total)
-        elif zoom_upload_executor is not None:
-            zoom_upload_futures.append(zoom_upload_executor.submit(upload_finished_zoom, zoom, total))
+        if zoom_upload_executor is not None:
+            zoom_upload_futures.append(zoom_upload_executor.submit(upload_finished_zoom, zoom))
 
     if zoom_upload_executor is not None:
         zoom_upload_executor.shutdown(wait=True)
@@ -8696,22 +8654,6 @@ def validate_output(
         "VALIDATING OUTPUT"
     )
     print("=" * 100)
-    if SPCOA_LOW_DISK_STREAMING and STREAM_ZOOM_UPLOADS and UPLOAD_TO_AWS:
-        # Every expected per-product tile count, file size, and successful S3 PUT
-        # was already checked before each zoom directory was deleted.
-        for field_key in SCALAR_PRODUCTS:
-            if not (run_directory / field_key / "metadata.json").is_file():
-                raise RuntimeError(f"Missing scalar metadata: {field_key}")
-        for field_key in CONTOUR_PRODUCTS:
-            if not (run_directory / "overlays" / field_key / "metadata.json").is_file():
-                raise RuntimeError(f"Missing contour metadata: {field_key}")
-        for field_key in VECTOR_PRODUCTS:
-            if not (run_directory / "overlays" / field_key / "metadata.json").is_file():
-                raise RuntimeError(f"Missing vector metadata: {field_key}")
-        if not (run_directory / "metadata.json").is_file():
-            raise RuntimeError("Missing run metadata")
-        print("Validated streamed tiles during each zoom upload; product metadata exists.")
-        return
 
 
     # ======================================================================================
@@ -9086,7 +9028,7 @@ def upload_file_to_s3(
 # to the new run are being uploaded.
 # ==========================================================================================
 
-def upload_output_to_s3(*, publish_latest=False):
+def upload_output_to_s3():
 
     print()
     print("=" * 100)
@@ -9347,7 +9289,7 @@ def upload_output_to_s3(*, publish_latest=False):
     # UPLOAD latest.json LAST
     # ======================================================================================
 
-    if latest_files and publish_latest:
+    if latest_files:
 
         s3 = create_s3_client()
 
@@ -9495,10 +9437,10 @@ def delete_s3_prefix(s3, prefix):
 
 
 def update_rolling_archive_and_manifest(current_run_id):
-    """Keep the latest 24 h of run directories and publish available_times.json."""
+    """Keep the latest 25 h of run directories and publish available_times.json."""
     print()
     print("=" * 100)
-    print("UPDATING 24-HOUR ARCHIVE + AVAILABLE-TIMES MANIFEST")
+    print("UPDATING 25-HOUR ARCHIVE + AVAILABLE-TIMES MANIFEST")
     print("=" * 100)
 
     s3 = create_s3_client()
@@ -9506,7 +9448,7 @@ def update_rolling_archive_and_manifest(current_run_id):
     if current_time is None:
         raise RuntimeError(f"Could not parse current run ID: {current_run_id}")
 
-    # Inclusive window: current analysis through current-24 h.
+    # Inclusive window: current analysis through current-25 h.
     cutoff = current_time - timedelta(hours=ARCHIVE_HOURS)
     listing_start = time.perf_counter()
     run_ids = list_s3_run_ids(s3)
@@ -10526,54 +10468,32 @@ def main():
         "%Y-%m-%dT%H:00:00Z"
     )
 
-
-    # Publishing safety: never replace a newer live analysis with an older one.
-    # Avoid reprocessing a fully published hour unless SPCOA_FORCE_REBUILD=true.
-    if RUN_MODE == "production":
+    # CI idempotency: do not regenerate an hour already fully published.
+    # A deliberate manual rebuild can use SPCOA_FORCE_REBUILD=true.
+    if RUN_MODE == "production" and os.getenv("SPCOA_FORCE_REBUILD", "false").lower() != "true":
+        import boto3
         from botocore.exceptions import ClientError
-        s3_check = create_s3_client()
-        latest_doc = None
+        s3_check = boto3.client("s3", region_name=AWS_REGION)
+        manifest_key = f"{AWS_PREFIX}/available_times.json"
         try:
-            latest_doc = json.loads(
-                s3_check.get_object(
-                    Bucket=AWS_BUCKET, Key=f"{AWS_PREFIX}/latest.json"
-                )["Body"].read()
-            )
+            active_doc = json.loads(s3_check.get_object(Bucket=AWS_BUCKET, Key=manifest_key)["Body"].read())
         except ClientError as exc:
             code = str(exc.response.get("Error", {}).get("Code", ""))
             if code not in ("NoSuchKey", "404", "NotFound"):
                 raise
-        if latest_doc:
-            live_run = latest_doc.get("run")
-            live_time = _parse_run_id(live_run) if live_run else None
-            if live_time and live_time > run_time:
-                print(f"Latest S3 run {live_run} is newer than NOMADS run {run_id}; "
-                      "not overwriting the live pointer.")
+            active_doc = {"runs": []}
+        listed = active_doc.get("runs", [])
+        in_timeline = any((r.get("run") if isinstance(r, dict) else r) == run_id for r in listed)
+        if in_timeline:
+            try:
+                s3_check.head_object(Bucket=AWS_BUCKET, Key=f"{AWS_PREFIX}/runs/{run_id}/metadata.json")
+                print(f"SPCOA {run_id} already published; skipping duplicate processing.")
                 return
-            if (live_run == run_id
-                    and os.getenv("SPCOA_FORCE_REBUILD", "false").lower() != "true"):
-                try:
-                    s3_check.head_object(
-                        Bucket=AWS_BUCKET,
-                        Key=f"{AWS_PREFIX}/runs/{run_id}/metadata.json"
-                    )
-                    available_doc = json.loads(
-                        s3_check.get_object(
-                            Bucket=AWS_BUCKET,
-                            Key=f"{AWS_PREFIX}/{AVAILABLE_TIMES_FILENAME}"
-                        )["Body"].read()
-                    )
-                    listed = available_doc.get("runs", [])
-                    if any((r.get("run") if isinstance(r, dict) else r) == run_id
-                           for r in listed):
-                        print(f"SPCOA {run_id} is already published and on the timeline; skipping.")
-                        return
-                except ClientError as exc:
-                    code = str(exc.response.get("Error", {}).get("Code", ""))
-                    if code not in ("NoSuchKey", "404", "NotFound"):
-                        raise
-                # One of the run metadata or timeline entries is missing;
-                # republish the hour rather than incorrectly skipping.
+            except ClientError as exc:
+                code = str(exc.response.get("Error", {}).get("Code", ""))
+                if code not in ("NoSuchKey", "404", "NotFound"):
+                    raise
+
 
 
     print()
@@ -11476,12 +11396,6 @@ def main():
         archive_stage_start = time.time()
         update_rolling_archive_and_manifest(run_id)
         archive_elapsed = time.time() - archive_stage_start
-
-        # Website pointer is the final write, after data AND timeline are ready.
-        latest_path = OUTPUT_DIR / "latest.json"
-        latest_key = f"{AWS_PREFIX}/latest.json"
-        upload_file_to_s3(create_s3_client(), latest_path, latest_key)
-        print(f"Published latest pointer LAST: s3://{AWS_BUCKET}/{latest_key}")
 
 
     # ======================================================================================
