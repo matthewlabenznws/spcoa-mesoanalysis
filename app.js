@@ -14012,8 +14012,19 @@ function spcoaCanonicalCityMetro(feature) {
     }
     return null;
 }
+/* V113 — Use standard, familiar city labels without altering coordinates,
+ * dataset values, state-aware classification, or collision priorities. */
+const SPCOA_CANONICAL_CITY_DISPLAY_NAMES = new Map([
+    ["salt lake|49", "Salt Lake City"],
+    ["lexington-fayette|21", "Lexington"]
+]);
 function getCityDisplayName(feature) {
-    return spcoaCanonicalCityMetro(feature)?.fullName || getCityName(feature);
+    const metroName=spcoaCanonicalCityMetro(feature)?.fullName;
+    if (metroName) return metroName;
+    const sourceName=String(getCityName(feature)||"");
+    const stateFP=getCityStateFP(feature);
+    return SPCOA_CANONICAL_CITY_DISPLAY_NAMES.get(`${sourceName.trim().toLowerCase()}|${stateFP}`)
+        || sourceName;
 }
 
 function getCityStateFP(feature) {
