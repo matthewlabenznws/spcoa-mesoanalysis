@@ -21150,7 +21150,7 @@ function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
     const css=document.createElement('style');css.id='spcoa-sounding-css';
     css.textContent=`
-#spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));max-height:calc(100vh - 38px);overflow:auto;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
+#spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));max-height:calc(100vh - 38px);overflow-y:auto;overflow-x:hidden;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
 #spcoa-sounding-panel *{box-sizing:border-box}
 #spcoa-sounding-panel .ss-head{display:flex;gap:9px;align-items:center;justify-content:space-between;padding:4px 9px;border-bottom:1px solid #737373;background:#050506;position:sticky;top:0;z-index:3}
 #spcoa-sounding-panel .ss-heading{flex:1 1 auto;min-width:260px}
@@ -21349,6 +21349,7 @@ function spcoaSndBuildPanel() {
     mapWrapper.addEventListener('pointercancel',childHoldCancel,true);
     window.addEventListener('resize',()=>{
         if(panel.style.display==='block' && SPCOA_SOUNDING.current)spcoaSndRender();
+        else if(panel.style.display==='block')spcoaSndFitPanelHeight();
     });
 }
 function spcoaSndOpenAt(lat,lon) {
@@ -21357,6 +21358,7 @@ function spcoaSndOpenAt(lat,lon) {
     if (!panel) return;
     SPCOA_SOUNDING.point={lat,lon};
     panel.style.display='block';
+    spcoaSndFitPanelHeight();
     spcoaSndStatus('Loading sounding');
     if (!currentRun) spcoaSndStatus('No HRRR F00 analysis hour selected yet.');
     void spcoaSndLoadSelection();
@@ -21366,6 +21368,32 @@ function spcoaSndStatus(text) {
     if(!el)return;
     el.textContent=text;
     el.classList.toggle('is-loading',text==='Loading sounding');
+}
+
+function spcoaSndContentHeight(panel){
+    if(!panel) return 0;
+    const body=panel.querySelector('.ss-body');
+    if(body){
+        const note=body.querySelector('#ss-archive-note');
+        const noteBottom=note && getComputedStyle(note).display!=='none'
+            ? (note.offsetTop + note.offsetHeight)
+            : body.scrollHeight;
+        return Math.ceil(body.offsetTop + noteBottom + 4);
+    }
+    return Math.ceil(panel.scrollHeight || panel.clientHeight || 0);
+}
+function spcoaSndFitPanelHeight(){
+    const panel=document.getElementById('spcoa-sounding-panel');
+    if(!panel || panel.style.display!=='block') return;
+    const maxH=Math.max(420, window.innerHeight - 38);
+    panel.style.height='auto';
+    panel.style.maxHeight=maxH+'px';
+    panel.style.overflowX='hidden';
+    panel.style.overflowY='hidden';
+    const natural=Math.max(0, spcoaSndContentHeight(panel));
+    const target=Math.min(maxH, natural || maxH);
+    panel.style.height=target+'px';
+    panel.style.overflowY=(natural>maxH)?'auto':'hidden';
 }
 /* V56: a small white loading spinner below the blue creator credit.
  * The label remains visible until profile and diagnostics have finished;
@@ -21936,6 +21964,7 @@ function spcoaSndRender() {
         if(old)old.style.display=legacy?'block':'none';
         note.style.display=legacy?'block':'none';
     }
+    spcoaSndFitPanelHeight();
 }
 /* V56: compact white loading spinner beneath the attribution; error statuses preserved. */
 /* V55: shared parcel-label X and simplified sounding attribution/header. */
@@ -21975,9 +22004,10 @@ async function spcoaSndExportPng(){
     if(button){button.disabled=true;button.textContent='Saving…';}
     try{
         const html2canvas=await spcoaSndLoadHtml2Canvas();
-        // Capture the ENTIRE scrollable sounding, including off-screen content.
+        // Capture only the actual sounding content height, not extra empty panel space.
+        spcoaSndFitPanelHeight();
         const width=Math.ceil(Math.max(panel.scrollWidth,panel.clientWidth));
-        const height=Math.ceil(Math.max(panel.scrollHeight,panel.clientHeight));
+        const height=Math.ceil(Math.max(1,spcoaSndContentHeight(panel)));
         const scale=Math.min(2,6000/width,6500/height);
         const screenshot=await html2canvas(panel,{
             backgroundColor:'#020204',useCORS:true,scale,
@@ -21990,7 +22020,7 @@ async function spcoaSndExportPng(){
                 el.style.position='relative';el.style.display='block';
                 el.style.top='0';el.style.left='0';el.style.right='auto';
                 el.style.width=width+'px';el.style.maxHeight='none';
-                el.style.height=height+'px';el.style.overflow='visible';
+                el.style.minHeight='0';el.style.height=height+'px';el.style.overflow='visible';
                 el.style.borderRadius='0';el.style.boxShadow='none';
                 const head=el.querySelector('.ss-head');
                 if(head){head.style.position='relative';head.style.top='auto';}
