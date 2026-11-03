@@ -21150,7 +21150,7 @@ function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
     const css=document.createElement('style');css.id='spcoa-sounding-css';
     css.textContent=`
-#spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));height:max-content;max-height:calc(100vh - 38px);overflow-y:auto;overflow-x:hidden;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
+#spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));height:auto;max-height:calc(100vh - 38px);overflow-y:auto;overflow-x:hidden;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
 #spcoa-sounding-panel *{box-sizing:border-box}
 #spcoa-sounding-panel .ss-head{display:flex;gap:9px;align-items:center;justify-content:space-between;padding:4px 9px;border-bottom:1px solid #737373;background:#050506;position:sticky;top:0;z-index:3}
 #spcoa-sounding-panel .ss-heading{flex:1 1 auto;min-width:260px}
@@ -21388,16 +21388,29 @@ function spcoaSndContentHeight(panel){
     if(!last && body)last=bottom(body);
     return Math.ceil(Math.max(1,last+4));
 }
-/* Intrinsic sizing prevents the dead black space introduced by V103. The
- * browser caps the popup at the viewport; its *contents*, not the empty
- * container, determine its natural height. */
+/* V105: measure actual rendered content, then size the popup explicitly.
+ * "height:max-content" in V104 could leave an oversized black viewport.
+ * Always use the last diagnostic row/note, never scrollHeight/clientHeight
+ * as the measure of content. Preserve the user's scroll position when the
+ * panel is resized or re-rendered. */
 function spcoaSndFitPanelHeight(){
     const panel=document.getElementById('spcoa-sounding-panel');
     if(!panel||panel.style.display!=='block')return;
-    panel.style.height='max-content';
-    panel.style.maxHeight='calc(100vh - 38px)';
+    const previousScroll=panel.scrollTop;
+    const maxH=Math.max(200,window.innerHeight-38);
+    // Remove the old constraint before measuring the natural content height.
+    panel.style.overflowY='visible';
     panel.style.overflowX='hidden';
-    panel.style.overflowY='auto';
+    panel.style.maxHeight='none';
+    panel.style.minHeight='0';
+    panel.style.height='auto';
+    panel.scrollTop=0;
+    const natural=Math.max(1,spcoaSndContentHeight(panel));
+    const target=Math.min(maxH,natural);
+    panel.style.maxHeight=maxH+'px';
+    panel.style.height=target+'px';
+    panel.style.overflowY=natural>maxH+1?'auto':'hidden';
+    panel.scrollTop=Math.min(previousScroll,Math.max(0,panel.scrollHeight-panel.clientHeight));
 }
 /* V56: a small white loading spinner below the blue creator credit.
  * The label remains visible until profile and diagnostics have finished;
@@ -21999,6 +22012,42 @@ function spcoaSndLoadHtml2Canvas(){
     }
     return spcoaSndHtml2CanvasPromise;
 }
+/* V105: last-resort output crop for html2canvas. Some browsers preserve
+ * a black overflow region even after the panel's CSS height was reduced.
+ * A visible bottom table border/text is used to find the real screenshot
+ * endpoint; isolated border pixels at the left/right cannot keep a large
+ * empty region. This only trims unused black BELOW all sounding content. */
+function spcoaSndCropExportBottom(canvas){
+    if(!canvas?.width||!canvas?.height)return canvas;
+    let pixels;
+    try{pixels=canvas.getContext('2d',{willReadFrequently:true})
+        .getImageData(0,0,canvas.width,canvas.height).data;}
+    catch(error){console.warn('Sounding PNG crop inspection unavailable:',error);return canvas;}
+    const w=canvas.width,h=canvas.height;
+    const xStep=Math.max(2,Math.floor(w/550));
+    const nSamples=Math.ceil(w/xStep);
+    const required=Math.max(7,Math.ceil(nSamples*.018));
+    let last=-1;
+    // Ignore a possible 1-pixel border along the very bottom of the screenshot.
+    for(let y=h-Math.max(5,Math.round(w/500));y>=0;y-=2){
+        let hits=0;
+        for(let x=0;x<w;x+=xStep){
+            const k=(y*w+x)*4;
+            if(pixels[k+3]>128 && Math.max(pixels[k],pixels[k+1],pixels[k+2])>=88){
+                if(++hits>=required){last=y;break;}
+            }
+        }
+        if(last>=0)break;
+    }
+    if(last<0)return canvas;
+    const padding=Math.max(12,Math.round(w/160)); // ~10 px at 1600px panel width
+    const target=Math.min(h,last+padding+1);
+    if(h-target<Math.max(18,padding*2))return canvas;
+    const trimmed=document.createElement('canvas');
+    trimmed.width=w;trimmed.height=target;
+    trimmed.getContext('2d').drawImage(canvas,0,0,w,target,0,0,w,target);
+    return trimmed;
+}
 async function spcoaSndExportPng(){
     if(!SPCOA_SOUNDING.current)return;
     const panel=document.getElementById('spcoa-sounding-panel');
@@ -22043,7 +22092,8 @@ async function spcoaSndExportPng(){
             }
         });
         if(!screenshot.width||!screenshot.height)throw new Error('Empty screenshot canvas');
-        const blob=await new Promise((resolve,reject)=>screenshot.toBlob(
+        const trimmedScreenshot=spcoaSndCropExportBottom(screenshot);
+        const blob=await new Promise((resolve,reject)=>trimmedScreenshot.toBlob(
             b=>b?resolve(b):reject(new Error('Could not encode PNG')),'image/png'));
         const name=`SPCOA_HRRR_F00_Full_Sounding_${currentRun}_i${SPCOA_SOUNDING.current.profile.i}_j${SPCOA_SOUNDING.current.profile.j}.png`;
         const url=URL.createObjectURL(blob),link=document.createElement('a');
