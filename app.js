@@ -1119,6 +1119,37 @@ const SPCOA_CHANGE_NEUTRAL_LIMIT = 1;
 function spcoaChangeLegendColors() {
     return QDIV_COLORS.map((color, index) => index === 9 ? '#ffffff' : color);
 }
+/* V95: a HTML/CSS-backed change legend independent of tile availability.
+   Still draw the original canvas for exports; show this strip on the website.
+   Both follow the exact same source palette and physical boundary array. */
+function spcoaShowChangeLegendStrip(colors, bounds) {
+    const native = document.getElementById('legend-bar');
+    if (!native) return;
+    let strip = document.getElementById('spcoa-v95-change-legend-strip');
+    if (!colors || !bounds) {
+        if (strip) strip.style.display = 'none';
+        native.style.display = '';
+        return;
+    }
+    if (!strip) {
+        strip = document.createElement('div');
+        strip.id = 'spcoa-v95-change-legend-strip';
+        native.insertAdjacentElement('afterend', strip);
+    }
+    const lo = bounds[0], hi = bounds[bounds.length - 1], span = hi - lo;
+    const stops = [];
+    for (let i = 0; i < colors.length; i++) {
+        const a = (100 * (bounds[i] - lo) / span).toFixed(4);
+        const b = (100 * (bounds[i + 1] - lo) / span).toFixed(4);
+        stops.push(`${colors[i]} ${a}%`, `${colors[i]} ${b}%`);
+    }
+    strip.style.cssText = 'display:block;width:100%;min-height:12px;height:12px;' +
+        'margin:0;padding:0;border:1px solid #abb8c3;box-sizing:border-box;' +
+        'border-radius:1px;pointer-events:none;';
+    strip.style.background = `linear-gradient(to right, ${stops.join(',')})`;
+    native.style.display = 'none';
+}
+
 function spcoaChangeColorMax(def) {
     return SPCOA_CHANGE_COLOR_MAX[def.sourceField]?.[def.hours] || 20;
 }
@@ -7801,7 +7832,8 @@ function spcoaChangeStatsFor(run, field) {
     const key = spcoaChangeIssueKey(run, field);
     if (!spcoaChangeStats.has(key)) spcoaChangeStats.set(key, {
         requested:0, currentTiles:0, earlierTiles:0, pairedTiles:0, validPoints:0,
-        currentMissing:0, earlierMissing:0, lastError:""
+        currentMissing:0, earlierMissing:0, lastError:"",
+        minDelta:Infinity, maxDelta:-Infinity, neutralPoints:0, changedPoints:0
     });
     return spcoaChangeStats.get(key);
 }
@@ -7847,6 +7879,10 @@ async function loadSpcoaChangeTile(field, z, x, y, run = currentRun, priority = 
                hght is metres -> dam, MSLP is hPa. */
             const delta = (now - then) * sourceEncoding.scale * def.factor;
             if (!Number.isFinite(delta)) {out[i] = missing; continue;}
+            if (delta < stats.minDelta) stats.minDelta = delta;
+            if (delta > stats.maxDelta) stats.maxDelta = delta;
+            if (Math.abs(delta) <= SPCOA_CHANGE_NEUTRAL_LIMIT) stats.neutralPoints++;
+            if (now !== then) stats.changedPoints++;
             out[i] = Math.max(0, Math.min(65534, Math.round(
                 (delta - SPCOA_CHANGE_ENCODING.offset) / SPCOA_CHANGE_ENCODING.scale
             )));
@@ -9703,6 +9739,26 @@ function sampleScalarGlobalPixelsFast(field, z, gx, gy, encoding, contour = fals
     return (top * (1 - fy) + bottom * fy) * encoding.scale + encoding.offset;
 }
 
+/* V94: show any actual missing-data reason directly in the map region.
+   A blank satellite background is not a valid indication of a zero change. */
+function spcoaSetChangeNotice(message) {
+    if (!mapWrapper) return;
+    let node = document.getElementById('spcoa-change-data-notice');
+    if (!node) {
+        node = document.createElement('div');
+        node.id = 'spcoa-change-data-notice';
+        node.setAttribute('role', 'status');
+        node.style.cssText = 'position:absolute;top:46px;left:50%;transform:translateX(-50%);' +
+            'max-width:min(650px,85%);padding:8px 12px;border-radius:6px;' +
+            'background:rgba(25,35,52,.95);color:#fff;border:1px solid #ffcd69;' +
+            'font:12px Arial,sans-serif;line-height:1.4;z-index:1000;pointer-events:none;' +
+            'text-align:center;overflow-wrap:anywhere;';
+        mapWrapper.appendChild(node);
+    }
+    node.textContent = message || '';
+    node.style.display = message ? 'block' : 'none';
+}
+
 /* =========================================================================================
    WEATHER RENDERER
    ========================================================================================= */
@@ -9737,9 +9793,9 @@ async function renderWeather() {
         activeField ===
             "none"
     ) {
-
+        spcoaSetChangeNotice('');
+        spcoaShowChangeLegendStrip(null, null);
         return;
-
     }
 
 
@@ -9757,6 +9813,14 @@ async function renderWeather() {
     const z =
         getDataZoom();
 
+
+    if (SPCOA_CHANGE_FIELDS[activeField]) {
+        const def = SPCOA_CHANGE_FIELDS[activeField];
+        spcoaSetChangeNotice(`V95 · Loading ${def.hours}h ${def.sourceField} numerical tiles for ${currentRun} ` +
+            `and ${spcoaPreviousRunId(currentRun, def.hours)}…`);
+    } else {
+        spcoaSetChangeNotice('');
+    }
 
     await preloadScalarTiles(
 
@@ -9777,26 +9841,6 @@ async function renderWeather() {
         return;
 
     }
-
-/* V94: show any actual missing-data reason directly in the map region.
-   A blank satellite background is not a valid indication of a zero change. */
-function spcoaSetChangeNotice(message) {
-    if (!mapWrapper) return;
-    let node = document.getElementById('spcoa-change-data-notice');
-    if (!node) {
-        node = document.createElement('div');
-        node.id = 'spcoa-change-data-notice';
-        node.setAttribute('role', 'status');
-        node.style.cssText = 'position:absolute;top:46px;left:50%;transform:translateX(-50%);' +
-            'max-width:min(650px,85%);padding:8px 12px;border-radius:6px;' +
-            'background:rgba(25,35,52,.95);color:#fff;border:1px solid #ffcd69;' +
-            'font:12px Arial,sans-serif;line-height:1.4;z-index:1000;pointer-events:none;' +
-            'text-align:center;overflow-wrap:anywhere;';
-        mapWrapper.appendChild(node);
-    }
-    node.textContent = message || '';
-    node.style.display = message ? 'block' : 'none';
-}
 
     // V93: report the actual numerical tile source that is missing. This is
     // displayed in the map, even when the colored legend is offscreen.
@@ -9837,9 +9881,26 @@ function spcoaSetChangeNotice(message) {
         const issue = spcoaChangeIssueText(currentRun, activeField);
         if (statusElement) statusElement.textContent = issue
             ? `Change unavailable: ${issue}` : `Change loaded: ${availableTiles} tiles`;
-        spcoaSetChangeNotice(issue
-            ? `Change unavailable: ${issue}. For 24-hour differences, select a time with a complete historical reference.`
-            : '');
+        if (issue) {
+            spcoaSetChangeNotice(`V95 · Change unavailable: ${issue}. Check browser Network requests for ` +
+                `the current and reference ${def.sourceField} overlay .bin files.`);
+        } else if (stats && Number.isFinite(stats.minDelta) && Number.isFinite(stats.maxDelta)) {
+            const lo = stats.minDelta.toFixed(2), hi = stats.maxDelta.toFixed(2);
+            const neutralPct = stats.validPoints ? Math.round(stats.neutralPoints * 100 / stats.validPoints) : 0;
+            if (!stats.changedPoints) {
+                spcoaSetChangeNotice(`V95 · Paired numerical tiles are IDENTICAL (${def.hours}h): ` +
+                    `both runs encode the same values. Verify archived backend outputs. Range ${lo} to ${hi} ${def.units}.`);
+            } else if (neutralPct >= 99) {
+                spcoaSetChangeNotice(`V95 · Data loaded but ${neutralPct}% of cells are within the ` +
+                    `white neutral interval (−1 to +1 ${def.units}). Δ range: ${lo} to +${hi} ${def.units}.`);
+            } else {
+                // Short status is intentionally persistent so users can confirm real differences.
+                spcoaSetChangeNotice(`V95 · Change loaded: ${availableTiles} tiles, ` +
+                    `Δ ${lo} to ${hi} ${def.units} · ${neutralPct}% neutral`);
+            }
+        } else {
+            spcoaSetChangeNotice(`V95 · Change data not yet decoded. Check browser console for any exceptions.`);
+        }
         updateLegend();
     } else {
         spcoaSetChangeNotice('');
@@ -14529,10 +14590,15 @@ function updateLegend() {
             ? `${field.name} (${field.units})`
             : field.name;
     if (field.type === "spcoa_change") {
+        // V95 marker also identifies the VERSION LOADED IN THE MAP IFRAME.
+        // The host sidebar can cache separately from its map iframe.
+        legendTitle.textContent += " · V95";
         const issue = spcoaChangeIssueText(currentRun, activeField);
-        if (issue) legendTitle.textContent += " — " + issue;
+        if (issue) legendTitle.title = issue;
     }
 
+    // Restore the normal colorbar for every other product.
+    if (field.type !== "spcoa_change") spcoaShowChangeLegendStrip(null, null);
 
     if (field.type === "spcoa_change") {
         // V94: repaint the full physical-value colorbar independently of S3
@@ -14540,8 +14606,14 @@ function updateLegend() {
         const bounds = spcoaChangeColorBounds(field);
         const cap = spcoaChangeColorMax(field);
         const colors = spcoaChangeLegendColors();
-        drawProportionalColorLegend(colors, bounds);
-        renderProportionalLegendLabels([-cap, -cap/2, -1, 0, 1, cap/2, cap], bounds);
+        // CSS-backed bar is visible even if legend canvas repaints late/incorrectly.
+        spcoaShowChangeLegendStrip(colors, bounds);
+        try {
+            drawProportionalColorLegend(colors, bounds);
+            renderProportionalLegendLabels([-cap, -cap/2, -1, 0, 1, cap/2, cap], bounds);
+        } catch (error) {
+            console.error('V95 change legend rendering failed:', error);
+        }
     }
     if (field.type === "q_vector_divergence") {
         drawColorLegend(QDIV_COLORS);
