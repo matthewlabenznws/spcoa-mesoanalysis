@@ -1060,6 +1060,124 @@ function spcoaInstallMapBackgroundSelector() {
 }
 spcoaInstallMapBackgroundSelector();
 
+/* V89 — 3/6/12/24-hour height/pressure changes, derived from archived contour tiles.
+   No invented values: a field is blank if its exact prior UTC analysis is absent. */
+const SPCOA_CHANGE_FIELDS = Object.freeze(Object.fromEntries(
+    [
+        ["hght_500mb", "500 mb Height Change", "dam", 0.1],
+        ["sfc_mslp", "MSLP Change", "hPa", 1.0]
+    ].flatMap(([sourceField, title, units, factor]) =>
+        [3, 6, 12, 24].map(hours => {
+            const field = `${sourceField}_change_${hours}h`;
+            return [field, {field, sourceField, name: `${hours}-Hour ${title}`, title: `${hours}-Hour ${title}`,
+                            shortName: `${hours}h ${title}`, units, factor, hours,
+                            type: "spcoa_change"}];
+        })
+    )
+));
+const SPCOA_CHANGE_ENCODING = Object.freeze({scale: 0.01, offset: -327.68, nodata: 65535});
+
+/* V90: derived contours use exactly the same differences as the fill maps.
+   The original Q-vector palette is reused, but legend values remain dam/hPa. */
+const SPCOA_CHANGE_CONTOUR_CONTROLS = Object.freeze([
+    {field:"spcoa_mslp_change_contour_option", stateKey:"mslpChangeContours",
+     toggleId:"spcoa-mslp-change-contours-toggle", label:"Pressure-Change Contours (blue dashed falls / red solid rises)",
+     sourceField:"sfc_mslp", changeControl:true},
+    {field:"spcoa_hght_change_contour_option", stateKey:"h500ChangeContours",
+     toggleId:"spcoa-hght-change-contours-toggle", label:"Height-Change Contours (blue dashed falls / red solid rises)",
+     sourceField:"hght_500mb", changeControl:true}
+]);
+const SPCOA_CHANGE_CONTOUR_FIELDS = Object.freeze(Object.fromEntries(
+    Object.values(SPCOA_CHANGE_FIELDS).map(def => {
+        const interval = def.hours <= 6 ? 1 : 2;
+        return [def.field + "_contours", {
+            name: `${def.hours}-Hour ${def.sourceField === "sfc_mslp" ? "MSLP" : "500 mb Height"} Change Contours`,
+            shortName: `${def.hours}h Change Contours`, units: def.units,
+            sourceField: def.field, interval, anchor:0,
+            colorScheme:"spcoa_change", smoothGeometry:true, smoothIterations:3,
+            changeContour:true
+        }];
+    })
+));
+/* V91: Keep the original Q-vector divergence blue/red bins, but give the
+   CHANGE fields a fixed, opaque white -1..+1 neutral interval (hPa or dam).
+   Preserve the per-duration extremes, spreading the colored bins over the
+   remaining range. The actual Q-vector divergence field is NOT modified. */
+const SPCOA_CHANGE_COLOR_MAX = Object.freeze({
+    sfc_mslp: Object.freeze({3:6, 6:10, 12:16, 24:24}),
+    hght_500mb: Object.freeze({3:8, 6:12, 12:20, 24:32})
+});
+const SPCOA_CHANGE_NEUTRAL_LIMIT = 1;
+// Computed lazily: QDIV_COLORS is declared later in the file.
+function spcoaChangeLegendColors() {
+    return QDIV_COLORS.map((color, index) => index === 9 ? '#ffffff' : color);
+}
+function spcoaChangeColorMax(def) {
+    return SPCOA_CHANGE_COLOR_MAX[def.sourceField]?.[def.hours] || 20;
+}
+function spcoaChangeColorBounds(def) {
+    const cap = spcoaChangeColorMax(def);
+    // QDIV_BOUNDS contains -50..-5, +5..+50, with the central gap at index 9.
+    // Map that gap to a FIXED -1..+1 while retaining 19 proportional bins.
+    return QDIV_BOUNDS.map(v => v < 0
+        ? -SPCOA_CHANGE_NEUTRAL_LIMIT - ((-v - 5) / 45) * (cap - SPCOA_CHANGE_NEUTRAL_LIMIT)
+        : SPCOA_CHANGE_NEUTRAL_LIMIT + ((v - 5) / 45) * (cap - SPCOA_CHANGE_NEUTRAL_LIMIT));
+}
+function spcoaSelectedChangeContourField() {
+    const def = SPCOA_CHANGE_FIELDS[activeField];
+    if (!def) return null;
+    const key = def.sourceField === "sfc_mslp" ? "mslpChangeContours" : "h500ChangeContours";
+    return activeOverlays[key] ? `${def.field}_contours` : null;
+}
+
+
+function installSpcoaChangeControls() {
+    const root = document.getElementById("sidebar");
+    if (!root) return;
+    for (const [category, sourceField, caption] of [
+        ["surface-category", "sfc_mslp", "MSLP Changes"],
+        ["upper-category", "hght_500mb", "500 mb Height Changes"]
+    ]) {
+        const parent = root.querySelector(`#${category} .cat-content`);
+        if (!parent || parent.querySelector(`[data-spcoa-change-group="${sourceField}"]`)) continue;
+        const group = document.createElement("details");
+        group.className = "subcat";
+        group.dataset.spcoaChangeGroup = sourceField;
+        const heading = document.createElement("summary");
+        heading.className = "sub-head";
+        heading.textContent = caption;
+        const body = document.createElement("div");
+        body.className = "sub-content";
+        for (const item of Object.values(SPCOA_CHANGE_FIELDS)) {
+            if (item.sourceField !== sourceField) continue;
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "field-row field-choice";
+            button.dataset.field = item.field;
+            button.textContent = `${item.hours}-Hour Change (${item.units})`;
+            button.title = `Current analysis minus the exact ${item.hours} h earlier analysis`;
+            body.appendChild(button);
+        }
+        const contourConfig = SPCOA_CHANGE_CONTOUR_CONTROLS.find(c => c.sourceField === sourceField);
+        if (contourConfig) {
+            const row = document.createElement("label");
+            row.className = "toggle-row";
+            row.style.cssText = "display:flex;align-items:center;gap:7px;margin-top:7px;font-size:11px;cursor:pointer;";
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.id = contourConfig.toggleId;
+            input.checked = false;
+            const captionEl = document.createElement("span");
+            captionEl.textContent = contourConfig.label;
+            row.append(input, captionEl);
+            body.appendChild(row);
+        }
+        group.append(heading, body);
+        parent.appendChild(group);
+    }
+}
+installSpcoaChangeControls();
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -3803,6 +3921,23 @@ const WEATHER_FIELDS = {
 
 
 
+Object.assign(WEATHER_FIELDS, SPCOA_CHANGE_FIELDS);
+
+// The CHANGE fields use Q-vector divergence hues, but unlike Q-vector divergence
+// their FIXED -1..+1 neutral band is opaque white, not transparent.
+// Blue/red bins stretch from the neutral edges out to the per-period scale cap.
+function spcoaChangeRgb(value, def) {
+    if (!def || !Number.isFinite(value)) return null;
+    if (Math.abs(value) <= SPCOA_CHANGE_NEUTRAL_LIMIT) {
+        return {r:255, g:255, b:255};
+    }
+    const cap = spcoaChangeColorMax(def);
+    const magnitude = Math.min(Math.abs(value), cap);
+    const scaledMagnitude = 5 + 45 * (magnitude - SPCOA_CHANGE_NEUTRAL_LIMIT) /
+        (cap - SPCOA_CHANGE_NEUTRAL_LIMIT);
+    return getQDivColor(Math.sign(value) * scaledMagnitude);
+}
+
 const PETTERSSEN_FGEN_BOUNDS = Array.from({length:41},(_,i)=>i-20);
 const PETTERSSEN_FGEN_COLORS = Array.from({length:40},(_,i)=>{
     const t=(i+0.5)/40;
@@ -4266,6 +4401,9 @@ const CONTOUR_FIELDS = {
     }
 
 };
+/* Change-contour variants share the scalar difference tiles; no new S3 products. */
+Object.assign(CONTOUR_FIELDS, SPCOA_CHANGE_CONTOUR_FIELDS);
+
 
 
 /* =========================================================================================
@@ -4819,6 +4957,7 @@ function ensureFilledWindFieldOptions() {
     }
 
     const fields = [
+        ...Object.keys(SPCOA_CHANGE_FIELDS),
         "ecape",
         "q_vector_divergence_925mb",
         "q_vector_divergence_850mb",
@@ -5510,6 +5649,7 @@ installSpcoaCompositeContourToggles();
 
 const THERMODYNAMIC_CONTOUR_OVERLAYS = [
     ...SPC_EXTRA_COMPOSITE_TOGGLES,
+    ...SPCOA_CHANGE_CONTOUR_CONTROLS,
     { field: "sbcin_contours", stateKey: "sbcinContours", toggleId: "sbcin-contours-toggle", label: "SBCIN Contours" },
     { field: "mlcin_contours", stateKey: "mlcinContours", toggleId: "mlcin-contours-toggle", label: "MLCIN Contours" },
     { field: "mucin_contours", stateKey: "mucinContours", toggleId: "mucin-contours-toggle", label: "MUCIN Contours" },
@@ -6959,9 +7099,16 @@ async function applyRun(runItem, { render = true, preload = true } = {}) {
         void refreshSurfaceObsForRun();
         void refreshHodographsForRun();
         runMetadata = bundle.metadata;
-        fieldMetadata = bundle.fields;
+        fieldMetadata = {...bundle.fields};
+        for (const key of Object.keys(SPCOA_CHANGE_FIELDS)) {
+            fieldMetadata[key] = {encoding: SPCOA_CHANGE_ENCODING, type: "scalar", derived: true};
+        }
         vectorMetadata = bundle.vectors;
-        contourMetadata = bundle.contours;
+        contourMetadata = {...bundle.contours};
+        for (const [key] of Object.entries(SPCOA_CHANGE_CONTOUR_FIELDS)) {
+            contourMetadata[key] = {type:"scalar_contour", derived:true,
+                encoding:SPCOA_CHANGE_ENCODING, display:{type:"contour", color_scheme:"spcoa_change"}};
+        }
         if (typeof spcoaSndRefreshForRun === 'function') spcoaSndRefreshForRun();
         if (runIdElement) runIdElement.textContent = currentRun;
         if (analysisTimeElement) analysisTimeElement.textContent = formatAnalysisTime(currentAnalysisTime);
@@ -6969,6 +7116,7 @@ async function applyRun(runItem, { render = true, preload = true } = {}) {
         timelineState.currentIndex = windowRuns.findIndex(item => item.run === currentRun);
         timelineState.isLive = currentRun === timelineState.latestRun;
         updateTimelineUi();
+        updateLegend();
         requestAnimationFrame(updateActiveLayersStrip);
         if (render) await renderAll();
         if (statusElement) statusElement.textContent = `Loaded ${currentRun}`;
@@ -7076,7 +7224,9 @@ function selectedProductKeys() {
         ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
         ...FRONTOGENESIS_CONTOUR_OVERLAYS,
         ...THERMODYNAMIC_CONTOUR_OVERLAYS
-    ].filter(c => activeOverlays[c.stateKey]).map(c => c.field);
+    ].filter(c => !c.changeControl && activeOverlays[c.stateKey]).map(c => c.field);
+    const selectedChangeContour = spcoaSelectedChangeContourField();
+    if (selectedChangeContour) contours.push(selectedChangeContour);
     if (activeOverlays.mslp) contours.push("sfc_mslp");
     if (activeOverlays.dcape) contours.push("dcape");
     if (activeOverlays.warmCloudDepth) contours.push("warm_cloud_depth");
@@ -7599,7 +7749,88 @@ function getEncoding(
    LOAD SCALAR TILE
    ========================================================================================= */
 
+/* V89 client-side numerical differences from the existing 24-hour S3 archive.
+   The two analyses use the SAME z/x/y tile grid, but each uses its own encoding.
+   We never substitute the nearest hour for a missing exact UTC reference. */
+const spcoaChangeSourceMetaCache = new Map();
+function spcoaPreviousRunId(run, hours) {
+    const timestamp = runIdToIso(run);
+    const ms = Date.parse(timestamp || "");
+    if (!Number.isFinite(ms)) return null;
+    const prev = new Date(ms - hours * 3600000).toISOString();
+    const candidate = prev.slice(0,4) + prev.slice(5,7) + prev.slice(8,10) + "_" + prev.slice(11,13);
+    return timelineState.availableRuns.some(item => item.run === candidate) ? candidate : null;
+}
+async function spcoaChangeSourceMeta(run, sourceField) {
+    const cacheKey = `${run}:${sourceField}`;
+    if (!spcoaChangeSourceMetaCache.has(cacheKey)) {
+        const task = fetchJSON(`${S3_BASE_URL}/runs/${run}/overlays/${sourceField}/metadata.json`);
+        spcoaChangeSourceMetaCache.set(cacheKey, task);
+    }
+    return spcoaChangeSourceMetaCache.get(cacheKey);
+}
+async function loadSpcoaChangeTile(field, z, x, y, run = currentRun, priority = 0) {
+    const def = SPCOA_CHANGE_FIELDS[field];
+    if (!def || !run) return null;
+    const n = 2 ** z;
+    if (y < 0 || y >= n) return null;
+    const previousRun = spcoaPreviousRunId(run, def.hours);
+    if (!previousRun) return null;
+    const nx = normalizeTileX(x, z);
+    const key = scalarTileKey(field, run, z, nx, y);
+    if (scalarTileCache.has(key)) {
+        touchNumericalTile("scalar", key);
+        return await scalarTileCache.get(key);
+    }
+    const task = (async () => {
+        const [presentMeta, priorMeta, presentTile, priorTile] = await Promise.all([
+            spcoaChangeSourceMeta(run, def.sourceField),
+            spcoaChangeSourceMeta(previousRun, def.sourceField),
+            loadContourTile(def.sourceField, z, nx, y, run, priority),
+            loadContourTile(def.sourceField, z, nx, y, previousRun, priority)
+        ]);
+        if (!presentTile || !priorTile || presentTile.length !== priorTile.length) return null;
+        const presentEncoding = getEncoding(presentMeta);
+        const priorEncoding = getEncoding(priorMeta);
+        const out = new Uint16Array(presentTile.length);
+        const missing = SPCOA_CHANGE_ENCODING.nodata;
+        for (let i = 0; i < out.length; i++) {
+            const now = presentTile[i], then = priorTile[i];
+            if (now === presentEncoding.nodata || then === priorEncoding.nodata ||
+                now === SCALAR_NODATA || then === SCALAR_NODATA) {
+                out[i] = missing; continue;
+            }
+            const currentValue = now * presentEncoding.scale + presentEncoding.offset;
+            const previousValue = then * priorEncoding.scale + priorEncoding.offset;
+            const delta = (currentValue - previousValue) * def.factor;
+            if (!Number.isFinite(delta)) {out[i] = missing; continue;}
+            out[i] = Math.max(0, Math.min(65534, Math.round(
+                (delta - SPCOA_CHANGE_ENCODING.offset) / SPCOA_CHANGE_ENCODING.scale
+            )));
+        }
+        return out;
+    })();
+    scalarTileCache.set(key, task);
+    try {
+        const tile = await task;
+        if (scalarTileCache.get(key) === task) {
+            if (tile) {
+                scalarTileCache.set(key, tile);
+                rememberNumericalTile("scalar", scalarTileCache, key, tile);
+            } else scalarTileCache.delete(key);
+        }
+        return tile;
+    } catch (error) {
+        if (scalarTileCache.get(key) === task) scalarTileCache.delete(key);
+        console.warn(`SPCOA ${field} unavailable for ${run}:`, error);
+        return null;
+    }
+}
+
 async function loadScalarTile(field, z, x, y, run = currentRun, priority = 0) {
+    if (SPCOA_CHANGE_FIELDS[field]) {
+        return loadSpcoaChangeTile(field, z, x, y, run, priority);
+    }
     if (!run) return null;
     const n = 2 ** z;
     if (y < 0 || y >= n) return null;
@@ -7688,6 +7919,9 @@ async function loadVectorTile(field, z, x, y, run = currentRun, priority = 0) {
    ========================================================================================= */
 
 async function loadContourTile(field, z, x, y, run = currentRun, priority = 0) {
+    if (SPCOA_CHANGE_CONTOUR_FIELDS[field]) {
+        return loadSpcoaChangeTile(SPCOA_CHANGE_CONTOUR_FIELDS[field].sourceField, z, x, y, run, priority);
+    }
     if (!run) return null;
     const n = 2 ** z;
     if (y < 0 || y >= n) return null;
@@ -7919,6 +8153,10 @@ function getCachedContourTile(
     x,
     y
 ) {
+
+    if (SPCOA_CHANGE_CONTOUR_FIELDS[field]) {
+        return getCachedScalarTile(SPCOA_CHANGE_CONTOUR_FIELDS[field].sourceField, z, x, y);
+    }
 
     const n =
         2 ** z;
@@ -9094,6 +9332,7 @@ function getFieldColor(
     }
 
 
+    if (definition.type === "spcoa_change") return spcoaChangeRgb(value, definition);
     if (definition.type === "q_vector_divergence") return getQDivColor(value);
     if (definition.type === "cin") return getCinColor(value);
     if (definition.type === "ecape") return getEcapeColor(value);
@@ -12072,8 +12311,10 @@ async function renderContourField(
     contourCtx.lineCap = "round";
 
     for (const level of levelsToRender) {
+        if (definition.changeContour && Math.abs(level) < 0.00001) continue;
 
         const contourColor =
+            colorScheme === "spcoa_change" ? (level < 0 ? "#246bfa" : "#e33838") :
             colorScheme === "wcd_reverse" ? getReversedWcdColor(level) :
             colorScheme === "scp_spc" ? getScpContourColorMatchingSrh(level) :
             colorScheme === "srh_spc" ? getSrhContourColor(level) :
@@ -12112,8 +12353,14 @@ async function renderContourField(
                 );
 
         contourCtx.strokeStyle = contourColor;
+        if (definition.changeContour) contourCtx.lineWidth = 1.75;
         if (isFrontogenesisContour) contourCtx.lineWidth = 3.0;
-        if (isPressureTemperatureContour) {
+        if (definition.changeContour) {
+            contourCtx.lineWidth = 1.75;
+            // V91: falling height/pressure dashed blue; rising solid red.
+            // Zero is excluded above, so neither side gets an ambiguous style.
+            contourCtx.setLineDash(level < 0 ? [8, 6] : []);
+        } else if (isPressureTemperatureContour) {
             const isFreezing = Math.abs(level) < 0.001;
             contourCtx.lineWidth = isFreezing ? 2.8 : 1.5;
             contourCtx.setLineDash(level < -0.001 ? [7, 5] : []);
@@ -12587,10 +12834,12 @@ async function renderContours() {
     }
 
     for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
-        if (activeOverlays[config.stateKey]) {
+        if (!config.changeControl && activeOverlays[config.stateKey]) {
             fields.push(config.field);
         }
     }
+    const changeContour = spcoaSelectedChangeContourField();
+    if (changeContour) fields.push(changeContour);
 
     if (fields.length === 0) {
         return;
@@ -14162,8 +14411,17 @@ function updateLegend() {
         field.units
             ? `${field.name} (${field.units})`
             : field.name;
+    if (field.type === "spcoa_change" && !spcoaPreviousRunId(currentRun, field.hours)) {
+        legendTitle.textContent += " — earlier analysis unavailable";
+    }
 
 
+    if (field.type === "spcoa_change") {
+        const bounds = spcoaChangeColorBounds(field);
+        const cap = spcoaChangeColorMax(field);
+        drawProportionalColorLegend(spcoaChangeLegendColors(), bounds);
+        renderProportionalLegendLabels([-cap,-cap/2,-1,0,1,cap/2,cap], bounds);
+    }
     if (field.type === "q_vector_divergence") {
         drawColorLegend(QDIV_COLORS);
         renderLegendLabels([-50,-40,-30,-20,-10,-5,5,10,20,30,40,50], QDIV_BOUNDS);
@@ -14442,8 +14700,10 @@ function getActiveContourSamples() {
     add(activeOverlays.freezingLevel, "freezing_level_height");
     add(activeOverlays.lclHeight, "lcl_height");
     for (const config of THERMODYNAMIC_CONTOUR_OVERLAYS) {
-        add(activeOverlays[config.stateKey], config.field);
+        if (!config.changeControl) add(activeOverlays[config.stateKey], config.field);
     }
+    const changeContour = spcoaSelectedChangeContourField();
+    if (changeContour) add(true, changeContour);
 
     for (const config of GEOPOTENTIAL_HEIGHT_OVERLAYS) {
         add(activeOverlays[config.stateKey], config.field);
@@ -16541,7 +16801,9 @@ if (fieldSelect) {
                 activeOverlays.divergence850 ||
                 activeOverlays.divergence700 ||
                 activeOverlays.divergence500 ||
-                activeOverlays.divergence250
+                activeOverlays.divergence250 ||
+                activeOverlays.mslpChangeContours ||
+                activeOverlays.h500ChangeContours
             ) {
 
                 await renderContours();
