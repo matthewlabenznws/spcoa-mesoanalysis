@@ -1263,10 +1263,14 @@ if (!__MP_CHILD) {
             button.id = "save-video";
             button.className = anchor.className;
             button.textContent = "Save Video";
-            button.title = "V101 high-detail MP4: PNG-matched composition, up to 4K per single panel, near-lossless target, 0.4 s per analysis";
+            button.title = "High-quality MP4 video using the same layout as Save PNG";
             anchor.insertAdjacentElement("afterend", button);
             return button;
         })();
+        // V109: GIF export is retired from the host UI; keep Save PNG + Save Video.
+        // The old GIF encoder helpers remain dormant so video/export internals
+        // and saved-layout compatibility are not disturbed by this UI change.
+        if (saveGif) saveGif.remove();
         const panelGrid = document.createElement("div");
         panelGrid.id = "panel-grid";
         panelGrid.className = "layout-1";
@@ -1277,6 +1281,7 @@ if (!__MP_CHILD) {
         let layoutCount = 1;
         let cameraBroadcasting = false;
         let lastTimelineValue = null;
+        let hostTimelineDragging = false;
         let sharedAnnotations = [];
         const sharedUndoHistory = [];
         const sharedRedoHistory = [];
@@ -1833,7 +1838,8 @@ if (!__MP_CHILD) {
             refreshSpcoaSectorOptions(d.getElementById("sector-select"));
             document.querySelectorAll("#sidebar input[id], #sidebar select[id], #drawing-toolbar input[id], #timeline-bar input[id], #timeline-bar select[id]").forEach(host => {
                 if (host.id === "layout-select" || host.id === "parameter-scope" ||
-                    host.id === "drawing-scope" || host.id === "spcoa-sounding-toggle") return;
+                    host.id === "drawing-scope" || host.id === "spcoa-sounding-toggle" ||
+                    (hostTimelineDragging && host.id === "timeline-slider")) return;
                 const child = d.getElementById(host.id);
                 if (!child) return;
                 if ((host.id === "cwa-border-color" || host.id === "city-density" || host.id.startsWith("roads-color-")) &&
@@ -1859,11 +1865,13 @@ if (!__MP_CHILD) {
             });
             updateSpcoaDensityUi();
             const hs = document.getElementById("timeline-slider"), cs = d.getElementById("timeline-slider");
-            if (hs && cs) { hs.min = cs.min; hs.max = cs.max; hs.value = cs.value; }
+            if (hs && cs && !hostTimelineDragging) {
+                hs.min = cs.min; hs.max = cs.max; hs.value = cs.value;
+            }
         }
 
         function syncTimeFromActiveChild() {
-            if (savedLayoutApplying || hostGifExporting) return;
+            if (savedLayoutApplying || hostGifExporting || hostTimelineDragging) return;
             const d = childDoc();
             if (!d) return;
             const slider = d.getElementById("timeline-slider");
@@ -2034,6 +2042,16 @@ if (!__MP_CHILD) {
             dispatchChildValue(el, activePanel, "input");
         });
 
+        // Keep the visible host slider under the pointer while background map
+        // panels process earlier scrub requests; never snap it back mid-drag.
+        const hostTimelineSlider = timeline.querySelector("#timeline-slider");
+        if (hostTimelineSlider) {
+            hostTimelineSlider.addEventListener("pointerdown", () => { hostTimelineDragging = true; });
+            const endHostDrag = () => { hostTimelineDragging = false; };
+            hostTimelineSlider.addEventListener("pointerup", endHostDrag);
+            hostTimelineSlider.addEventListener("pointercancel", endHostDrag);
+            hostTimelineSlider.addEventListener("blur", endHostDrag);
+        }
         timeline.addEventListener("click", event => {
             const button = event.target.closest("button[id]");
             if (!button) return;
@@ -3078,10 +3096,7 @@ if (!__MP_CHILD) {
 
         setInterval(() => { syncHostFromActiveChild(); syncTimeFromActiveChild(); if (drawingScope.value === "all") renderSharedOverlay(); }, 350);
         applyLayout(layoutSelect ? layoutSelect.value : 1);
-        if (saveGif) {
-            saveGif.title = "Export the selected timeline as a synchronized 1-, 2-, or 4-panel GIF (one-frame test works before historical runs exist).";
-            saveGif.style.opacity = "1";
-        }
+        // Save GIF has been removed from the host toolbar (V109).
     })();
 } else {
     document.body.classList.add("mp-child");
@@ -4565,6 +4580,14 @@ const adjacentPreloadControllers = new Map();
 
 const PLAYBACK_BASE_MS = 700;
 const LIVE_MANIFEST_REFRESH_MS = 180000;
+// V109: live scrubbing coalesces rapid pointer input, showing only the newest
+// requested hour rather than queuing every intermediate full-resolution render.
+const SPCOA_SCRUB_DEBOUNCE_MS = 100;
+let timelineScrubTimer = null;
+let timelineScrubPendingRun = null;
+let timelineScrubDesiredRun = null;
+let timelineScrubDrainActive = false;
+let timelineSliderScrubbing = false;
 
 let runMetadata = null;
 
@@ -7211,7 +7234,7 @@ function ensureGifProductsAvailable() {
     }
 }
 
-async function applyRun(runItem, { render = true, preload = true } = {}) {
+async function applyRun(runItem, { render = true, preload = true, scrub = false } = {}) {
     if (!runItem || !runItem.run || timelineState.switching) return false;
     if (runItem.run === currentRun && runMetadata) {
         updateTimelineUi();
@@ -7223,6 +7246,10 @@ async function applyRun(runItem, { render = true, preload = true } = {}) {
     if (statusElement) statusElement.textContent = `Loading ${runItem.run}...`;
     try {
         const bundle = await loadRunMetadata(runItem.run);
+        // If the user dragged farther while metadata loaded, do not redraw a
+        // frame that is already obsolete. The scrub queue will load the latest.
+        if (scrub && timelineScrubPendingRun &&
+            timelineScrubPendingRun.run !== runItem.run) return false;
         invalidateNumericalRenders();
         currentRun = runItem.run;
         currentAnalysisTime = runItem.analysis_time || bundle.metadata.analysis_time || runIdToIso(runItem.run);
@@ -7289,7 +7316,11 @@ function updateTimelineUi() {
         timelineSlider.min = "0";
         timelineSlider.max = String(Math.max(0, runs.length - 1));
         timelineSlider.step = "1";
-        timelineSlider.value = String(Math.max(0, timelineState.currentIndex));
+        // The pointer and latest-requested time always win over an older render.
+        if (!timelineSliderScrubbing &&
+            (!timelineScrubDesiredRun || timelineScrubDesiredRun === currentRun)) {
+            timelineSlider.value = String(Math.max(0, timelineState.currentIndex));
+        }
         timelineSlider.disabled = runs.length <= 1;
     }
     if (timelinePrevButton) timelinePrevButton.disabled = timelineState.currentIndex <= 0;
@@ -7322,6 +7353,13 @@ function scheduleNextPlaybackFrame() {
 }
 
 function setPlaying(value) {
+    if (value) {
+        if (timelineScrubTimer !== null) clearTimeout(timelineScrubTimer);
+        timelineScrubTimer = null;
+        timelineScrubPendingRun = null;
+        timelineScrubDesiredRun = null;
+        timelineSliderScrubbing = false;
+    }
     timelineState.playing = Boolean(value);
     stopPlaybackTimer();
     updateTimelineUi();
@@ -7382,7 +7420,16 @@ function scheduleAdjacentPreload() {
     const candidates = timelineState.playing
         ? [runs[index + 1], runs[index + 2], runs[index - 1]]
         : [runs[index + 1], runs[index - 1]];
-    const startPreload = () => candidates.filter(Boolean).forEach(item => preloadRunProducts(item));
+    const startPreload = () => {
+        if (document.hidden || timelineSliderScrubbing || timelineScrubPendingRun) return;
+        candidates.filter(Boolean).forEach(item => void preloadRunProducts(item));
+        // Most of the delay after picking an uncached hour is loading dozens
+        // of per-run metadata objects. Warm one nearby hour in idle time.
+        const neighbor = candidates.find(item => item && !runMetadataCache.has(item.run));
+        if (neighbor) void loadRunMetadata(neighbor.run).catch(error => {
+            console.debug('Adjacent analysis metadata not yet available:', neighbor.run, error);
+        });
+    };
     if ("requestIdleCallback" in window) {
         window.requestIdleCallback(startPreload, { timeout: 350 });
     } else {
@@ -7409,17 +7456,79 @@ async function refreshAvailableTimes() {
     }
 }
 
+// V109 — throttled live preview with latest-wins switching. Each panel
+// performs at most one active render; rapid input replaces pending requests.
+function requestTimelineScrub(item, immediate = false) {
+    if (!item || !item.run) return;
+    timelineScrubPendingRun = item;
+    timelineScrubDesiredRun = item.run;
+    timelineState.pendingLiveSwitch = false;
+    // When already rendering, the active drain will pick up the latest hour.
+    if (timelineScrubDrainActive) return;
+    if (immediate && timelineScrubTimer !== null) {
+        clearTimeout(timelineScrubTimer);
+        timelineScrubTimer = null;
+    }
+    // First preview starts promptly even during CONTINUOUS dragging. Do not
+    // restart the timer on every input; that would wait until drag stops.
+    if (timelineScrubTimer === null) {
+        timelineScrubTimer = setTimeout(() => {
+            timelineScrubTimer = null;
+            void drainTimelineScrub();
+        }, immediate ? 0 : SPCOA_SCRUB_DEBOUNCE_MS);
+    }
+}
+async function drainTimelineScrub() {
+    if (timelineScrubDrainActive) return;
+    timelineScrubDrainActive = true;
+    try {
+        while (timelineScrubPendingRun) {
+            // Let a currently running map switch finish before starting the
+            // newest scrub request; never drop the user's final position.
+            if (timelineState.switching) {
+                await new Promise(resolve => setTimeout(resolve, 35));
+                continue;
+            }
+            const item = timelineScrubPendingRun;
+            timelineScrubPendingRun = null;
+            await applyRun(item, {render:true, preload:false, scrub:true});
+        }
+    } finally {
+        timelineScrubDrainActive = false;
+        if (timelineScrubPendingRun) {
+            if (timelineScrubTimer !== null) clearTimeout(timelineScrubTimer);
+            timelineScrubTimer = setTimeout(() => {
+                timelineScrubTimer = null;
+                void drainTimelineScrub();
+            }, 0);
+        } else {
+            if (currentRun === timelineScrubDesiredRun && !timelineSliderScrubbing) {
+                timelineScrubDesiredRun = null;
+            }
+            updateTimelineUi();
+            scheduleAdjacentPreload();
+        }
+    }
+}
+
 function bindTimelineControls() {
     if (timelinePlayButton) timelinePlayButton.addEventListener("click", () => setPlaying(!timelineState.playing));
     if (timelinePrevButton) timelinePrevButton.addEventListener("click", () => advanceTimeline(-1));
     if (timelineNextButton) timelineNextButton.addEventListener("click", () => advanceTimeline(1));
     if (timelineSlider) {
-        // Scrubbing should feel immediate without starting a full tile/render cycle for
-        // every pointer movement. While dragging, update only the UTC readout.
+        timelineSlider.addEventListener("pointerdown", () => {
+            timelineSliderScrubbing = true;
+        });
+        timelineSlider.addEventListener("pointercancel", () => {
+            timelineSliderScrubbing = false;
+        });
+        // Show the UTC time immediately, and preview map data while the thumb
+        // moves. Short throttling and latest-wins coalescing prevent full redraws
+        // on every high-frequency pointer event.
         timelineSlider.addEventListener("input", event => {
+            timelineSliderScrubbing = true;
             const requestedIndex = Number(event.target.value);
-            const runs = filteredTimelineRuns();
-            const item = runs[requestedIndex];
+            const item = filteredTimelineRuns()[requestedIndex];
             if (timelineState.playing) {
                 timelineState.playing = false;
                 stopPlaybackTimer();
@@ -7428,21 +7537,22 @@ function bindTimelineControls() {
                     timelinePlayButton.title = "Play animation";
                 }
             }
-            if (item && timelineTimeLabel) {
-                timelineTimeLabel.textContent = formatTimelineUtc(item.analysis_time || runIdToIso(item.run));
+            if (item) {
+                if (timelineTimeLabel) {
+                    timelineTimeLabel.textContent = formatTimelineUtc(
+                        item.analysis_time || runIdToIso(item.run));
+                }
+                requestTimelineScrub(item);
             }
         });
-
-        // Load/render once the user commits the scrub position (mouse/touch release
-        // or keyboard change), rather than repeatedly while the thumb is moving.
-        timelineSlider.addEventListener("change", async event => {
+        // A mouse/touch release or keyboard commit loads the FINAL selected
+        // hour promptly, even if an intermediate analysis is still rendering.
+        timelineSlider.addEventListener("change", event => {
+            timelineSliderScrubbing = false;
             const requestedIndex = Number(event.target.value);
-            const runs = filteredTimelineRuns();
-            const item = runs[requestedIndex];
-            if (item) {
-                timelineState.pendingLiveSwitch = false;
-                await applyRun(item);
-            } else updateTimelineUi();
+            const item = filteredTimelineRuns()[requestedIndex];
+            if (item) requestTimelineScrub(item, true);
+            else updateTimelineUi();
         });
     }
     if (timelineLoopToggle) timelineLoopToggle.addEventListener("change", event => { timelineState.looping = event.target.checked; updateTimelineUi(); });
