@@ -13986,6 +13986,36 @@ function getCityName(feature) {
 }
 
 
+/* V112 — Resolve shortened metro names from the existing city GeoJSON.
+ * Some source records carry abbreviated labels (e.g. Kansas, Oklahoma)
+ * even when their point coordinates are in the Kansas City / Oklahoma City
+ * metro areas. Use accurate location-aware display names without changing
+ * the dataset or accidentally renaming other towns with those names.
+ * Full source names are retained automatically where already available. */
+const SPCOA_CANONICAL_METRO_LABELS = Object.freeze([
+    Object.freeze({shortName:"kansas", fullName:"Kansas City", latitude:39.0997,
+        longitude:-94.5786, maxDistanceKm:55, cityClass:1}),
+    Object.freeze({shortName:"oklahoma", fullName:"Oklahoma City", latitude:35.4676,
+        longitude:-97.5164, maxDistanceKm:65, cityClass:1})
+]);
+function spcoaCanonicalCityMetro(feature) {
+    const name=String(getCityName(feature)||"").trim().toLowerCase();
+    const point=feature?.geometry;
+    if (point?.type!=="Point" || !Array.isArray(point.coordinates)) return null;
+    const lon=Number(point.coordinates[0]),lat=Number(point.coordinates[1]);
+    if (!Number.isFinite(lon)||!Number.isFinite(lat)) return null;
+    for (const metro of SPCOA_CANONICAL_METRO_LABELS) {
+        if (name!==metro.shortName && name!==metro.fullName.toLowerCase()) continue;
+        const dLat=(lat-metro.latitude)*111.2;
+        const dLon=(lon-metro.longitude)*111.2*Math.cos(metro.latitude*Math.PI/180);
+        if (Math.hypot(dLat,dLon)<=metro.maxDistanceKm) return metro;
+    }
+    return null;
+}
+function getCityDisplayName(feature) {
+    return spcoaCanonicalCityMetro(feature)?.fullName || getCityName(feature);
+}
+
 function getCityStateFP(feature) {
     const properties = feature.properties || {};
 
@@ -14106,10 +14136,13 @@ function getEffectiveCityClass(feature) {
     const sourceClass = getCityClass(feature);
     const name = getCityName(feature).trim().toLowerCase();
     let result = sourceClass;
+    const canonicalMetro = spcoaCanonicalCityMetro(feature);
+    if (canonicalMetro) result = Math.min(result, canonicalMetro.cityClass);
 
     if (LBF_CITY_PRIORITY_OVERRIDES.has(key)) {
         result = LBF_CITY_PRIORITY_OVERRIDES.get(key);
     } else if (
+        !canonicalMetro &&
         presentPrimaryCityNames.has(name) &&
         !PRIMARY_SAME_NAME_CITY_KEYS.has(key)
     ) {
@@ -14155,6 +14188,7 @@ function getCityPriority(feature) {
     if (LBF_CITY_PRIORITY_OVERRIDES.has(key)) {
         priority += 75;
     }
+    if (spcoaCanonicalCityMetro(feature)) priority += 125;
 
     return priority;
 }
@@ -14264,7 +14298,7 @@ function renderCities() {
         if (cityAreaCode !== "ALL" && !spcoaCityInsideCwa(feature, lon, lat, cityAreaCode)) continue;
         if (!cityVisibleAtZoom(feature, zoom)) continue;
 
-        const name = getCityName(feature);
+        const name = getCityDisplayName(feature);
         if (!name) continue;
         const point = map.project(coordinates);
         if (point.x < -100 || point.x > rect.width + 100 ||
