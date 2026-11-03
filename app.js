@@ -21166,6 +21166,11 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-title{font-weight:600;font-size:14px;line-height:1.2}
 #spcoa-sounding-panel .ss-sub{font-size:11px;color:#c7c7c7}
 #spcoa-sounding-panel .ss-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+/* V108: Parcel control stays on one horizontal line; the native select must
+   have enough height to show its selected text without vertical clipping. */
+#spcoa-sounding-panel .ss-actions .ss-parcel-control{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;flex:none}
+#spcoa-sounding-panel .ss-actions .ss-parcel-control select{height:26px;min-width:132px;max-width:168px;padding:3px 7px;line-height:18px;vertical-align:middle}
+#spcoa-sounding-panel .ss-actions .ss-parcel-export{display:inline-flex;align-items:center;min-width:132px;height:26px;padding:3px 8px;background:#161616;border:1px solid #777;border-radius:2px;color:#eee;font:11px/18px Arial,sans-serif;white-space:nowrap}
 #spcoa-sounding-panel button,#spcoa-sounding-panel select{background:#161616;color:#eee;border:1px solid #777;padding:4px 6px;border-radius:2px;cursor:pointer;font:11px Arial,sans-serif}
 #spcoa-sounding-panel button:hover{background:#343434}
 #spcoa-sounding-panel .ss-body{padding:2px;overflow:clip}
@@ -21272,7 +21277,7 @@ function spcoaSndInjectStyles() {
 #spcoa-sounding-panel .ss-tor-note{font:9px/1.22 Arial,sans-serif;color:#98acb9;margin-top:4px}
 
 
-#spcoa-sounding-panel #ss-omega-status{font:10px/1.25 ui-monospace,Consolas,monospace;color:#b2c2cf;white-space:normal;margin-left:auto;padding:1px 5px;border:1px solid #43515b;border-radius:3px}
+#spcoa-sounding-panel #ss-omega-status{display:none!important}
 #spcoa-sounding-panel #ss-omega-status[data-state="loaded"]{color:#a4e5bb;border-color:#477b5e}
 #spcoa-sounding-panel #ss-omega-status[data-state="error"]{color:#ffbf94;border-color:#956349}
 #spcoa-sounding-panel #ss-omega-status[data-state="missing"]{color:#d4c19b}
@@ -21287,7 +21292,7 @@ function spcoaSndBuildPanel() {
     const panel=document.createElement('section');panel.id='spcoa-sounding-panel';
     panel.setAttribute('role','dialog');panel.setAttribute('aria-label','HRRR F00 Sounding');
     panel.innerHTML=`<div class="ss-head"><div class="ss-heading"><div class="ss-title" id="ss-title">HRRR F00 | Valid: —</div><div class="ss-locrow"><span class="ss-sub" id="ss-location">Select native HRRR grid point</span><span id="ss-hrrr-note">Native HRRR F00 values may differ slightly from SPCOA map fields</span></div></div>
-      <div class="ss-actions"><label>Parcel <select id="ss-parcel-mode"><option value="ml" selected>Mixed Layer</option><option value="sb">Surface Based</option><option value="mu">Most Unstable</option></select></label>
+      <div class="ss-actions"><label class="ss-parcel-control"><span>Parcel</span><select id="ss-parcel-mode" aria-label="Parcel type"><option value="ml" selected>Mixed Layer</option><option value="sb">Surface Based</option><option value="mu">Most Unstable</option></select></label>
       <label class="ss-compare"><input type="checkbox" id="ss-compare"> Previous hour</label>
       <button type="button" id="ss-save">Save PNG</button><button type="button" id="ss-close" aria-label="Close sounding">✕</button></div></div>
       <div class="ss-body"><div class="ss-meta-row"><span id="ss-credit">Sounding created by: Matthew Labenz · NWS North Platte, NE · Built with SHARPpy + Peters ECAPE</span><span id="ss-omega-status" role="status" aria-live="polite">Omega: waiting</span><span id="ss-status" role="status" aria-live="polite"></span></div>
@@ -22073,6 +22078,11 @@ async function spcoaSndExportPng(){
     if(button){button.disabled=true;button.textContent='Saving…';}
     try{
         const html2canvas=await spcoaSndLoadHtml2Canvas();
+        // html2canvas can clip native <select> text. Capture the actual selected
+        // option before cloning and use an identically styled text label in PNG.
+        const parcelSelect=document.getElementById('ss-parcel-mode');
+        const selectedParcelLabel=parcelSelect?.selectedOptions?.[0]?.textContent?.trim()
+            || ({ml:'Mixed Layer',sb:'Surface Based',mu:'Most Unstable'}[SPCOA_SOUNDING.parcelMode] || 'Mixed Layer');
         // Crop at the last visible diagnostic row. Never derive export height
         // from panel.clientHeight, which may include viewport-sized black space.
         spcoaSndFitPanelHeight();
@@ -22097,6 +22107,15 @@ async function spcoaSndExportPng(){
                 if(head){head.style.position='relative';head.style.top='auto';}
                 const btn=el.querySelector('#ss-save');
                 if(btn)btn.textContent='Save PNG';
+                // Preserve the selected parcel in the PNG without depending on
+                // html2canvas's inconsistent native select/form-control capture.
+                const clonedParcel=el.querySelector('#ss-parcel-mode');
+                if(clonedParcel){
+                    const parcelText=clone.createElement('span');
+                    parcelText.className='ss-parcel-export';
+                    parcelText.textContent=selectedParcelLabel;
+                    clonedParcel.replaceWith(parcelText);
+                }
                 for(const id of ['ss-skew-tools','ss-skew-inspect','ss-skew-hover']){
                     const ui=el.querySelector('#'+id);
                     if(ui)ui.style.display='none';
