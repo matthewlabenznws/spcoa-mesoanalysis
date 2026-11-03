@@ -21150,7 +21150,7 @@ function spcoaSndInjectStyles() {
     if(document.getElementById('spcoa-sounding-css'))return;
     const css=document.createElement('style');css.id='spcoa-sounding-css';
     css.textContent=`
-#spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));max-height:calc(100vh - 38px);overflow-y:auto;overflow-x:hidden;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
+#spcoa-sounding-panel{position:fixed;z-index:6100;right:10px;top:30px;width:min(1590px,calc(100vw - 18px));height:max-content;max-height:calc(100vh - 38px);overflow-y:auto;overflow-x:hidden;box-sizing:border-box;background:#020204;color:#e6e6e8;border:1px solid #787878;border-radius:2px;box-shadow:0 14px 48px #000c;font:12px/1.28 Arial,Helvetica,sans-serif;display:none}
 #spcoa-sounding-panel *{box-sizing:border-box}
 #spcoa-sounding-panel .ss-head{display:flex;gap:9px;align-items:center;justify-content:space-between;padding:4px 9px;border-bottom:1px solid #737373;background:#050506;position:sticky;top:0;z-index:3}
 #spcoa-sounding-panel .ss-heading{flex:1 1 auto;min-width:260px}
@@ -21359,6 +21359,7 @@ function spcoaSndOpenAt(lat,lon) {
     SPCOA_SOUNDING.point={lat,lon};
     panel.style.display='block';
     spcoaSndFitPanelHeight();
+    panel.scrollTop=0;
     spcoaSndStatus('Loading sounding');
     if (!currentRun) spcoaSndStatus('No HRRR F00 analysis hour selected yet.');
     void spcoaSndLoadSelection();
@@ -21370,30 +21371,33 @@ function spcoaSndStatus(text) {
     el.classList.toggle('is-loading',text==='Loading sounding');
 }
 
+/* V104: measure the *real last visible content element*, not scrollHeight,
+ * clientHeight, or a previous forced popup height. Scroll offsets matter: a
+ * partially scrolled panel has getBoundingClientRect() values in viewport
+ * space, so translate them back to the panel's content coordinates. */
 function spcoaSndContentHeight(panel){
-    if(!panel) return 0;
+    if(!panel)return 0;
+    const panelTop=panel.getBoundingClientRect().top;
+    const bottom=(el)=>el.getBoundingClientRect().bottom-panelTop+panel.scrollTop;
     const body=panel.querySelector('.ss-body');
-    if(body){
-        const note=body.querySelector('#ss-archive-note');
-        const noteBottom=note && getComputedStyle(note).display!=='none'
-            ? (note.offsetTop + note.offsetHeight)
-            : body.scrollHeight;
-        return Math.ceil(body.offsetTop + noteBottom + 4);
-    }
-    return Math.ceil(panel.scrollHeight || panel.clientHeight || 0);
+    const tables=panel.querySelector('.ss-tables');
+    const note=panel.querySelector('#ss-archive-note');
+    let last=0;
+    if(tables)last=Math.max(last,bottom(tables));
+    if(note && getComputedStyle(note).display!=='none')last=Math.max(last,bottom(note));
+    if(!last && body)last=bottom(body);
+    return Math.ceil(Math.max(1,last+4));
 }
+/* Intrinsic sizing prevents the dead black space introduced by V103. The
+ * browser caps the popup at the viewport; its *contents*, not the empty
+ * container, determine its natural height. */
 function spcoaSndFitPanelHeight(){
     const panel=document.getElementById('spcoa-sounding-panel');
-    if(!panel || panel.style.display!=='block') return;
-    const maxH=Math.max(420, window.innerHeight - 38);
-    panel.style.height='auto';
-    panel.style.maxHeight=maxH+'px';
+    if(!panel||panel.style.display!=='block')return;
+    panel.style.height='max-content';
+    panel.style.maxHeight='calc(100vh - 38px)';
     panel.style.overflowX='hidden';
-    panel.style.overflowY='hidden';
-    const natural=Math.max(0, spcoaSndContentHeight(panel));
-    const target=Math.min(maxH, natural || maxH);
-    panel.style.height=target+'px';
-    panel.style.overflowY=(natural>maxH)?'auto':'hidden';
+    panel.style.overflowY='auto';
 }
 /* V56: a small white loading spinner below the blue creator credit.
  * The label remains visible until profile and diagnostics have finished;
@@ -22004,7 +22008,8 @@ async function spcoaSndExportPng(){
     if(button){button.disabled=true;button.textContent='Saving…';}
     try{
         const html2canvas=await spcoaSndLoadHtml2Canvas();
-        // Capture only the actual sounding content height, not extra empty panel space.
+        // Crop at the last visible diagnostic row. Never derive export height
+        // from panel.clientHeight, which may include viewport-sized black space.
         spcoaSndFitPanelHeight();
         const width=Math.ceil(Math.max(panel.scrollWidth,panel.clientWidth));
         const height=Math.ceil(Math.max(1,spcoaSndContentHeight(panel)));
@@ -22021,6 +22026,7 @@ async function spcoaSndExportPng(){
                 el.style.top='0';el.style.left='0';el.style.right='auto';
                 el.style.width=width+'px';el.style.maxHeight='none';
                 el.style.minHeight='0';el.style.height=height+'px';el.style.overflow='visible';
+                el.scrollTop=0;
                 el.style.borderRadius='0';el.style.boxShadow='none';
                 const head=el.querySelector('.ss-head');
                 if(head){head.style.position='relative';head.style.top='auto';}
