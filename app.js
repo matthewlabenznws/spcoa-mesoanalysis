@@ -1,3 +1,4 @@
+/* V114: City labels and Cities controls removed from all map views and exports. */
 /* V96 SCOPE FIX — 2026-11-03
    Restores rendering in the multi-panel map iframe: helper functions defined
    outside the child block now receive activeField, activeOverlays, and the
@@ -313,67 +314,18 @@ function updateSpcoaDensityUi(root = document) {
     if (slider && label) label.textContent = `${spcoaCityDensityDescription(slider.value)} (${slider.value}%)`;
 }
 /* Add controls to both host sidebar and child sidebar: index.html stays unchanged. */
+/* V114: Remove the cities overlay from the viewer entirely.
+   Keep the hidden Cities row in the DOM because the Roads/Counties control
+   installers use it as an insertion anchor. No city controls are created. */
 function installSpcoaCityControls() {
     const toggle = document.getElementById("cities-toggle");
-    const row = toggle?.closest("label");
-    if (!row || document.getElementById("spcoa-city-options")) return;
-
-    const panel = document.createElement("div");
-    panel.id = "spcoa-city-options";
-    panel.style.cssText = "margin:4px 0 9px 22px;padding:8px 8px 9px;" +
-        "border:1px solid #31526a;border-radius:6px;background:#10283a;" +
-        "display:flex;flex-direction:column;gap:7px;";
-    const labelCss = "font:600 11px Inter,Arial,sans-serif;color:#c7d9e6;";
-    const areaLabel = document.createElement("label");
-    areaLabel.htmlFor = "city-cwa-filter";
-    areaLabel.textContent = "City Area";
-    areaLabel.style.cssText = labelCss;
-    const area = document.createElement("select");
-    area.id = "city-cwa-filter";
-    area.title = "Filter city names by an NWS County Warning Area";
-    area.setAttribute("aria-label", "City label geographic area");
-    area.style.cssText = "width:100%;min-width:0;padding:6px;font-size:11px;";
-    for (const [value, description] of [
-        ["ALL", "All cities"],
-        [SPCOA_CITY_FOLLOW_BORDER, "Follow CWA Borders selection"]
-    ]) {
-        const option = document.createElement("option");
-        option.value = value; option.textContent = description;
-        area.appendChild(option);
+    if (toggle) {
+        toggle.checked = false;
+        toggle.disabled = true;
+        toggle.closest("label")?.style.setProperty("display", "none", "important");
     }
-    const savedArea = readSpcoaCityFilter();
-    if (savedArea !== "ALL" && savedArea !== SPCOA_CITY_FOLLOW_BORDER) {
-        const option = document.createElement("option");
-        option.value = savedArea; option.textContent = savedArea;
-        option.dataset.spcoaCityOffice = "1";
-        area.appendChild(option);
-    }
-    area.value = savedArea;
-
-    const densityRow = document.createElement("div");
-    densityRow.style.cssText = "display:flex;justify-content:space-between;gap:5px;align-items:center;";
-    const densityText = document.createElement("label");
-    densityText.htmlFor = "city-density";
-    densityText.textContent = "City Density";
-    densityText.style.cssText = labelCss;
-    const densityValue = document.createElement("span");
-    densityValue.id = "city-density-label";
-    densityValue.style.cssText = "font:10px Inter,Arial,sans-serif;color:#d4e4ee;white-space:nowrap;";
-    densityRow.append(densityText, densityValue);
-    const slider = document.createElement("input");
-    slider.type = "range"; slider.id = "city-density";
-    slider.min = "0"; slider.max = "100"; slider.step = "5";
-    slider.value = String(readSpcoaCityDensity());
-    slider.title = "Fewer or more town names at the same zoom level";
-    slider.setAttribute("aria-label", "City label density");
-    slider.style.cssText = "width:100%;margin:1px 0 0;accent-color:#55baf3;";
-    const count = document.createElement("span");
-    count.id = "city-count-label";
-    count.textContent = "";
-    count.style.cssText = "font:10px Inter,Arial,sans-serif;color:#96b3c4;";
-    panel.append(areaLabel, area, densityRow, slider, count);
-    row.insertAdjacentElement("afterend", panel);
-    updateSpcoaDensityUi();
+    const panel = document.getElementById("spcoa-city-options");
+    if (panel) panel.remove();
 }
 
 function readSpcoaCwaBorderColor() {
@@ -13729,52 +13681,9 @@ async function loadGeography() {
     }
 
 
-    /*
-     * Cities are stored separately as GeoJSON.
-     *
-     * Failure to load cities should not prevent the rest of the map
-     * from working.
-     */
-    try {
-
-        const cityResponse =
-            await fetch(
-                "data/cities.geojson"
-            );
-
-
-        if (
-            cityResponse.ok
-        ) {
-
-            const cities =
-                await cityResponse.json();
-
-
-            cityFeatures =
-                cities.features || [];
-
-            rebuildCityClassificationCache();
-            rebuildCitySpatialGrid();
-
-        }
-        else {
-
-            console.warn(
-                "Unable to load data/cities.geojson"
-            );
-
-        }
-
-    }
-    catch (error) {
-
-        console.warn(
-            "Cities could not be loaded:",
-            error
-        );
-
-    }
+    // V114: City labels are removed; do not fetch cities.geojson.
+    cityFeatures = [];
+    citySpatialGrid.clear();
 
     // Road data loads asynchronously; it must never delay the weather analysis.
     spcoaEnsureRoads();
@@ -14266,125 +14175,10 @@ function getCityLabelBox(ctx, name, point) {
    ========================================================================================= */
 
 function renderCities() {
+    // V114: City labels have been removed from all map views. Keep the
+    // dedicated canvas blank so previously saved labels cannot reappear.
     spcoaVisibleCityLabelBoxes = [];
-    // Clear the separate city layer even when labels are switched off.
     prepareContext(cityLabelCanvas, cityLabelCtx);
-    const cityCountLabel = document.getElementById("city-count-label");
-    if (!citiesEnabled || !cityFeatures.length) {
-        if (cityCountLabel) cityCountLabel.textContent = citiesEnabled ? "No cities loaded" : "Cities are hidden";
-        return;
-    }
-    const cityAreaCode = effectiveCityCwaFilter();
-    if (cityAreaCode !== "ALL" && !cityCwaGeometryIndex.has(cityAreaCode)) {
-        if (cityCountLabel) cityCountLabel.textContent = `CWA ${cityAreaCode} unavailable`;
-        return;
-    }
-
-    const zoom = map.getZoom();
-    const rect = mapWrapper.getBoundingClientRect();
-    const b = map.getBounds();
-    const lonMargin = (b.getEast() - b.getWest()) * 0.09;
-    const latMargin = (b.getNorth() - b.getSouth()) * 0.09;
-    const west = b.getWest() - lonMargin;
-    const east = b.getEast() + lonMargin;
-    const south = b.getSouth() - latMargin;
-    const north = b.getNorth() + latMargin;
-    const ctx = cityLabelCtx;
-
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-
-    const candidates = [];
-    for (const feature of cityFeaturesNearView(west, east, south, north)) {
-        if (!feature.geometry || feature.geometry.type !== "Point") continue;
-        const coordinates = feature.geometry.coordinates;
-        if (!Array.isArray(coordinates) || coordinates.length < 2) continue;
-        const [lon, lat] = coordinates;
-        // Most locations lie outside the view. Test coordinates before
-        // calling map.project and before checking priority/classification.
-        if (lon < west || lon > east || lat < south || lat > north) continue;
-        if (cityAreaCode !== "ALL" && !spcoaCityInsideCwa(feature, lon, lat, cityAreaCode)) continue;
-        if (!cityVisibleAtZoom(feature, zoom)) continue;
-
-        const name = getCityDisplayName(feature);
-        if (!name) continue;
-        const point = map.project(coordinates);
-        if (point.x < -100 || point.x > rect.width + 100 ||
-            point.y < -40 || point.y > rect.height + 40) continue;
-        candidates.push({ feature, name, point, priority: getCityPriority(feature) });
-    }
-
-    candidates.sort((a, b) =>
-        b.priority - a.priority ||
-        getCityKey(a.feature).localeCompare(getCityKey(b.feature))
-    );
-
-    // Spatial hashing keeps overlap checks quick even with denser towns.
-    // A candidate checks only the nearby accepted labels, not every label.
-    const occupiedGrid = new Map();
-    const cellSize = 64;
-    // Sparse spreads names farther apart; Maximum packs them more tightly.
-    const padding = Math.max(0.5, 1.5 + (50 - cityDensity) * 0.075);
-    // Bounds CPU and labeling in dense urban areas; scaled by screen area.
-    const maxLabels = Math.max(35, Math.round(
-        (rect.width * rect.height / 1000000) * (85 + cityDensity * 7)
-    ));
-    let labelsDrawn = 0;
-    function cellsForBox(box) {
-        return {
-            left: Math.floor((box.left - padding) / cellSize),
-            right: Math.floor((box.right + padding) / cellSize),
-            top: Math.floor((box.top - padding) / cellSize),
-            bottom: Math.floor((box.bottom + padding) / cellSize)
-        };
-    }
-
-    for (const { feature, name, point } of candidates) {
-        if (labelsDrawn >= maxLabels) break;
-        ctx.font = getCityFont(feature, zoom);
-        const box = getCityLabelBox(ctx, name, point);
-        const cells = cellsForBox(box);
-        let collides = false;
-
-        for (let cy = cells.top; cy <= cells.bottom && !collides; cy++) {
-            for (let cx = cells.left; cx <= cells.right; cx++) {
-                const list = occupiedGrid.get(`${cx}:${cy}`);
-                if (list && list.some(other => cityBoxesOverlap(box, other, padding))) {
-                    collides = true;
-                    break;
-                }
-            }
-        }
-        if (collides) continue;
-
-        for (let cy = cells.top; cy <= cells.bottom; cy++) {
-            for (let cx = cells.left; cx <= cells.right; cx++) {
-                const key = `${cx}:${cy}`;
-                const list = occupiedGrid.get(key);
-                if (list) list.push(box);
-                else occupiedGrid.set(key, [box]);
-            }
-        }
-
-        // Keep positions for road shield collision avoidance (city text wins).
-        spcoaVisibleCityLabelBoxes.push(box);
-        // AguaceroWX-inspired look: compact BRIGHT WHITE city names with a
-        // dark charcoal outline (rather than dark text with a white halo).
-        // No city dot markers; the screenshot uses just place names.
-        ctx.strokeStyle = "rgba(9, 17, 25, 0.96)";
-        ctx.lineWidth = 2.8;
-        ctx.strokeText(name, point.x, point.y);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(name, point.x, point.y);
-        labelsDrawn++;
-    }
-
-    ctx.restore();
-    if (cityCountLabel) cityCountLabel.textContent = `${labelsDrawn} city labels shown`;
-
 }
 
 /* =========================================================================================
@@ -14826,8 +14620,7 @@ function renderGeography() {
 
     geographyCtx.restore();
 
-    // City labels remain on their dedicated canvas; highway route
-    // numbers and shields are intentionally not rendered.
+    // City labels have been removed; clear the dedicated label canvas.
     renderCities();
 }
 
@@ -17765,23 +17558,13 @@ if (countiesToggle) {
    ========================================================================================= */
 
 if (citiesToggle) {
-
-    citiesToggle.addEventListener(
-
-        "change",
-
-        event => {
-
-            citiesEnabled =
-                event.target.checked;
-
-
-            renderGeography();
-
-        }
-
-    );
-
+    citiesToggle.checked = false;
+    citiesToggle.disabled = true;
+    citiesToggle.addEventListener("change", () => {
+        citiesEnabled = false;
+        citiesToggle.checked = false;
+        renderCities();
+    });
 }
 
 
@@ -18277,8 +18060,8 @@ async function initialize() {
 
         if (citiesToggle) {
 
-            citiesEnabled =
-                citiesToggle.checked;
+            citiesEnabled = false;
+            citiesToggle.checked = false;
 
         }
 
@@ -19018,7 +18801,7 @@ async function spcoaDrawExportMapLayers(ctx, outW, mapH, mapY = 0) {
     await spcoaDrawExportMapBase(ctx, outW, mapH, mapY);
     const layers = [
         weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas,
-        cityLabelCanvas, hodographCanvas, stationObsCanvas,
+        hodographCanvas, stationObsCanvas,
         annotationCanvas, contourLabelCanvas
     ].filter(Boolean);
     for (const layer of layers) {
@@ -19932,7 +19715,8 @@ document.addEventListener("visibilitychange", () => {
                     vectorColors[field] = color;
                 }
             }
-            citiesEnabled = !!citiesToggle?.checked;
+            citiesEnabled = false;
+            if (citiesToggle) citiesToggle.checked = false;
             countiesEnabled = !!countiesToggle?.checked;
             cwaBordersEnabled = !!cwaBordersToggle?.checked;
             selectedCwa = cwaSelector?.value || "ALL";
