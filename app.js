@@ -1719,6 +1719,9 @@ if (!__MP_CHILD) {
             panelGrid.className = `layout-${layoutCount}`;
             panels.forEach((p, i) => {
                 p.holder.style.display = i < layoutCount ? "block" : "none";
+                // V117: a single panel needs no "Panel 1" badge.
+                // Keep badges when two or four panels are displayed.
+                p.badge.style.display = layoutCount === 1 ? "none" : "";
                 if (i < layoutCount && !p.frame.hasAttribute("src")) {
                     p.frame.src = childUrl(i);
                 }
@@ -2307,12 +2310,14 @@ if (!__MP_CHILD) {
                 ctx.strokeStyle = i === activePanel ? "#2f9be8" : "#425766";
                 ctx.lineWidth = 5*s;
                 ctx.strokeRect(x + 2.5*s,y + 2.5*s,panelW-5*s,panelH-5*s);
-                ctx.fillStyle = "rgba(13,27,39,.9)";
-                ctx.fillRect(x+14*s,y+14*s,122*s,42*s);
-                ctx.fillStyle = "#fff";
-                ctx.font = `700 ${Math.round(21*s)}px Inter, Arial, sans-serif`;
-                ctx.textAlign = "center";
-                ctx.fillText(`Panel ${i+1}`,x+75*s,y+35*s);
+                if (count > 1) {
+                    ctx.fillStyle = "rgba(13,27,39,.9)";
+                    ctx.fillRect(x+14*s,y+14*s,122*s,42*s);
+                    ctx.fillStyle = "#fff";
+                    ctx.font = `700 ${Math.round(21*s)}px Inter, Arial, sans-serif`;
+                    ctx.textAlign = "center";
+                    ctx.fillText(`Panel ${i+1}`,x+75*s,y+35*s);
+                }
             });
             return out;
         }
@@ -6057,6 +6062,11 @@ function getActiveLayerDescriptions() {
         ...THERMODYNAMIC_CONTOUR_OVERLAYS.map(config => ({
             field: config.field,
             stateKey: config.stateKey
+        })),
+        // V117: divergence contours were rendered but not listed in exports.
+        ...[925, 850, 700, 500, 250].map(level => ({
+            field: `divergence_${level}mb`,
+            stateKey: `divergence${level}`
         }))
     ];
 
@@ -18854,6 +18864,124 @@ async function spcoaDrawExportMapLayers(ctx, outW, mapH, mapY = 0) {
 }
 
 /* =========================================================================================
+   V117 — COMPLETE, WRAPPED EXPORT PARAMETER FOOTER
+   The original one-line footer clipped parameters when many contour/vector
+   products were selected.  Calculate row breaks BEFORE allocating the canvas
+   and allow its height to expand; PNG and MP4 use the same capture path.
+   ========================================================================================= */
+function spcoaPlanExportFooter(outW, options = {}) {
+    const full = options.style === "full";
+    const scale = Math.max(0.1, Number(options.scale) || 1);
+    const unit = value => Math.max(1, Math.round(value * scale));
+    const fontSize = unit(full ? 29 : 20);
+    const rowHeight = unit(full ? 40 : 33);
+    const marginX = unit(full ? 50 : 28);
+    const padY = unit(full ? 18 : 19);
+    const itemGap = unit(full ? 31 : 24);
+    const swatchW = unit(full ? 34 : 27);
+    const swatchGap = unit(full ? 12 : 9);
+    const swatchLineW = unit(full ? 7 : 6);
+    const creditFontSize = unit(21);
+    const creditTop = full ? unit(24) : 0;
+    const creditBottom = full ? unit(13) : 0;
+    const maxLineWidth = Math.max(1, outW - marginX * 2);
+    const measureCtx = document.createElement("canvas").getContext("2d");
+    measureCtx.font = `650 ${fontSize}px Inter, "Segoe UI", Arial, sans-serif`;
+
+    const items = [
+        ...getActiveLayerDescriptions().map(item => ({
+            text: String(item.text || ""),
+            color: item.color || null
+        })),
+        { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
+    ].filter(item => item.text);
+
+    const rows = [];
+    let row = [];
+    let usedWidth = 0;
+    for (const item of items) {
+        const indicatorWidth = item.color ? swatchW + swatchGap : 0;
+        // Treat a parameter and its vector color swatch as one indivisible item.
+        // If an individual name is exceptionally long, draw it compressed
+        // to maxLineWidth rather than letting it vanish off the page.
+        const naturalWidth = measureCtx.measureText(item.text).width;
+        const maxTextWidth = Math.max(unit(40), maxLineWidth - indicatorWidth);
+        const renderedTextWidth = Math.min(naturalWidth, maxTextWidth);
+        const width = indicatorWidth + renderedTextWidth;
+        if (row.length && usedWidth + itemGap + width > maxLineWidth) {
+            rows.push({ entries: row, width: usedWidth });
+            row = [];
+            usedWidth = 0;
+        }
+        row.push({ ...item, width, renderedTextWidth, indicatorWidth });
+        usedWidth += (row.length > 1 ? itemGap : 0) + width;
+    }
+    if (row.length) rows.push({ entries: row, width: usedWidth });
+    if (!rows.length) rows.push({ entries: [], width: 0 });
+    const footerH = padY * 2 + rows.length * rowHeight +
+        (full ? creditTop + creditFontSize + creditBottom : 0);
+
+    return {
+        height: footerH,
+        rows,
+        draw(ctx, footerY) {
+            ctx.save();
+            ctx.fillStyle = "#f7f8fa";
+            ctx.fillRect(0, footerY, outW, footerH);
+            ctx.strokeStyle = "#aeb7bf";
+            ctx.lineWidth = Math.max(1, unit(full ? 2 : 1));
+            ctx.beginPath();
+            ctx.moveTo(0, footerY + 1);
+            ctx.lineTo(outW, footerY + 1);
+            ctx.stroke();
+            ctx.textBaseline = "middle";
+            ctx.textAlign = "left";
+            ctx.font = `650 ${fontSize}px Inter, "Segoe UI", Arial, sans-serif`;
+            rows.forEach((line, index) => {
+                let x = Math.max(marginX, (outW - line.width) / 2);
+                const y = footerY + padY + rowHeight * (index + 0.5);
+                line.entries.forEach((item, j) => {
+                    if (j > 0) {
+                        // A subtle vertical divider between parameters on a row.
+                        const dividerX = x + itemGap / 2;
+                        ctx.strokeStyle = "#9aa6b0";
+                        ctx.lineWidth = Math.max(1, unit(1));
+                        ctx.beginPath();
+                        ctx.moveTo(dividerX, y - fontSize * 0.4);
+                        ctx.lineTo(dividerX, y + fontSize * 0.4);
+                        ctx.stroke();
+                        x += itemGap;
+                    }
+                    if (item.color) {
+                        ctx.strokeStyle = item.color;
+                        ctx.lineWidth = swatchLineW;
+                        ctx.lineCap = "round";
+                        ctx.beginPath();
+                        ctx.moveTo(x, y);
+                        ctx.lineTo(x + swatchW, y);
+                        ctx.stroke();
+                        ctx.lineCap = "butt";
+                        x += item.indicatorWidth;
+                    }
+                    ctx.fillStyle = "#17232d";
+                    ctx.fillText(item.text, x, y, item.renderedTextWidth);
+                    x += item.renderedTextWidth;
+                });
+            });
+            if (full) {
+                ctx.fillStyle = "#66727c";
+                ctx.font = `500 ${creditFontSize}px Inter, "Segoe UI", Arial, sans-serif`;
+                ctx.textAlign = "center";
+                const creditY = footerY + padY * 2 + rows.length * rowHeight +
+                    creditTop + creditFontSize / 2;
+                ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", outW / 2, creditY);
+            }
+            ctx.restore();
+        }
+    };
+}
+
+/* =========================================================================================
    4K PNG EXPORT
    ========================================================================================= */
 
@@ -18899,7 +19027,8 @@ async function saveCurrentMapPng4k() {
         /* 4K-width export while preserving the exact current map aspect ratio. */
         const outW = 3840;
         const headerH = 92;
-        const footerH = 118;
+        const footerLayout = spcoaPlanExportFooter(outW, {style: "full", scale: 1});
+        const footerH = footerLayout.height;
         const mapH = Math.max(1, Math.round(outW * srcH / srcW));
         const outH = headerH + mapH + footerH;
         const exportScale = outW / srcW;
@@ -19006,71 +19135,8 @@ async function saveCurrentMapPng4k() {
             }
         }
 
-        /* Footer / active-layer strip.  Keep vector-color indicators in PNG. */
-        const footerY = headerH + mapH;
-        ctx.fillStyle = "#f7f8fa";
-        ctx.fillRect(0, footerY, outW, footerH);
-        ctx.strokeStyle = "#aeb7bf";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(0, footerY + 1);
-        ctx.lineTo(outW, footerY + 1);
-        ctx.stroke();
-
-        const descriptions = getActiveLayerDescriptions();
-        const items = [
-            ...descriptions.map(item => ({ ...item })),
-            { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
-        ];
-
-        ctx.font = '650 29px Inter, "Segoe UI", Arial, sans-serif';
-        ctx.textBaseline = "middle";
-        const separator = "   |   ";
-        const indicatorW = 34;
-        const indicatorGap = 12;
-        const indicatorLineW = 7;
-
-        const widths = items.map(item => {
-            const textW = ctx.measureText(item.text).width;
-            return textW + (item.color ? indicatorW + indicatorGap : 0);
-        });
-        const sepW = ctx.measureText(separator).width;
-        const totalW = widths.reduce((a, b) => a + b, 0) + sepW * Math.max(0, items.length - 1);
-        let x = Math.max(50, (outW - totalW) / 2);
-        const y = footerY + 43;
-
-        items.forEach((item, index) => {
-            if (item.color) {
-                ctx.strokeStyle = item.color;
-                ctx.lineWidth = indicatorLineW;
-                ctx.lineCap = "round";
-                ctx.beginPath();
-                ctx.moveTo(x, y);
-                ctx.lineTo(x + indicatorW, y);
-                ctx.stroke();
-                ctx.lineCap = "butt";
-                x += indicatorW + indicatorGap;
-            }
-
-            ctx.fillStyle = "#17232d";
-            ctx.textAlign = "left";
-            ctx.fillText(item.text, x, y);
-            x += ctx.measureText(item.text).width;
-
-            if (index < items.length - 1) {
-                ctx.fillStyle = "#8b969f";
-                ctx.fillText(separator, x, y);
-                x += sepW;
-            }
-        });
-        ctx.textAlign = "left";
-
-        /* Secondary credit stays in the white footer so the navy header remains compact. */
-        ctx.fillStyle = "#66727c";
-        ctx.font = '500 21px Inter, "Segoe UI", Arial, sans-serif';
-        ctx.textAlign = "center";
-        ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", outW / 2, footerY + 88);
-        ctx.textAlign = "left";
+        // V117: render every selected parameter using as many rows as needed.
+        footerLayout.draw(ctx, headerH + mapH);
 
         const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
         if (!blob) throw new Error("PNG encoding failed.");
@@ -19107,7 +19173,8 @@ async function buildGifFrameCanvas(outW = SPCOA_GIF_PANEL_WIDTH) {
     // Match the PNG export layout exactly, scaled from the 3840px PNG baseline.
     const layoutScale = outW / 3840;
     const headerH = Math.max(1, Math.round(92 * layoutScale));
-    const footerH = Math.max(1, Math.round(118 * layoutScale));
+    const footerLayout = spcoaPlanExportFooter(outW, {style: "full", scale: layoutScale});
+    const footerH = footerLayout.height;
     const mapH = Math.max(1, Math.round(outW * srcH / srcW));
     const outH = headerH + mapH + footerH;
     const exportScale = outW / srcW;
@@ -19215,71 +19282,7 @@ async function buildGifFrameCanvas(outW = SPCOA_GIF_PANEL_WIDTH) {
         }
     }
 
-    /* Footer / active-layer strip.  Keep vector-color indicators in PNG. */
-    const footerY = headerH + mapH;
-    ctx.fillStyle = "#f7f8fa";
-    ctx.fillRect(0, footerY, outW, footerH);
-    ctx.strokeStyle = "#aeb7bf";
-    ctx.lineWidth = Math.max(1, Math.round(2 * layoutScale));
-    ctx.beginPath();
-    ctx.moveTo(0, footerY + 1);
-    ctx.lineTo(outW, footerY + 1);
-    ctx.stroke();
-
-    const descriptions = getActiveLayerDescriptions();
-    const items = [
-        ...descriptions.map(item => ({ ...item })),
-        { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
-    ];
-
-    ctx.font = `650 ${Math.max(1, Math.round(29 * layoutScale))}px Inter, \"Segoe UI\", Arial, sans-serif`;
-    ctx.textBaseline = "middle";
-    const separator = "   |   ";
-    const indicatorW = Math.max(1, Math.round(34 * layoutScale));
-    const indicatorGap = Math.max(1, Math.round(12 * layoutScale));
-    const indicatorLineW = Math.max(1, Math.round(7 * layoutScale));
-
-    const widths = items.map(item => {
-        const textW = ctx.measureText(item.text).width;
-        return textW + (item.color ? indicatorW + indicatorGap : 0);
-    });
-    const sepW = ctx.measureText(separator).width;
-    const totalW = widths.reduce((a, b) => a + b, 0) + sepW * Math.max(0, items.length - 1);
-    let x = Math.max(Math.round(50 * layoutScale), (outW - totalW) / 2);
-    const y = footerY + Math.round(43 * layoutScale);
-
-    items.forEach((item, index) => {
-        if (item.color) {
-            ctx.strokeStyle = item.color;
-            ctx.lineWidth = indicatorLineW;
-            ctx.lineCap = "round";
-            ctx.beginPath();
-            ctx.moveTo(x, y);
-            ctx.lineTo(x + indicatorW, y);
-            ctx.stroke();
-            ctx.lineCap = "butt";
-            x += indicatorW + indicatorGap;
-        }
-
-        ctx.fillStyle = "#17232d";
-        ctx.textAlign = "left";
-        ctx.fillText(item.text, x, y);
-        x += ctx.measureText(item.text).width;
-
-        if (index < items.length - 1) {
-            ctx.fillStyle = "#8b969f";
-            ctx.fillText(separator, x, y);
-            x += sepW;
-        }
-    });
-    ctx.textAlign = "left";
-
-    /* Secondary credit stays in the white footer so the navy header remains compact. */
-    ctx.fillStyle = "#66727c";
-    ctx.font = `500 ${Math.max(1, Math.round(21 * layoutScale))}px Inter, \"Segoe UI\", Arial, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.fillText("Credit: John Stoppkotte, SOO · NWS North Platte, NE", outW / 2, footerY + Math.round(88 * layoutScale));
-    ctx.textAlign = "left";
+    footerLayout.draw(ctx, headerH + mapH);
 
     return out;
 }
@@ -19832,7 +19835,8 @@ document.addEventListener("visibilitychange", () => {
         // Exactly 1.0 for Save PNG, so normal PNG output is unchanged.
         const captureScale = outW / 1800;
         const px = n => Math.round(n * captureScale);
-        const footerH = px(72);
+        const footerLayout = spcoaPlanExportFooter(outW, {style: "panel", scale: captureScale});
+        const footerH = footerLayout.height;
         const outH = Math.round(outW * srcH / srcW) + footerH;
         const out = document.createElement("canvas"); out.width = outW; out.height = outH;
         const ctx = out.getContext("2d", { alpha: false });
@@ -19937,60 +19941,8 @@ document.addEventListener("visibilitychange", () => {
             }
         }
 
-        ctx.fillStyle = "#f7f8fa"; ctx.fillRect(0, mapH, outW, footerH);
-        ctx.strokeStyle = "#aeb7bf"; ctx.lineWidth = Math.max(1, captureScale); ctx.beginPath(); ctx.moveTo(0,mapH+.5); ctx.lineTo(outW,mapH+.5); ctx.stroke();
-        // V80: the former footer flattened colored vector descriptors to plain
-        // text. Preserve a line swatch for each active barb/arrow/axis layer,
-        // using the SAME chosen color as the actual map vectors.
-        const footerItems = [
-            ...getActiveLayerDescriptions().map(item => ({
-                text: String(item.text || ""), color: item.color || null
-            })),
-            { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
-        ];
-        const separator = " | ";
-        const swatchW = px(27), swatchGap = px(8), separatorGap = px(13);
-        ctx.textAlign = "left"; ctx.textBaseline = "middle";
-        let fontSize = px(22);
-        const measure = () => {
-            ctx.font = `650 ${fontSize}px Inter, "Segoe UI", Arial, sans-serif`;
-            return footerItems.reduce((sum, item) => sum + ctx.measureText(item.text).width +
-                (item.color ? swatchW + swatchGap : 0), 0) +
-                (footerItems.length - 1) * (ctx.measureText(separator).width + separatorGap);
-        };
-        let totalWidth = measure();
-        while (fontSize > px(13) && totalWidth > outW - px(56)) {
-            fontSize -= Math.max(1, px(1));
-            totalWidth = measure();
-        }
-        // If there are more active overlays than can fit, clip the footer
-        // rather than silently removing the barb color indicators.
-        ctx.save();
-        ctx.beginPath(); ctx.rect(px(18), mapH, outW - px(36), footerH); ctx.clip();
-        let footerX = Math.max(px(28), (outW - totalWidth) / 2);
-        const footerY = mapH + footerH / 2;
-        footerItems.forEach((item, index) => {
-            if (item.color) {
-                ctx.beginPath();
-                ctx.strokeStyle = item.color;
-                ctx.lineWidth = px(6);
-                ctx.lineCap = "round";
-                ctx.moveTo(footerX, footerY);
-                ctx.lineTo(footerX + swatchW, footerY);
-                ctx.stroke();
-                ctx.lineCap = "butt";
-                footerX += swatchW + swatchGap;
-            }
-            ctx.fillStyle = "#17232d";
-            ctx.fillText(item.text, footerX, footerY);
-            footerX += ctx.measureText(item.text).width;
-            if (index < footerItems.length - 1) {
-                ctx.fillStyle = "#8b969f";
-                ctx.fillText(separator, footerX + separatorGap / 2, footerY);
-                footerX += ctx.measureText(separator).width + separatorGap;
-            }
-        });
-        ctx.restore();
+        // V117: unlike the old single-line footer, this cannot truncate overlays.
+        footerLayout.draw(ctx, mapH);
         return out.toDataURL("image/png");
     };
 
