@@ -161,6 +161,12 @@ function spcoaInstallHostVectorColors() {
 
 const __MP_PARAMS = new URLSearchParams(window.location.search);
 const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
+/* V118: A definite marker for checking whether the latest GitHub Pages asset
+ * loaded in BOTH the host and the map iframe (which loads this script again).
+ * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
+const SPCOA_VIEWER_BUILD = "V119";
+window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
+console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
 /* Per-browser saved starting view and named custom domains.
  * Preset sectors remain static. No backend or account storage is used. */
@@ -1712,6 +1718,15 @@ if (!__MP_CHILD) {
             panels.push({ holder, frame, badge, ready: false, configured: false, configWaiters: [] });
         }
 
+        // V118: backstop for host stylesheet rules that use !important.
+        // This is deliberately host-only and doesn't affect map annotations.
+        if (!document.getElementById("spcoa-v118-panel-badge-style")) {
+            const style = document.createElement("style");
+            style.id = "spcoa-v118-panel-badge-style";
+            style.textContent = `.mp-panel-badge[hidden] { display:none !important; visibility:hidden !important; }`;
+            document.head.appendChild(style);
+        }
+
         function visiblePanelCount() { return layoutCount; }
 
         function applyLayout(count) {
@@ -1719,9 +1734,19 @@ if (!__MP_CHILD) {
             panelGrid.className = `layout-${layoutCount}`;
             panels.forEach((p, i) => {
                 p.holder.style.display = i < layoutCount ? "block" : "none";
-                // V117: a single panel needs no "Panel 1" badge.
-                // Keep badges when two or four panels are displayed.
-                p.badge.style.display = layoutCount === 1 ? "none" : "";
+                // V118: CSS on the host page may set display:flex !important;
+                // setting .style.display alone cannot override that selector.
+                // Use an important inline property AND [hidden] for one panel.
+                // Restore the normal badge for 2- and 4-panel layouts.
+                if (layoutCount === 1) {
+                    p.badge.hidden = true;
+                    p.badge.style.setProperty("display", "none", "important");
+                    p.badge.style.setProperty("visibility", "hidden", "important");
+                } else {
+                    p.badge.hidden = false;
+                    p.badge.style.removeProperty("display");
+                    p.badge.style.removeProperty("visibility");
+                }
                 if (i < layoutCount && !p.frame.hasAttribute("src")) {
                     p.frame.src = childUrl(i);
                 }
@@ -2126,14 +2151,16 @@ if (!__MP_CHILD) {
                 ctx.strokeStyle = "#425766";
                 ctx.lineWidth = Math.max(2, Math.round(5 * s));
                 ctx.strokeRect(x + 2, y + 2, panelW - 4, cellH - 4);
-                const badgeX=x+Math.round(14*s), badgeY=y+Math.round(14*s);
-                const badgeW=Math.round(122*s), badgeH=Math.round(42*s);
-                ctx.fillStyle = "rgba(13,27,39,.9)";
-                ctx.fillRect(badgeX,badgeY,badgeW,badgeH);
-                ctx.fillStyle = "#ffffff";
-                ctx.textAlign = "center";
-                ctx.font = `700 ${Math.max(13, Math.round(21 * s))}px Inter, Arial, sans-serif`;
-                ctx.fillText(`Panel ${i + 1}`,badgeX+badgeW/2,badgeY+badgeH/2);
+                if (panelCount > 1) {
+                    const badgeX=x+Math.round(14*s), badgeY=y+Math.round(14*s);
+                    const badgeW=Math.round(122*s), badgeH=Math.round(42*s);
+                    ctx.fillStyle = "rgba(13,27,39,.9)";
+                    ctx.fillRect(badgeX,badgeY,badgeW,badgeH);
+                    ctx.fillStyle = "#ffffff";
+                    ctx.textAlign = "center";
+                    ctx.font = `700 ${Math.max(13, Math.round(21 * s))}px Inter, Arial, sans-serif`;
+                    ctx.fillText(`Panel ${i + 1}`,badgeX+badgeW/2,badgeY+badgeH/2);
+                }
             }
             return out;
         }
@@ -2349,6 +2376,7 @@ if (!__MP_CHILD) {
                     const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = src;
                 })));
                 const out = composePngPanelLayout(images, count);
+                console.info(`[SPCOA ${SPCOA_VIEWER_BUILD}] Saved PNG compositor: ${count} panel(s), ${out.width}x${out.height}px`);
                 const blob = await new Promise(resolve => out.toBlob(resolve, "image/png"));
                 if (!blob) throw new Error("PNG encoding failed.");
                 const url = URL.createObjectURL(blob), a = document.createElement("a");
@@ -4552,6 +4580,145 @@ const timelineState = {
     playTimer: null
 };
 
+/* =============================================================================
+   V119 — INDEPENDENT LATEST-COMPLETE ARCHIVES FOR SLOWER HRRR F00 PRODUCTS
+   The main SPCOA timeline continues to advance independently. ECAPE, mapped
+   hodographs, and native soundings resolve to the newest archived valid hour
+   at OR BEFORE the selected SPCOA hour. Never label an older product as
+   current, and never synthesize or interpolate across analysis times.
+
+   No publisher cadence change: this reads the EXISTING per-run manifests.
+   Archived runs must remain available in S3 (recommended >= 8 hours).
+   The existing 3-minute timeline refresh also detects newly published files.
+   ============================================================================= */
+const SPCOA_FALLBACK_MAX_HOURS = 8;
+const SPCOA_FALLBACK_MISSING_RETRY_MS = 60000;
+const spcoaProductVerified = {
+    ecape: new Set(), hodographs: new Set(), soundings: new Set()
+};
+const spcoaProductMissingUntil = new Map();
+const spcoaProductProbes = new Map();
+function spcoaOffsetRunHour(run, deltaHours) {
+    const iso = runIdToIso(run);
+    if (!iso) return null;
+    const date = new Date(Date.parse(iso) + deltaHours * 3600000);
+    if (!Number.isFinite(date.getTime())) return null;
+    return `${date.toISOString().slice(0,10).replaceAll('-','')}_${String(date.getUTCHours()).padStart(2,'0')}`;
+}
+function spcoaProductHourLabel(run) { return run ? `${run.slice(-2)}Z` : 'unavailable'; }
+function spcoaProductRun(product, analysisRun=currentRun) {
+    if (!analysisRun || !spcoaProductVerified[product]) return analysisRun;
+    const seen = spcoaProductVerified[product];
+    for (let age=0; age<=SPCOA_FALLBACK_MAX_HOURS; age++) {
+        const test = spcoaOffsetRunHour(analysisRun,-age);
+        if (test && seen.has(test)) return test;
+    }
+    // Until a verified archive is found, other products continue to use
+    // their normal selected-hour paths. No speculative newer run is used.
+    return analysisRun;
+}
+async function spcoaProbeProductRun(product, run, force=false) {
+    const key=`${product}:${run}`;
+    if (spcoaProductVerified[product]?.has(run)) return true;
+    if (!force && (spcoaProductMissingUntil.get(key)||0)>Date.now()) return false;
+    if (spcoaProductProbes.has(key)) return spcoaProductProbes.get(key);
+    const task=(async()=>{
+        try {
+            if (product==='ecape') {
+                const r=await fetch(`${S3_BASE_URL}/runs/${run}/ecape/metadata.json`, {cache:'no-store'});
+                if (!r.ok) return false;
+                const meta=await r.json();
+                if (meta?.run!==run || meta?.native_horizontal_stride!==1 || meta.complete===false) return false;
+            } else if (product==='soundings') {
+                // The sounding loader already validates run, completeness,
+                // native grid dimensions, binary format and schema.
+                await spcoaSndManifest(run);
+            } else if (product==='hodographs') {
+                const r=await fetch(`${S3_BASE_URL}/runs/${run}/overlays/hodographs/metadata.json`,{cache:'no-store'});
+                if (r.ok) {
+                    const manifest=hodoValidateTileManifest(await r.json(),run);
+                    // A published manifest is not enough if tier indexes are
+                    // still uploading. Do not supersede a complete older run.
+                    await Promise.all(manifest.tiers.map(t=>hodoGetPublishedTileIndex(run,t.zoom)));
+                } else if ([403,404].includes(r.status)) {
+                    // Preserve V9 legacy single-file archives too.
+                    const legacy=await fetch(`${S3_BASE_URL}/runs/${run}/hodographs.json`,{cache:'no-store'});
+                    if (!legacy.ok) return false;
+                    const doc=hodoValidate(await legacy.json(),run);
+                    hodoCache.set(run,doc);
+                } else return false;
+            } else return false;
+            spcoaProductVerified[product].add(run);
+            spcoaProductMissingUntil.delete(key);
+            return true;
+        } catch(error) {
+            console.debug(`[SPCOA V119] ${product} ${run} not yet published:`,error);
+            return false;
+        }
+    })().then(ok=>{
+        if (!ok) spcoaProductMissingUntil.set(key,Date.now()+SPCOA_FALLBACK_MISSING_RETRY_MS);
+        return ok;
+    }).finally(()=>spcoaProductProbes.delete(key));
+    spcoaProductProbes.set(key,task);
+    return task;
+}
+async function spcoaResolveProductRun(product, analysisRun=currentRun, force=false) {
+    if (!analysisRun) return null;
+    for (let age=0;age<=SPCOA_FALLBACK_MAX_HOURS;age++) {
+        const run=spcoaOffsetRunHour(analysisRun,-age);
+        if (!run) break;
+        if (await spcoaProbeProductRun(product,run,force)) return run;
+    }
+    return null;
+}
+// Refresh only products actually in use; do not alter their workflow cron.
+let spcoaFallbackRefreshInFlight=false;
+async function spcoaRefreshIndependentProducts() {
+    if (spcoaFallbackRefreshInFlight || !currentRun || timelineState.switching ||
+        document.hidden || window.__spcoaGifExporting) return;
+    spcoaFallbackRefreshInFlight=true;
+    const analysisRun=currentRun;
+    try {
+        const products=[];
+        if (activeField==='ecape') products.push('ecape');
+        if (hodoToggle?.checked) products.push('hodographs');
+        if (SPCOA_SOUNDING.point && document.getElementById('spcoa-sounding-panel')?.style.display==='block')
+            products.push('soundings');
+        await Promise.all(products.map(async product=>{
+            const before=spcoaProductRun(product,analysisRun);
+            const beforeVerified=spcoaProductVerified[product].has(before);
+            const found=await spcoaResolveProductRun(product,analysisRun,true);
+            if (analysisRun!==currentRun || !found) return;
+            const after=spcoaProductRun(product,analysisRun);
+            if (before===after && beforeVerified) return;
+            console.info(`[SPCOA V119] ${product} ${before} -> ${after} (analysis ${analysisRun})`);
+            if (product==='ecape' && activeField==='ecape') {
+                delete fieldMetadata.ecape;
+                const bundle=await loadRunMetadata(analysisRun);
+                delete bundle.fields.ecape;
+                // Newer ECAPE data may have replaced a previous missing URL.
+                for (const run of [before,after]) {
+                    spcoaMissingProductMetadata.delete(`${run}:scalar:ecape`);
+                    runProductMetadataCache.delete(`${run}:scalar:ecape`);
+                }
+                if (analysisRun!==currentRun) return;
+                await spcoaEnsureCurrentMetadata('scalar','ecape');
+                invalidateNumericalRenders();
+                updateLegend();
+                void renderAll();
+            } else if (product==='hodographs' && hodoToggle?.checked) {
+                void refreshHodographsForRun();
+            } else if (product==='soundings' && SPCOA_SOUNDING.point) {
+                spcoaSndRefreshForRun();
+            }
+        }));
+    } catch(error) {
+        console.warn('SPCOA V119 independent product refresh:',error);
+    } finally {spcoaFallbackRefreshInFlight=false;}
+}
+// Poll publication status without triggering or changing backend workflows.
+window.setInterval(()=>{void spcoaRefreshIndependentProducts();},90000);
+
 const runMetadataCache = new Map();
 const runProductMetadataCache = new Map();
 const adjacentPreloadControllers = new Map();
@@ -4738,6 +4905,7 @@ const SPCOA_TILE_CANCELLED = Symbol('spcoa-obsolete-tile-request');
 const spcoaActiveTileJobs = new Set();
 function spcoaRequiredRunsForSelection(targetRun) {
     const keep = new Set([targetRun]);
+    if (activeField==='ecape') keep.add(spcoaProductRun('ecape',targetRun));
     const chosen = selectedProductKeys();
     for (const field of [...chosen.scalar,...chosen.contours]) {
         const source = SPCOA_CHANGE_CONTOUR_FIELDS[field]?.sourceField || field;
@@ -7253,7 +7421,16 @@ async function spcoaLoadProductMetadata(runId, bundle, kind, field) {
     const store = kind === 'scalar' ? bundle.fields :
         kind === 'vector' ? bundle.vectors : bundle.contours;
     if (store[field]) return store[field];
-    const id = `${runId}:${kind}:${field}`;
+    // V119: ECAPE is published independently and may lag SPCOA by hours.
+    const knownEcape=spcoaProductRun('ecape',runId);
+    // Already verified a recent run? Use it immediately so the faster SPCOA
+    // timeline never waits on nine archive probes. Background polling will
+    // promote ECAPE as soon as its newer publication completes.
+    const sourceRun = kind==='scalar' && field==='ecape'
+        ? (spcoaProductVerified.ecape.has(knownEcape)
+            ? knownEcape : await spcoaResolveProductRun('ecape',runId)) : runId;
+    if (!sourceRun) return null;
+    const id = `${sourceRun}:${kind}:${field}`;
     const missingUntil = spcoaMissingProductMetadata.get(id);
     if (missingUntil && missingUntil > Date.now()) return null;
     if (missingUntil) spcoaMissingProductMetadata.delete(id);
@@ -7263,12 +7440,12 @@ async function spcoaLoadProductMetadata(runId, bundle, kind, field) {
         return cached;
     }
     const path = kind === 'scalar'
-        ? (field === 'ecape' ? `runs/${runId}/ecape/metadata.json` : `runs/${runId}/${field}/metadata.json`)
+        ? (field === 'ecape' ? `runs/${sourceRun}/ecape/metadata.json` : `runs/${runId}/${field}/metadata.json`)
         : `runs/${runId}/overlays/${field}/metadata.json`;
     const task = (async () => {
         const meta = await fetchJSON(`${S3_BASE_URL}/${path}`);
-        if (field === 'ecape' && (meta?.run !== runId || meta?.native_horizontal_stride !== 1)) {
-            throw new Error(`ECAPE metadata does not match ${runId}`);
+        if (field === 'ecape' && (meta?.run !== sourceRun || meta?.native_horizontal_stride !== 1)) {
+            throw new Error(`ECAPE metadata does not match ${sourceRun}`);
         }
         store[field] = meta;
         return meta;
@@ -7570,6 +7747,8 @@ async function refreshAvailableTimes() {
             if (latest) await applyRun(latest);
         }
         updateTimelineUi();
+        // Products may publish later than the already-visible SPCOA hour.
+        void spcoaRefreshIndependentProducts();
     } catch (error) {
         console.warn("Timeline manifest refresh failed:", error);
     }
@@ -8224,6 +8403,7 @@ async function loadSpcoaChangeTile(field, z, x, y, run = currentRun, priority = 
 }
 
 async function loadScalarTile(field, z, x, y, run = currentRun, priority = 0) {
+    if (field==='ecape' && run===currentRun) run=spcoaProductRun('ecape');
     if (SPCOA_CHANGE_FIELDS[field]) {
         return loadSpcoaChangeTile(field, z, x, y, run, priority);
     }
@@ -8377,6 +8557,7 @@ async function loadContourTile(field, z, x, y, run = currentRun, priority = 0) {
    ========================================================================================= */
 
 async function preloadScalarTiles(field, z, run = currentRun) {
+    if (field==='ecape' && run===currentRun) run=spcoaProductRun('ecape');
     const range = getVisibleTileRange(z, 1);
     const ordered = priorityOrderedTileCoordinates(z, range);
     await Promise.all(ordered.map(tile =>
@@ -8448,7 +8629,7 @@ function getCachedScalarTile(
 
             field,
 
-            currentRun,
+            field==='ecape' ? spcoaProductRun('ecape') : currentRun,
 
             z,
 
@@ -15038,6 +15219,11 @@ function updateLegend() {
         field.units
             ? `${field.name} (${field.units})`
             : field.name;
+    if (activeField==='ecape') {
+        const source=spcoaProductRun('ecape');
+        if (source && source!==currentRun)
+            legendTitle.textContent+=` · Data ${spcoaProductHourLabel(source)} (SPCOA ${spcoaProductHourLabel(currentRun)})`;
+    }
     if (field.type === "spcoa_change") {
         const issue = spcoaChangeIssueText(currentRun, activeField);
         legendTitle.title = issue || "";
@@ -15745,6 +15931,7 @@ function spcoaRenderedFrameKey(camera=getNumericalCameraSnapshot()) {
         .filter(key=>activeOverlays[key] === true).join(',');
     return JSON.stringify([
         currentRun,activeField,overlaySignature,
+        activeField==='ecape'?spcoaProductRun('ecape'):null,
         spcoaReadMapBackground(),getDataZoom(),
         camera.lng.toFixed(7),camera.lat.toFixed(7),camera.zoom.toFixed(7),
         Math.round(camera.width),Math.round(camera.height),
@@ -16609,7 +16796,7 @@ async function hodoLoadNativeIndex(run, detail) {
     const doc = await r.json();
     if (doc.run_id !== run || doc.schema_version !== 3 || doc.z !== 9 ||
         !Array.isArray(doc.tile_coordinates)) throw new Error('Invalid native 3-km index');
-    if (run !== currentRun) return;
+    if (run !== spcoaProductRun('hodographs')) return;
     hodoNativeIndex = new Set(doc.tile_coordinates.map(xy => `${xy[0]}/${xy[1]}`));
     hodoNativeHeights = detail.heights_m_agl;
 }
@@ -16721,7 +16908,7 @@ async function hodoLoadNativeVisible(serial, run) {
             const task=tasks[next++];
             try {
                 const pts=await hodoGetNativeTile(run,task.x,task.y);
-                if (serial!==hodoViewportSerial || run!==currentRun || !hodoTiledMode) return;
+                if (serial!==hodoViewportSerial || run!==spcoaProductRun('hodographs') || !hodoTiledMode) return;
                 for (const slot of task.slots) {
                     const best=hodoNearestPointInNativeTile(pts,slot.lon,slot.lat);
                     if (!best) continue;
@@ -16781,7 +16968,7 @@ async function hodoShowNativeProfileAtClick(lon,lat) {
         if(ty>=0&&ty<n&&hodoNativeIndex.has(`${tx}/${ty}`)) candidates.push([tx,ty]);
     }
     const results=await Promise.allSettled(candidates.map(([tx,ty])=>hodoGetNativeTile(run,tx,ty)));
-    if(run!==currentRun || !hodoToggle?.checked) return;
+    if(run!==spcoaProductRun('hodographs') || !hodoToggle?.checked) return;
     let best=null;
     for(const entry of results) {
         if(entry.status!=='fulfilled') continue;
@@ -16828,7 +17015,7 @@ function renderHodographs() {
     if (typeof map.isMoving === "function" && map.isMoving()) return;
     const {width, height} = hodoResizeCanvas();
     hodographCtx.clearRect(0, 0, width, height);
-    if (!hodoToggle?.checked || !hodoDocument || hodoRun !== currentRun) return;
+    if (!hodoToggle?.checked || !hodoDocument || hodoRun !== spcoaProductRun('hodographs')) return;
 
     const {radius40, spacing, profileWidth, mode, targetColumns} =
         spcoaHodoViewStyle(map.getZoom(), width, height);
@@ -16877,6 +17064,7 @@ function renderHodographs() {
         ? " (sampled CAPE/CIN proxy, not 3-km EIL)" : "";
     hodoStatus(`${mode} • ${selected.length} ${detail} profiles` +
         ` • ${effectiveShown} effective layers${eilQualifier} • ${hodoRun.slice(-2)}Z` +
+        (hodoRun!==currentRun?` (SPCOA ${spcoaProductHourLabel(currentRun)})`:'') +
         report + loading + errors + warning);
 }
 
@@ -17005,9 +17193,9 @@ function hodoFetchProfileTile(run, zoom, x, y, heightsLength) {
 }
 
 function hodoLoadVisibleTiles() {
-    if (!hodoTiledMode || !hodoToggle?.checked || hodoRun !== currentRun) return Promise.resolve();
+    if (!hodoTiledMode || !hodoToggle?.checked || hodoRun !== spcoaProductRun('hodographs')) return Promise.resolve();
     const serial = ++hodoViewportSerial;
-    const run = currentRun;
+    const run = spcoaProductRun('hodographs');
     const zoom = map.getZoom();
     hodoTileLoading = true;
     hodoTileErrors = 0;
@@ -17041,11 +17229,11 @@ function hodoLoadVisibleTiles() {
         for (const {x,y} of tiles) {
             jobs.push(hodoFetchProfileTile(run,z,x,y,hodoTileManifest.heights_m_agl.length)
                 .then(pts => {
-                    if (serial !== hodoViewportSerial || run !== currentRun || !hodoTiledMode) return;
+                    if (serial !== hodoViewportSerial || run !== spcoaProductRun('hodographs') || !hodoTiledMode) return;
                     records.push(...pts);
                     requestHodographDraw();
                 }).catch(error => {
-                    if (serial === hodoViewportSerial && run === currentRun) {
+                    if (serial === hodoViewportSerial && run === spcoaProductRun('hodographs')) {
                         hodoTileErrors++;
                         console.warn("SPCOA hodograph tile:",error);
                     }
@@ -17054,7 +17242,7 @@ function hodoLoadVisibleTiles() {
     }
     requestHodographDraw();
     const done = Promise.all(jobs).then(() => {
-        if (serial === hodoViewportSerial && run === currentRun) {
+        if (serial === hodoViewportSerial && run === spcoaProductRun('hodographs')) {
             hodoTileLoading = false;
             requestHodographDraw();
             if (hodoNativeIndex && map.getZoom()>=HODO_NATIVE_MIN_ZOOM)
@@ -17068,7 +17256,8 @@ function hodoLoadVisibleTiles() {
 function refreshHodographsForRun() {
     const serial = ++hodoSerial;
     ++hodoViewportSerial;
-    const run = currentRun;
+    const analysisRun = currentRun;
+    let run = spcoaProductRun('hodographs',analysisRun);
     hodoRun = null;
     hodoDocument = null;
     hodoTiledMode = false;
@@ -17086,31 +17275,37 @@ function refreshHodographsForRun() {
         hodoPendingPromise = Promise.resolve();
         return hodoPendingPromise;
     }
-    hodoStatus(`Checking tiled HRRR hodographs for ${run}...`);
+    hodoStatus(`Checking latest archived HRRR hodographs at/before ${analysisRun}...`);
     hodoPendingPromise = (async () => {
         try {
+            // Resolve the latest complete hodograph archive independently.
+            const chosen=await spcoaResolveProductRun('hodographs',analysisRun);
+            if (serial!==hodoSerial || analysisRun!==currentRun || !hodoToggle?.checked) return;
+            if (!chosen) throw new Error('No archived hodographs in fallback window');
+            run=chosen;
             const metaUrl = `${hodoRoot(run)}/metadata.json`;
             const response = await fetch(metaUrl, {cache:"no-store"});
-            if (serial !== hodoSerial || run !== currentRun || !hodoToggle?.checked) return;
+            if (serial !== hodoSerial || run !== spcoaProductRun('hodographs') || !hodoToggle?.checked) return;
             if (response.ok) {
                 const manifest = hodoValidateTileManifest(await response.json(), run);
                 const results = await Promise.all(manifest.tiers.map(async tier =>
                     [tier.zoom, await hodoGetPublishedTileIndex(run,tier.zoom)]));
-                if (serial !== hodoSerial || run !== currentRun || !hodoToggle?.checked) return;
+                if (serial !== hodoSerial || run !== spcoaProductRun('hodographs') || !hodoToggle?.checked) return;
                 hodoTileManifest = manifest;
                 hodoTileIndexes = new Map(results);
                 hodoDocument = {heights_m_agl: manifest.heights_m_agl, points: []};
                 hodoRun = run;
+                hodoStatus(`Hodographs: ${spcoaProductHourLabel(run)}${run!==currentRun?` (SPCOA ${spcoaProductHourLabel(currentRun)})`:''}`);
                 hodoTiledMode = true;
                 if (manifest.native_detail?.complete) {
                     try {await hodoLoadNativeIndex(run,manifest.native_detail);}
                     catch(err) {console.warn('3-km index:',err);hodoNativeIndex=null;}
                 }
-                if (serial !== hodoSerial || run !== currentRun) return;
+                if (serial !== hodoSerial || run !== spcoaProductRun('hodographs')) return;
                 await hodoLoadVisibleTiles();
                 return;
             }
-            if (response.status !== 404) throw new Error(`Tiled metadata HTTP ${response.status}`);
+            if (![403,404].includes(response.status)) throw new Error(`Tiled metadata HTTP ${response.status}`);
 
             // Backward compatibility for hours that only have the original JSON.
             let doc = hodoCache.get(run);
@@ -17122,12 +17317,13 @@ function refreshHodographsForRun() {
                 if (hodoCache.size >= 24) hodoCache.delete(hodoCache.keys().next().value);
                 hodoCache.set(run,doc);
             }
-            if (serial !== hodoSerial || run !== currentRun || !hodoToggle?.checked) return;
+            if (serial !== hodoSerial || run !== spcoaProductRun('hodographs') || !hodoToggle?.checked) return;
             hodoRun = run;
+            hodoStatus(`Hodographs: ${spcoaProductHourLabel(run)}${run!==currentRun?` (SPCOA ${spcoaProductHourLabel(currentRun)})`:''}`);
             hodoDocument = doc;
             requestHodographDraw();
         } catch(error) {
-            if (serial !== hodoSerial || run !== currentRun) return;
+            if (serial !== hodoSerial || run !== spcoaProductRun('hodographs')) return;
             console.warn(`SPCOA tiled hodographs ${run}:`,error);
             hodoStatus(`Hodograph data unavailable for ${run.slice(-2)}Z — ${error.message}`);
             requestHodographDraw();
@@ -17138,14 +17334,14 @@ function refreshHodographsForRun() {
 
 hodoToggle?.addEventListener("change", () => {
     if (hodoToggle.checked && currentRun) {
-        hodoCache.delete(currentRun);
+        hodoCache.delete(spcoaProductRun('hodographs'));
         // A Colab test may republish the same run: force fresh tiles when
         // the user disables/re-enables the overlay, without a full reload.
         for (const key of [...hodoTileCache.keys()]) {
-            if (key.startsWith(`${currentRun}/`)) hodoTileCache.delete(key);
+            if (key.startsWith(`${spcoaProductRun('hodographs')}/`)) hodoTileCache.delete(key);
         }
         for (const key of [...hodoNativeCache.keys()]) {
-            if (key.startsWith(`${currentRun}/`)) hodoNativeCache.delete(key);
+            if (key.startsWith(`${spcoaProductRun('hodographs')}/`)) hodoNativeCache.delete(key);
         }
     }
     void refreshHodographsForRun();
@@ -17154,7 +17350,7 @@ hodoEffectiveToggle?.addEventListener("change", requestHodographDraw);
 hodoDensitySelect?.addEventListener("change", () => {
     // Native sample locations depend on the display lattice. A redraw alone
     // cannot change the cell centers; rebuild them at the new density.
-    if (hodoTiledMode && hodoToggle?.checked && hodoRun === currentRun &&
+    if (hodoTiledMode && hodoToggle?.checked && hodoRun === spcoaProductRun('hodographs') &&
         hodoNativeIndex && map.getZoom() >= HODO_NATIVE_MIN_ZOOM)
         void hodoLoadVisibleTiles();
     else requestHodographDraw();
@@ -17165,12 +17361,12 @@ hodoSizeInput?.addEventListener("input", () => {
 });
 // Fixed grid is never dragged; tiles are refreshed only after camera settles.
 map.on("moveend", () => {
-    if (hodoTiledMode && hodoToggle?.checked && hodoRun === currentRun)
+    if (hodoTiledMode && hodoToggle?.checked && hodoRun === spcoaProductRun('hodographs'))
         void hodoLoadVisibleTiles();
     else requestHodographDraw();
 });
 map.on("resize", () => {
-    if (hodoTiledMode && hodoToggle?.checked && hodoRun === currentRun)
+    if (hodoTiledMode && hodoToggle?.checked && hodoRun === spcoaProductRun('hodographs'))
         void hodoLoadVisibleTiles();
     else requestHodographDraw();
 });
@@ -19837,6 +20033,10 @@ document.addEventListener("visibilitychange", () => {
         const px = n => Math.round(n * captureScale);
         const footerLayout = spcoaPlanExportFooter(outW, {style: "panel", scale: captureScale});
         const footerH = footerLayout.height;
+        if (options?.video !== true) {
+            console.info(`[SPCOA ${SPCOA_VIEWER_BUILD}] Panel PNG footer: ${footerLayout.rows.length} row(s), ` +
+                `${footerLayout.rows.reduce((n, row) => n + row.entries.length, 0)} labels, ${footerH}px tall`);
+        }
         const outH = Math.round(outW * srcH / srcW) + footerH;
         const out = document.createElement("canvas"); out.width = outW; out.height = outH;
         const ctx = out.getContext("2d", { alpha: false });
@@ -19941,7 +20141,9 @@ document.addEventListener("visibilitychange", () => {
             }
         }
 
-        // V117: unlike the old single-line footer, this cannot truncate overlays.
+        // V118: The panel PNG is the source for BOTH Save PNG and Save Video.
+        // Its footer is planned before canvas sizing and each layer label is
+        // drawn on its own bounded row; never capture the scrolling DOM strip.
         footerLayout.draw(ctx, mapH);
         return out.toDataURL("image/png");
     };
@@ -19964,7 +20166,7 @@ document.addEventListener("visibilitychange", () => {
    No sounding is synthesized from a different hour or interpolated between cells.
    =============================================================================== */
 const SPCOA_SOUNDING = {
-    point: null, current: null, previous: null,
+    point: null, current: null, previous: null, sourceRun: null,
     serial: 0, marker: null, manifestCache: new Map(), geoCache: new Map(),
     blockCache: new Map(), MAX_BLOCKS: 22,
     fields: ['pressure_hpa','temperature_k','specific_humidity_kgkg','height_m_msl','u_ms','v_ms'],
@@ -20200,7 +20402,7 @@ function spcoaSndOmegaScale(values){
     return Math.max(0.25,magnitudes[Math.floor(0.9*(magnitudes.length-1))]);
 }
 async function spcoaSndLoadOmega(run,profile,serial){
-    const stillCurrent=()=>serial===SPCOA_SOUNDING.serial && run===currentRun &&
+    const stillCurrent=()=>serial===SPCOA_SOUNDING.serial && run===SPCOA_SOUNDING.sourceRun &&
         SPCOA_SOUNDING.current?.profile===profile;
     spcoaSndOmegaStatus('Omega: loading…','loading');
     try{
@@ -20464,7 +20666,7 @@ async function spcoaSndLoadLocalDiagnostic(file) {
     try {
         const raw=JSON.parse(await file.text());
         // Do not accept arbitrary points or older run results in the sounding panel.
-        const verified=spcoaSndVerifyDiagnostic(raw,currentRun,SPCOA_SOUNDING.current.profile);
+        const verified=spcoaSndVerifyDiagnostic(raw,SPCOA_SOUNDING.sourceRun||currentRun,SPCOA_SOUNDING.current.profile);
         SPCOA_SOUNDING.diagnostic=verified;
         SPCOA_SOUNDING.diagnosticError='';
         spcoaSndRender();
@@ -21806,11 +22008,12 @@ function spcoaSndStartDiagnosticLoading(serial){
     },1000);
 }
 async function spcoaSndLoadSelection() {
-    const point=SPCOA_SOUNDING.point,run=currentRun;
-    if(!point||!run)return;
+    const point=SPCOA_SOUNDING.point,analysisRun=currentRun;
+    if(!point||!analysisRun)return;
     const serial=++SPCOA_SOUNDING.serial;
     spcoaSndStopDiagnosticLoading();
     SPCOA_SOUNDING.current=null;SPCOA_SOUNDING.previous=null;
+    SPCOA_SOUNDING.sourceRun=null;
     spcoaSndSkewResetView(false);
     spcoaSndHideInspect();
     SPCOA_SOUNDING.diagnostic=null;SPCOA_SOUNDING.previousDiagnostic=null;
@@ -21818,8 +22021,12 @@ async function spcoaSndLoadSelection() {
     spcoaSndOmegaStatus('Omega: waiting for profile','idle');
     spcoaSndStatus('Loading sounding');
     try {
+        const run=await spcoaResolveProductRun('soundings',analysisRun);
+        if(serial!==SPCOA_SOUNDING.serial || analysisRun!==currentRun)return;
+        if(!run)throw new Error('No complete sounding archive available within the previous 8 hours');
+        SPCOA_SOUNDING.sourceRun=run;
         const result=await spcoaSndNearest(run,point.lat,point.lon);
-        if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
+        if(serial!==SPCOA_SOUNDING.serial||analysisRun!==currentRun)return;
         SPCOA_SOUNDING.current=result;
         // Omega archive runs independently and is optional; never delay sounding.
         void spcoaSndLoadOmega(run,result.profile,serial);
@@ -21832,7 +22039,7 @@ async function spcoaSndLoadSelection() {
         if(SPCOA_SOUNDING.comparing && prevRun) {
             try {
                 const prev=await spcoaSndSamePoint(prevRun,result.profile.j,result.profile.i);
-                if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
+                if(serial!==SPCOA_SOUNDING.serial||analysisRun!==currentRun)return;
                 const km=spcoaSndDistance(result.profile.lat,result.profile.lon,prev.profile.lat,prev.profile.lon);
                 if(km>1)throw new Error(`Previous-hour grid alignment changed by ${km.toFixed(1)} km`);
                 SPCOA_SOUNDING.previous={...prev,run:prevRun};
@@ -21849,7 +22056,7 @@ async function spcoaSndLoadSelection() {
             spcoaSndFetchDiagnostic(run,result.profile),
             SPCOA_SOUNDING.previous?spcoaSndFetchDiagnostic(prevRun,SPCOA_SOUNDING.previous.profile):Promise.resolve(null)
         ]);
-        if(serial!==SPCOA_SOUNDING.serial||run!==currentRun)return;
+        if(serial!==SPCOA_SOUNDING.serial||analysisRun!==currentRun)return;
         spcoaSndStopDiagnosticLoading();
         SPCOA_SOUNDING.diagnostic=d1.status==='fulfilled'?d1.value:null;
         SPCOA_SOUNDING.previousDiagnostic=d2.status==='fulfilled'?d2.value:null;
@@ -22294,13 +22501,14 @@ function spcoaSndRender() {
     if(!a)return;
     const p=spcoaSndProfile(a.profile),q=b?spcoaSndProfile(b.profile):null;
     if(p.length<12){spcoaSndStatus('Sounding contains insufficient vertical data');return;}
-    const run=currentRun,diag=SPCOA_SOUNDING.diagnostic,prior=SPCOA_SOUNDING.previousDiagnostic;
+    const run=SPCOA_SOUNDING.sourceRun||currentRun,diag=SPCOA_SOUNDING.diagnostic,prior=SPCOA_SOUNDING.previousDiagnostic;
     const validIso=spcoaSndUtc(run);
     const validDate=new Date(validIso);
     const utcDate=Number.isFinite(validDate.getTime())?
         new Intl.DateTimeFormat('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(validDate):String(run);
     const validHour=Number.isFinite(validDate.getTime())?String(validDate.getUTCHours()).padStart(2,'0')+'Z':'';
-    document.getElementById('ss-title').textContent=`HRRR F00 | Valid: ${utcDate}${validHour?' · '+validHour:''}`;
+    document.getElementById('ss-title').textContent=`HRRR F00 | Valid: ${utcDate}${validHour?' · '+validHour:''}`+
+        (run!==currentRun?` | SPCOA: ${spcoaProductHourLabel(currentRun)}`:'');
     document.getElementById('ss-location').textContent=
         `${Math.abs(a.profile.lat).toFixed(4)}°${a.profile.lat>=0?'N':'S'}, ${Math.abs(a.profile.lon).toFixed(4)}°${a.profile.lon>=0?'E':'W'}`;
     // The archive and API already provide diagnostic JSON automatically.
@@ -22473,7 +22681,7 @@ async function spcoaSndExportPng(){
         const trimmedScreenshot=spcoaSndCropExportBottom(screenshot);
         const blob=await new Promise((resolve,reject)=>trimmedScreenshot.toBlob(
             b=>b?resolve(b):reject(new Error('Could not encode PNG')),'image/png'));
-        const name=`SPCOA_HRRR_F00_Full_Sounding_${currentRun}_i${SPCOA_SOUNDING.current.profile.i}_j${SPCOA_SOUNDING.current.profile.j}.png`;
+        const name=`SPCOA_HRRR_F00_Full_Sounding_${SPCOA_SOUNDING.sourceRun||currentRun}_i${SPCOA_SOUNDING.current.profile.i}_j${SPCOA_SOUNDING.current.profile.j}.png`;
         const url=URL.createObjectURL(blob),link=document.createElement('a');
         link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();
         setTimeout(()=>URL.revokeObjectURL(url),15000);
