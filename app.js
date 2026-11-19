@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V143"; // Radar/satellite valid times; auto nearest sync; concise radar controls
+const SPCOA_VIEWER_BUILD = "V144"; // Auto/individual N0B modes no longer silently display the national mosaic
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2167,7 +2167,13 @@ function spcoaSyncRadarControls() {
     if(pct)pct.textContent=p.opacity+"%";
 }
 function spcoaSaveRadarPrefs(value,broadcast=true) {
+    const previous=spcoaReadRadarPrefs();
     const next=spcoaValidateRadarPrefs(value);
+    if(__MP_CHILD && (previous.mode!==next.mode ||
+        (next.mode==="single" && previous.site!==next.site))){
+        spcoaL3LastPoll=0;
+        spcoaL3Error="";
+    }
     spcoaRadarOverride=next;
     try {localStorage.setItem(SPCOA_RADAR_PREFS_KEY,JSON.stringify(next));} catch (_) {}
     spcoaSyncRadarControls();
@@ -8602,9 +8608,13 @@ let spcoaRadarMosaicTime=null;
 let spcoaRadarMosaicTimeChecked=false;
 function spcoaRadarValidLabel(p,site,singleReady){
     if(!p.enabled)return "Radar: Off";
-    if(singleReady)return "Radar valid: "+spcoaObsFormat(spcoaL3Data.scan.date)+" ("+site+" N0B)";
-    if(p.mode!=="mosaic" && !spcoaRadarMosaicTimeChecked)
-        return "Radar valid: loading "+site+" scan...";
+    if(p.mode!=="mosaic"){
+        if(singleReady)return "Radar valid: "+spcoaObsFormat(spcoaL3Data.scan.date)+" ("+site+" N0B)";
+        // Auto/individual modes must never be labeled with a mosaic's time.
+        if(spcoaL3Error && spcoaL3LastRequestedSite===site)
+            return "Radar: "+site+" N0B unavailable (see console)";
+        return "Radar: Loading "+site+" N0B...";
+    }
     return "Radar valid: "+(spcoaRadarMosaicTime?spcoaObsFormat(spcoaRadarMosaicTime)+" (IEM latest mosaic listed)":
         spcoaRadarMosaicTimeChecked?"time unavailable (CONUS mosaic)":"checking IEM...");
 }
@@ -8662,7 +8672,7 @@ function spcoaRadarRefresh(){
     spcoaRadarSetValidText(p,radarSite,singleReady);
     // Metadata may not be available from the live WMS. Use the IEM archive
     // time if verifiable and recent; do not equate browser refresh with scan time.
-    if(!singleReady){
+    if(!wantsSingle){
         void spcoaObsRadarMosaicValid().then(time=>{
             spcoaRadarMosaicTime=spcoaObsRecent(time,1);
             spcoaRadarMosaicTimeChecked=true;
@@ -8676,25 +8686,35 @@ function spcoaRadarRefresh(){
     if(wantsSingle && !singleReady &&
         (!spcoaL3Request || spcoaL3Request.site!==radarSite) &&
         (radarSite!==spcoaL3LastRequestedSite || Date.now()-spcoaL3LastPoll>=SPCOA_L3_POLL_MS))
-        spcoaL3EnsureScan(radarSite);
-    const usePalette=!singleReady && spcoaRadarPaletteEnabled;
-    const key=singleReady ? "n0b|"+radarSite+"|"+spcoaL3Data.version :
+        void spcoaL3EnsureScan(radarSite);
+    // In Auto Nearest / Any NEXRAD, never display unrelated CONUS data
+    // while an individual numerical scan is loading or unavailable.
+    // This avoids visually implying that the selected N0B radar loaded.
+    if(wantsSingle && !singleReady){
+        spcoaRadarRemoveLayer();
+        spcoaRadarSetValidText(p,radarSite,false);
+        spcoaRadarStatus(spcoaL3Error
+            ? radarSite+" N0B unavailable: "+spcoaL3Error
+            : "Downloading "+radarSite+" N0B scan...");
+        return;
+    }
+    const usePalette=!wantsSingle && spcoaRadarPaletteEnabled;
+    const key=wantsSingle ? "n0b|"+radarSite+"|"+spcoaL3Data.version :
         "iem-n0q|"+(usePalette?"custom":spcoaRadarMode)+"|"+bucket;
     try{
         if(key!==spcoaRadarActiveKey || !map.getLayer(SPCOA_RADAR_LAYER_ID)){
-            spcoaRadarStatus(singleReady ? "Rendering numerical N0B reflectivity..." :
-                wantsSingle ? "Fetching "+radarSite+" numerical radar (showing CONUS mosaic meanwhile)..." :
-                usePalette ? "Loading custom-colored reflectivity..." :
-                "Requesting radar via "+spcoaRadarMode.toUpperCase()+"...");
+            spcoaRadarStatus(wantsSingle ? "Rendering "+radarSite+" numerical N0B reflectivity..." :
+                usePalette ? "Loading custom-colored CONUS reflectivity..." :
+                "Requesting CONUS mosaic via "+spcoaRadarMode.toUpperCase()+"...");
             spcoaRadarRemoveLayer();
-            const url=singleReady
+            const url=wantsSingle
                 ? `${SPCOA_L3_PROTOCOL}://tile/{z}/{x}/{y}/${spcoaL3Data.version}`
                 : usePalette
                     ? `${SPCOA_RADAR_PALETTE_PROTOCOL}://tile/{z}/{x}/{y}/${bucket}`
                     : spcoaRadarTileUrl(spcoaRadarMode,bucket);
             map.addSource(SPCOA_RADAR_LAYER_ID,{
                 type:"raster",tiles:[url],tileSize:256,scheme:"xyz",
-                attribution: singleReady ? 'Radar: NWS NEXRAD Level III / Unidata' :
+                attribution: wantsSingle ? 'Radar: NWS NEXRAD Level III / Unidata' :
                     '<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Radar: Iowa Environmental Mesonet / NWS NEXRAD</a>'
             });
             map.addLayer({
@@ -8707,14 +8727,12 @@ function spcoaRadarRefresh(){
             const before=spcoaRadarBeforeLayerId();
             if(before)map.moveLayer(SPCOA_RADAR_LAYER_ID,before);
         }
-        spcoaRadarActiveLabel=singleReady
+        spcoaRadarActiveLabel=wantsSingle
             ? `${radarSite} N0B · ${spcoaL3Data.scan.tilt.toFixed(1)}° tilt · `+
                 spcoaL3Data.scan.date.toISOString().replace("T"," ").slice(0,16)+" UTC · numerical dBZ · "+p.opacity+"% opacity"
             : "Base Reflectivity ("+
                 (usePalette?"custom colors":(spcoaRadarPaletteLastError?"original IEM colors — custom unavailable":spcoaRadarMode.toUpperCase()))+
                 ") · CONUS mosaic, UTC scan unverified · "+p.opacity+"% opacity";
-        if(wantsSingle && !singleReady)
-            spcoaRadarActiveLabel += spcoaL3Error ? " · N0B unavailable: "+spcoaL3Error : " · fetching "+radarSite+" N0B";
         spcoaRadarStatus(spcoaRadarFailure || (
             spcoaRadarReady ? spcoaRadarActiveLabel+" · Imagery loaded; clear areas are transparent"
                 : "Loading "+spcoaRadarActiveLabel));
@@ -8779,7 +8797,7 @@ map.on("error",event=>{
         spcoaL3Error="N0B tile rendering failed: "+message;
         spcoaL3Data=null;
         spcoaL3LastPoll=Date.now();
-        spcoaRadarStatus("Numerical N0B unavailable; showing CONUS radar mosaic. "+message);
+        spcoaRadarStatus("Numerical N0B unavailable: "+message);
         spcoaRadarSchedule(120);
         return;
     }
