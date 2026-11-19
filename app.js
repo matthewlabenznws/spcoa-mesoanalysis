@@ -164,7 +164,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V121";
+const SPCOA_VIEWER_BUILD = "V122";
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1255,6 +1255,317 @@ function spcoaV120InstallStatusPanel() {
 }
 spcoaV120InstallStatusPanel();
 
+
+/* =========================================================================================
+   V122 — PARAMETER FINDER, SCIENTIFIC DESCRIPTIONS, CATEGORY JUMP
+   Non-destructive browser-only UI. Does not move/reparent existing field rows,
+   does not change parameters, selection logic, exporting, or child/host sync.
+   Search activates the same real field-choice/input used by index.html.
+   ========================================================================================= */
+const SPCOA_V122_CATEGORY_TITLES = Object.freeze({
+    "surface-category":"Surface",
+    "thermo-category":"Thermodynamics",
+    "upper-category":"Upper Air",
+    "shear-category":"Wind Shear / Storm Motion",
+    "composites-category":"Severe / Composite",
+    "contour-category":"Contours"
+});
+
+function spcoaV122Description(name, id, type) {
+    const term = `${name} ${id}`.toLowerCase().replace(/[_-]/g, ' ');
+    const detail = (
+        /q\s*vector\s*div|qdiv/.test(term) ?
+            "Q-vector divergence is a quasi-geostrophic forcing diagnostic. Interpret its sign with the site's plotting convention and the synoptic environment." :
+        /q\s*vector/.test(term) ?
+            "Q-vectors show the direction and relative strength of quasi-geostrophic forcing related to horizontal temperature and wind structure." :
+        /ecape/.test(term) ?
+            "Entraining CAPE estimates parcel buoyancy while accounting for entrainment of environmental air. Check the source valid time; ECAPE may lag SPCOA." :
+        /\b(cape|sbcape|mlcape|mucape)\b/.test(term) ?
+            "Convective Available Potential Energy estimates positive parcel buoyancy. Surface-based, mixed-layer, and most-unstable parcels may differ." :
+        /\b(cin|sbcin|mlcin|mucin)\b/.test(term) ?
+            "Convective Inhibition represents negative parcel buoyancy that can suppress initiation. Interpretation depends on the parcel definition." :
+        /stp|significant tornado/.test(term) ?
+            "Significant Tornado Parameter combines ingredients associated with tornado environments. It is an environmental composite, not a tornado probability." :
+        /scp|supercell composite/.test(term) ?
+            "Supercell Composite Parameter combines buoyancy, vertical wind shear, and storm-relative helicity to highlight environments supportive of supercells." :
+        /\b(ehi|energy helicity)\b/.test(term) ?
+            "Energy–Helicity Index combines CAPE with storm-relative helicity. Values depend on the layer and parcel definition." :
+        /omega/.test(term) ?
+            "Omega is vertical motion in pressure coordinates. Negative values generally indicate rising motion and positive values sinking motion." :
+        /\b(mslp|mean sea level pressure)\b.*change|pressure change/.test(term) ?
+            "Change in mean sea-level pressure over the indicated period, calculated from the current and earlier analyses; the neutral range is transparent on satellite imagery." :
+        /height change|hght.*change/.test(term) ?
+            "Change in geopotential height over the indicated time period. Falling heights are shaded blue and rising heights red." :
+        /\b(mslp|mean sea level pressure)\b/.test(term) ?
+            "Mean sea-level pressure: pressure reduced to sea level, useful for identifying synoptic highs, lows, and pressure gradients." :
+        /frontogenesis/.test(term) ?
+            "Frontogenesis describes strengthening horizontal temperature gradients. It may indicate zones of mesoscale forcing; layer and level matter." :
+        /q\s*vector/.test(term) ?
+            "Q-vector diagnostic from the SPCOA analysis. Review the chosen level and sign convention." :
+        /\b(srh|storm relative helicity|helicity)\b/.test(term) ?
+            "Storm-relative helicity describes streamwise horizontal vorticity available to an assumed storm motion within the chosen depth." :
+        /\b(bulk shear|wind shear|effective shear|shear)\b/.test(term) ?
+            "Bulk vertical wind shear describes the wind-vector difference across a specified layer; important for convective organization." :
+        /\b(wind|barb|bunkers)\b/.test(term) ?
+            "Wind vectors/barbs show wind direction and magnitude, or a derived wind/storm-motion vector for the selected layer." :
+        /theta.?e|equivalent potential temperature/.test(term) ?
+            "Equivalent potential temperature (theta-e) is a moisture- and temperature-dependent thermodynamic quantity useful for tracking air masses." :
+        /\btheta\b|potential temperature/.test(term) ?
+            "Potential temperature: temperature adjusted for adiabatic pressure changes, useful for diagnosing thermal structure and gradients." :
+        /\b(rh|relative humidity)\b/.test(term) ?
+            "Relative humidity compares water vapor content with saturation at the indicated level; it is not a direct measure of total moisture." :
+        /\b(vorticity|vort)\b/.test(term) ?
+            "Relative vorticity describes the local rotation of the horizontal wind. Check the pressure level and units." :
+        /warm cloud/.test(term) ?
+            "Warm-cloud depth is the vertical depth of cloud-supporting air above freezing. Interpret alongside cloud base and moisture." :
+        /freezing level/.test(term) ?
+            "Height of the zero-degree-Celsius level, used with other ingredients in precipitation-type and hail assessments." :
+        /\b(pwat|precipitable water)\b/.test(term) ?
+            "Precipitable water is the vertically integrated water vapor amount in an atmospheric column." :
+        /\b(dcape|downdraft cape)\b/.test(term) ?
+            "Downdraft CAPE estimates potential negative buoyancy for descending parcels; it is one ingredient for downburst potential." :
+        /temperature|isotherm|dewpoint|wetbulb/.test(term) ?
+            "Thermodynamic field at the indicated level. Interpret temperatures and gradients using the selected units and analysis valid time." :
+        /height|geopotential/.test(term) ?
+            "Geopotential height of the indicated pressure surface, used to identify ridges, troughs, and flow patterns." :
+        /reflectivity|ptype|precip/.test(term) ?
+            "Radar or precipitation diagnostic. Use its specific field level, intensity scale, and analysis valid time." :
+        /fgen|forcing/.test(term) ?
+            "Dynamical forcing diagnostic. Consult the chosen level, field units, and valid time when interpreting the pattern." :
+            "A derived SPCOA/HRRR analysis parameter. Check the field's level, units, and valid time before interpretation."
+    );
+    const method = type === "fill" ? "Filled shading" :
+                   type === "contour" ? "Contour overlay" :
+                   type === "vector" ? "Vector overlay" : "Overlay";
+    return `${method}. ${detail}`;
+}
+function spcoaV122PrettyCategory(node) {
+    if (!node) return "Other";
+    if (SPCOA_V122_CATEGORY_TITLES[node.id]) return SPCOA_V122_CATEGORY_TITLES[node.id];
+    const heading = node.querySelector(":scope > .cat-header, :scope > .cat-title, :scope > h3");
+    return heading?.textContent?.trim().replace(/\s+/g," ") || node.id.replace(/-category$/,"").replace(/-/g," ") || "Other";
+}
+function spcoaV122FindCategory(row, sidebar) {
+    const content = row.closest(".cat-content");
+    const category = content?.parentElement;
+    if (category && sidebar.contains(category)) return category;
+    return row.closest("[id$='-category']") || null;
+}
+function spcoaV122Catalog(sidebar, root) {
+    const found = [], seen = new Set();
+    function put(row, control, kind, ident, name) {
+        if (!row || !control || root.contains(row) || seen.has(control)) return;
+        if (row.closest(".compat, [hidden], [aria-hidden='true']")) return;
+        if (row.style.display === "none" || getComputedStyle(row).display === "none") return;
+        const label = String(name || "").replace(/\s+/g," ").trim();
+        if (!label || label.length > 120) return;
+        const category = spcoaV122FindCategory(row, sidebar);
+        if (!category) return;
+        seen.add(control);
+        found.push({ row, control, kind, id: ident || "", name: label,
+            category, categoryName: spcoaV122PrettyCategory(category),
+            description: spcoaV122Description(label, ident || "", kind),
+            active: () => kind === "fill" ? row.classList.contains("active") : Boolean(control.checked) });
+    }
+    for (const row of sidebar.querySelectorAll(".cat-content .field-choice[data-field]")) {
+        if (!row.closest(".cat-content") || root.contains(row)) continue;
+        const name = row.textContent?.trim() || row.dataset.field;
+        put(row, row, "fill", row.dataset.field, name);
+    }
+    for (const input of sidebar.querySelectorAll('.cat-content input[type="checkbox"][id]')) {
+        const row = input.closest("label");
+        if (!row || row.closest(".field-choice") || root.contains(row)) continue;
+        const id = input.id;
+        const kind = /q-vector|wind|srwind|shear|bunkers|dilatation|axes|barbs|motion/i.test(id)
+            ? "vector" : /contour|isotherm|hght|frontogenesis|mslp|fgen|lcl|freezing|warm-cloud|change/i.test(id)
+            ? "contour" : "overlay";
+        const title = row.textContent?.trim() || input.getAttribute("aria-label") || id;
+        put(row, input, kind, id, title);
+    }
+    // Standard native tooltips also help when using the original sidebar.
+    for (const item of found) if (!item.row.hasAttribute("title")) {
+        item.row.title = item.description;
+    }
+    return found;
+}
+function spcoaV122InstallParameterExplorer() {
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar || document.getElementById("spcoa-v122-parameter-explorer")) return;
+    const root = document.createElement("section");
+    root.id = "spcoa-v122-parameter-explorer";
+    root.setAttribute("aria-label", "Find and browse weather parameters");
+    root.className = "spcoa-v122-explorer";
+    // This CSS is scoped so the existing sidebar/exports are not altered.
+    const style = document.createElement("style");
+    style.id = "spcoa-v122-explorer-style";
+    style.textContent = `
+      #spcoa-v122-parameter-explorer{box-sizing:border-box;display:block;margin:8px 10px 12px;padding:12px;border:1px solid #456578;border-radius:9px;background:#142c3c;color:#eff7ff;font:12px/1.45 Inter,"Segoe UI",Arial,sans-serif}
+      #spcoa-v122-parameter-explorer *{box-sizing:border-box}
+      #spcoa-v122-parameter-explorer .v122-heading{font-size:13px;font-weight:700;margin:0 0 8px}
+      #spcoa-v122-parameter-explorer .v122-help{margin:0 0 8px;color:#bfd3df;font-size:11px}
+      #spcoa-v122-parameter-explorer .v122-search-row{display:flex;gap:6px;align-items:center}
+      #spcoa-v122-parameter-explorer input,#spcoa-v122-parameter-explorer select{min-width:0;width:100%;height:35px;border:1px solid #66839a;border-radius:5px;background:#092132;color:#fff;padding:6px 8px;font:12px Inter,"Segoe UI",Arial,sans-serif}
+      #spcoa-v122-parameter-explorer input:focus-visible,#spcoa-v122-parameter-explorer select:focus-visible,#spcoa-v122-parameter-explorer button:focus-visible{outline:2px solid #78c9ff;outline-offset:2px}
+      #spcoa-v122-parameter-explorer button{cursor:pointer;font:12px Inter,"Segoe UI",Arial,sans-serif}
+      #spcoa-v122-parameter-explorer .v122-clear{height:35px;min-width:34px;padding:0 8px;border:1px solid #66839a;background:#1e435b;color:white;border-radius:5px}
+      #spcoa-v122-parameter-explorer .v122-filters{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+      #spcoa-v122-parameter-explorer .v122-count{font-size:11px;color:#c3d8e7;margin:9px 0 5px}
+      #spcoa-v122-parameter-explorer .v122-results{max-height:250px;overflow-y:auto;display:none;border:1px solid #37546a;border-radius:5px;background:#0b2233}
+      #spcoa-v122-parameter-explorer .v122-entry{display:flex;align-items:stretch;gap:0;border-bottom:1px solid #30495a}
+      #spcoa-v122-parameter-explorer .v122-entry:last-child{border-bottom:0}
+      #spcoa-v122-parameter-explorer .v122-entry button{background:transparent;border:0;color:#eef7ff;text-align:left}
+      #spcoa-v122-parameter-explorer .v122-entry button:hover{background:#22445e}
+      #spcoa-v122-parameter-explorer .v122-choose{flex:1;min-width:0;padding:8px;text-wrap:wrap}
+      #spcoa-v122-parameter-explorer .v122-item-sub{display:block;color:#a9c4d3;font-size:10px;margin-top:2px}
+      #spcoa-v122-parameter-explorer .v122-info{flex:0 0 35px;text-align:center!important;font-weight:700;border-left:1px solid #30495a!important}
+      #spcoa-v122-parameter-explorer .v122-selected{color:#8ff3cb}
+      #spcoa-v122-parameter-explorer .v122-details{margin-top:8px;padding:9px;border-radius:5px;background:#213e53;border:1px solid #496b82;font-size:11px}
+      #spcoa-v122-parameter-explorer .v122-details[hidden]{display:none}
+      #spcoa-v122-parameter-explorer .v122-details strong{display:block;margin-bottom:5px}
+      #sidebar .spcoa-v122-target-highlight{outline:2px solid #66c4ff!important;outline-offset:2px;border-radius:3px}
+    `;
+    if (!document.getElementById(style.id)) document.head.appendChild(style);
+
+    const heading = document.createElement("h3");
+    heading.className = "v122-heading"; heading.textContent = "Find a Parameter";
+    const help = document.createElement("p"); help.className="v122-help";
+    help.textContent = "Search filled fields, contours and vector overlays. Choose a result to apply it, or ⓘ to read about it.";
+    const searchRow=document.createElement("div");searchRow.className="v122-search-row";
+    const input=document.createElement("input");
+    input.id="spcoa-v122-parameter-search";input.type="search";input.placeholder="e.g. ECAPE, 500 mb RH, Q-vector";
+    input.setAttribute("aria-label","Search weather parameters");input.autocomplete="off";input.spellcheck=false;
+    const clear=document.createElement("button");clear.type="button";clear.className="v122-clear";
+    clear.textContent="×";clear.title="Clear parameter search";clear.setAttribute("aria-label","Clear parameter search");
+    searchRow.append(input,clear);
+    const filters=document.createElement("div");filters.className="v122-filters";
+    const scope=document.createElement("select");scope.id="spcoa-v122-search-scope";
+    scope.setAttribute("aria-label","Parameter type filter");
+    for (const [value,name] of [["all","All types"],["fill","Filled fields"],["contour","Contours"],["vector","Vectors"],["overlay","Other overlays"],["selected","Selected now"]]){
+        const option=document.createElement("option");option.value=value;option.textContent=name;scope.appendChild(option);
+    }
+    const jump=document.createElement("select");jump.id="spcoa-v122-category-jump";
+    jump.setAttribute("aria-label","Jump to a sidebar parameter category");
+    filters.append(scope,jump);
+    const count=document.createElement("div");count.className="v122-count";count.setAttribute("role","status");count.setAttribute("aria-live","polite");
+    const results=document.createElement("div");results.className="v122-results";
+    results.setAttribute("role","list");results.setAttribute("aria-label","Matching parameters");
+    const details=document.createElement("div");details.className="v122-details";details.hidden=true;
+    details.setAttribute("role","status");
+    root.append(heading,help,searchRow,filters,count,results,details);
+    const freshness=sidebar.querySelector("#spcoa-v120-data-status");
+    if (freshness) freshness.insertAdjacentElement("afterend",root);
+    else sidebar.prepend(root);
+    // The host relays delegated events to iframes. Finder controls are local
+    // presentation controls and must not be relayed as map parameter changes.
+    root.addEventListener("input",e=>e.stopPropagation());
+    root.addEventListener("change",e=>e.stopPropagation());
+
+    let catalog=[]; let visible=[];
+    const normalize=value=>String(value||"").toLowerCase().normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g,"").replace(/[_–—-]/g," ").replace(/\s+/g," ").trim();
+    function rebuild() {
+        catalog=spcoaV122Catalog(sidebar,root);
+        const current=jump.value;
+        jump.replaceChildren();
+        const placeholder=document.createElement("option");placeholder.value="";placeholder.textContent="Jump to category…";
+        jump.appendChild(placeholder);
+        const categories=new Map();
+        for (const el of sidebar.querySelectorAll("[id$='-category']")){
+            if (el.contains(root)) continue;
+            if (!categories.has(el.id)) categories.set(el.id,spcoaV122PrettyCategory(el));
+        }
+        for(const [id,title] of categories){
+            const option=document.createElement("option");option.value=id;option.textContent=title;jump.appendChild(option);
+        }
+        if(Array.from(jump.options).some(o=>o.value===current))jump.value=current;
+    }
+    function goto(row,category) {
+        const content=category?.querySelector(":scope > .cat-content") || category?.querySelector(".cat-content");
+        if(content && getComputedStyle(content).display==="none"){
+            const header=category?.querySelector(":scope > .cat-header, :scope > .cat-title");
+            if(header && typeof header.click==="function") header.click();
+            else content.style.display="block";
+        }
+        requestAnimationFrame(()=>{
+            row?.scrollIntoView?.({block:"center",behavior:"smooth"});
+            row?.classList.add("spcoa-v122-target-highlight");
+            if(row) setTimeout(()=>row.classList.remove("spcoa-v122-target-highlight"),1600);
+        });
+    }
+    function showDetails(item) {
+        details.replaceChildren();
+        const title=document.createElement("strong");title.textContent=`${item.name} · ${item.categoryName}`;
+        const text=document.createElement("div");text.textContent=item.description;
+        const note=document.createElement("div");note.style.cssText="margin-top:5px;color:#c9dbe6";
+        note.textContent="Experimental SPCOA/HRRR-based analysis. Always check actual UTC valid times and units.";
+        details.append(title,text,note);details.hidden=false;
+    }
+    function render() {
+        const term=normalize(input.value);
+        const filter=scope.value;
+        const needsResults=Boolean(term) || filter==="selected";
+        results.replaceChildren();
+        results.style.display=needsResults?"block":"none";
+        if(!needsResults){visible=[];count.textContent=`${catalog.length} parameters indexed · Type to search`;return;}
+        const tokens=term.split(" ").filter(Boolean);
+        visible=catalog.filter(item=>{
+            if(filter==="selected"?!item.active():(filter!=="all"&&item.kind!==filter))return false;
+            const hay=normalize(`${item.name} ${item.id} ${item.categoryName} ${item.description}`);
+            return tokens.every(t=>hay.includes(t));
+        }).sort((a,b)=>{
+            const priority=x=>Number(normalize(x.name).startsWith(term))*3 + Number(normalize(x.id).startsWith(term))*2 + Number(x.active());
+            return priority(b)-priority(a)||a.name.localeCompare(b.name);
+        });
+        count.textContent=`${visible.length} match${visible.length===1?"":"es"}` +
+            (visible.length>60?" · showing first 60":"");
+        for(const item of visible.slice(0,60)){
+            const row=document.createElement("div");row.className="v122-entry";row.setAttribute("role","listitem");
+            const choose=document.createElement("button");choose.type="button";choose.className="v122-choose";
+            const name=document.createElement("span");name.textContent=item.name;
+            if(item.active()){name.className="v122-selected";name.textContent="✓ "+item.name;}
+            const sub=document.createElement("span");sub.className="v122-item-sub";
+            sub.textContent=`${item.categoryName} · ${item.kind==="fill"?"Filled":item.kind==="contour"?"Contour":item.kind==="vector"?"Vector":"Overlay"}`;
+            choose.title=`Apply: ${item.name}`;choose.append(name,sub);
+            choose.addEventListener("click",()=>{
+                if(!item.control.isConnected){rebuild();render();return;}
+                item.control.click();
+                goto(item.row,item.category);
+                setTimeout(render,70);
+            });
+            const info=document.createElement("button");info.type="button";info.className="v122-info";
+            info.textContent="ⓘ";info.title=`About ${item.name}`;info.setAttribute("aria-label",`About ${item.name}`);
+            info.addEventListener("click",()=>showDetails(item));
+            row.append(choose,info);results.appendChild(row);
+        }
+    }
+    input.addEventListener("input",render);
+    input.addEventListener("keydown",event=>{
+        if(event.key==="Escape") { input.value="";render();return; }
+        if(event.key==="Enter"&&visible.length){ event.preventDefault();
+            results.querySelector(".v122-choose")?.click(); }
+    });
+    clear.addEventListener("click",()=>{input.value="";scope.value="all";details.hidden=true;render();input.focus();});
+    scope.addEventListener("change",render);
+    jump.addEventListener("change",()=>{
+        const category=jump.value?document.getElementById(jump.value):null;
+        if(category){goto(category,category);jump.value="";}
+    });
+    // Refresh the finder if code later injects additional real field controls.
+    // Ignore result/status text updates to avoid unnecessary work every 350 ms.
+    let queued=false;
+    const observer=new MutationObserver(changes=>{
+        const added=changes.some(change=>Array.from(change.addedNodes).some(node=>
+            node.nodeType===1&&!root.contains(node)&&node!==root&&(
+                node.matches?.(".field-choice, label, input[type='checkbox'], [id$='-category']") ||
+                node.querySelector?.(".field-choice, input[type='checkbox']")
+            )));
+        if(added&&!queued){queued=true;requestAnimationFrame(()=>{queued=false;rebuild();render();});}
+    });
+    observer.observe(sidebar,{childList:true,subtree:true});
+    rebuild();render();
+    window.__spcoaV122Explorer={rebuild,refresh:render,count:()=>catalog.length};
+}
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -1266,6 +1577,7 @@ if (!__MP_CHILD) {
         installSpcoaCityControls();
         spcoaInstallHostVectorColors();
         installSpcoaCompositeContourToggles();
+        spcoaV122InstallParameterExplorer();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
 
@@ -23031,5 +23343,6 @@ window.addEventListener('message', event => {
 });
 spcoaSndBuildPanel();
 spcoaSndInstallCursorSelector();
+spcoaV122InstallParameterExplorer();
 
 } // End multi-panel mp-child branch (V44 sounding scope correction)
