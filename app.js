@@ -168,7 +168,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V135"; // Fixed radar tile projection, coordinate origin, and messaging
+const SPCOA_VIEWER_BUILD = "V136"; // Fixed radar tile projection, coordinate origin, and messaging
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1290,7 +1290,7 @@ function spcoaInstallGoesControls() {
 spcoaInstallGoesControls();
 
 /* =========================================================================================
-   V134 — LIVE NEXRAD BASE REFLECTIVITY (IEM TMS)
+   V136 — LIVE NEXRAD BASE REFLECTIVITY (IEM WMS + TMS fallback)
    Independent of GOES and SPCOA analyses; not historical or time-matched.
    IEM generates its CONUS N0Q-format mosaic from Level III N0B observations.
    Use IEM's Web Mercator (-900913) layer and XYZ/top-origin Y coordinates,
@@ -1298,7 +1298,19 @@ spcoaInstallGoesControls();
    ========================================================================================= */
 const SPCOA_RADAR_PREFS_KEY = "spcoa_radar_overlay_v134";
 const SPCOA_RADAR_REFRESH_MS = 5 * 60 * 1000;
+// IEM publishes this WMS service specifically for CONUS N0Q-format base reflectivity.
+// MapLibre expands {bbox-epsg-3857} to the geographic extent of each tile.
+const SPCOA_RADAR_WMS_BASE = "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi";
 const SPCOA_RADAR_TMS_BASE = "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913";
+function spcoaRadarTileUrl(mode, bucket) {
+    if (mode === "tms") return SPCOA_RADAR_TMS_BASE + "/{z}/{x}/{y}.png?v=" + bucket;
+    return SPCOA_RADAR_WMS_BASE +
+        "?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap" +
+        "&LAYERS=nexrad-n0q-900913&STYLES=&FORMAT=image%2Fpng" +
+        "&TRANSPARENT=TRUE&SRS=EPSG%3A3857" +
+        "&WIDTH=256&HEIGHT=256&BBOX={bbox-epsg-3857}" +
+        "&v=" + bucket;
+}
 const SPCOA_RADAR_DEFAULTS = Object.freeze({enabled:false,opacity:85});
 let spcoaRadarOverride = null;
 function spcoaValidateRadarPrefs(value) {
@@ -1380,7 +1392,12 @@ function spcoaInstallRadarControls() {
     credit.href="https://mesonet.agron.iastate.edu/ogc/";
     credit.target="_blank"; credit.rel="noopener noreferrer";
     credit.style.cssText="font-size:10px;color:#a1c8e8;text-decoration:underline;";
-    panel.append(heading,description,toggleLabel,opacityRow,opacity,status,credit);
+    const radarCheck=document.createElement("a");
+    radarCheck.textContent="Check current CONUS radar mosaic";
+    radarCheck.href="https://mesonet.agron.iastate.edu/current/mcview.phtml";
+    radarCheck.target="_blank";radarCheck.rel="noopener noreferrer";
+    radarCheck.style.cssText="font-size:10px;color:#a1c8e8;text-decoration:underline;";
+    panel.append(heading,description,toggleLabel,opacityRow,opacity,status,radarCheck,credit);
     const changed=()=>spcoaSaveRadarPrefs({enabled:toggle.checked,opacity:opacity.value});
     toggle.addEventListener("change",changed);
     opacity.addEventListener("input",()=>{pct.textContent=opacity.value+"%";changed();});
@@ -7688,21 +7705,25 @@ document.addEventListener("visibilitychange",()=>{
 
 
 /* =========================================================================================
-   V134 — NEXRAD base-reflectivity raster above GOES, below SPCOA parameter overlays.
-   Use IEM's public, 5-minute cache: one 256-pixel tile per visible map area.
-   Do not label latest live radar as valid at the historical SPCOA model hour.
+   V136 — IEM CONUS NEXRAD Base Reflectivity.
+   First try official WMS GetMap in EPSG:3857 (MapLibre bbox placeholder).
+   If loading fails, automatically try IEM's documented Web Mercator TMS.
+   Radar is live, independent of the selected historical SPCOA analysis time.
    ========================================================================================= */
 const SPCOA_RADAR_LAYER_ID="spcoa-nexrad-base-reflectivity";
 let spcoaRadarActiveKey=null;
 let spcoaRadarReady=false;
 let spcoaRadarRefreshTimer=null;
 let spcoaRadarActiveLabel="";
+let spcoaRadarMode="wms"; // Falls back to "tms" once on a genuine image loading error.
+let spcoaRadarFailure="";
+let spcoaRadarFailureCount=0;
 function spcoaRadarStatus(message){
     const node=document.getElementById("spcoa-radar-status");
     if(node && node.textContent!==message)node.textContent=message;
 }
 function spcoaRadarBeforeLayerId(){
-    // Preserve existing weather layer order. The satellite imagery must be below radar.
+    // Keep Mapbox and GOES BELOW radar, all other weather/geography ABOVE it.
     return map.getStyle()?.layers?.find(layer=>layer.type!=="background" &&
         !["spcoa-mapbox-satellite-basemap",SPCOA_GOES_SOURCE_ID,SPCOA_RADAR_LAYER_ID]
             .includes(layer.id))?.id;
@@ -7716,17 +7737,19 @@ function spcoaRadarRemoveLayer(){
 }
 function spcoaRadarRefresh(){
     const p=spcoaReadRadarPrefs();
-    if(!p.enabled){spcoaRadarRemoveLayer();spcoaRadarStatus("Off");return;}
+    if(!p.enabled){
+        spcoaRadarRemoveLayer();spcoaRadarStatus("Off");
+        spcoaRadarFailure="";spcoaRadarFailureCount=0;
+        return;
+    }
     if(!map.getStyle()?.layers?.length){spcoaRadarStatus("Waiting for map style...");return;}
     const bucket=Math.floor(Date.now()/SPCOA_RADAR_REFRESH_MS);
-    const key="iem-n0q|"+bucket;
+    const key="iem-n0q|"+spcoaRadarMode+"|"+bucket;
     try{
         if(key!==spcoaRadarActiveKey || !map.getLayer(SPCOA_RADAR_LAYER_ID)){
-            spcoaRadarStatus("Loading base reflectivity...");
+            spcoaRadarStatus("Requesting radar via "+spcoaRadarMode.toUpperCase()+"...");
             spcoaRadarRemoveLayer();
-            // IEM's Web Mercator radar endpoint expects top-origin XYZ tile Y.
-            // The generic TMS scheme inverted Y and requested the wrong hemisphere.
-            const url=SPCOA_RADAR_TMS_BASE+"/{z}/{x}/{y}.png?v="+bucket;
+            const url=spcoaRadarTileUrl(spcoaRadarMode,bucket);
             map.addSource(SPCOA_RADAR_LAYER_ID,{
                 type:"raster",tiles:[url],tileSize:256,scheme:"xyz",
                 attribution:'<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Radar: Iowa Environmental Mesonet / NWS NEXRAD</a>'
@@ -7741,11 +7764,14 @@ function spcoaRadarRefresh(){
             const before=spcoaRadarBeforeLayerId();
             if(before)map.moveLayer(SPCOA_RADAR_LAYER_ID,before);
         }
-        spcoaRadarActiveLabel="NEXRAD Base Reflectivity · latest available mosaic (UTC time unverified) · "+p.opacity+"% opacity";
-        spcoaRadarStatus((spcoaRadarReady?"":"Loading ")+spcoaRadarActiveLabel);
+        spcoaRadarActiveLabel="Base Reflectivity ("+spcoaRadarMode.toUpperCase()+") · live mosaic, UTC scan unverified · "+p.opacity+"% opacity";
+        spcoaRadarStatus(spcoaRadarFailure || (
+            spcoaRadarReady ? spcoaRadarActiveLabel+" · Imagery loaded; clear areas are transparent"
+                : "Loading "+spcoaRadarActiveLabel));
     }catch(error){
+        spcoaRadarFailure="Could not initialize radar layer: "+String(error?.message||error);
         console.error("NEXRAD radar overlay error",error);
-        spcoaRadarStatus("Radar failed to initialize. Check browser console.");
+        spcoaRadarStatus(spcoaRadarFailure);
     }
 }
 function spcoaRadarSchedule(ms=80){
@@ -7754,6 +7780,7 @@ function spcoaRadarSchedule(ms=80){
 }
 async function spcoaRadarWaitForMapTiles(timeoutMs=12000){
     if(!spcoaRadarSelected() || !map.getSource(SPCOA_RADAR_LAYER_ID))return;
+    if(spcoaRadarFailure)throw new Error(spcoaRadarFailure);
     if(map.isSourceLoaded(SPCOA_RADAR_LAYER_ID))return;
     await new Promise((resolve,reject)=>{
         let finished=false;
@@ -7785,13 +7812,25 @@ map.on("load",()=>spcoaRadarSchedule(150));
 map.on("sourcedata",event=>{
     if(event.sourceId===SPCOA_RADAR_LAYER_ID && event.isSourceLoaded){
         spcoaRadarReady=true;
-        if(spcoaRadarActiveLabel)spcoaRadarStatus(spcoaRadarActiveLabel+" · Tiles loaded (echo-free areas are transparent)");
+        spcoaRadarFailure="";
+        if(spcoaRadarActiveLabel)
+            spcoaRadarStatus(spcoaRadarActiveLabel+" · Imagery loaded; echo-free areas transparent");
     }
 });
 map.on("error",event=>{
-    if(event.sourceId===SPCOA_RADAR_LAYER_ID){
-        spcoaRadarStatus("Radar tiles unavailable. Check IEM service/CORS/network.");
-        console.warn("NEXRAD tile loading failed",event?.error);
+    const message=String(event?.error?.message||"Radar imagery could not be retrieved");
+    if(event.sourceId!==SPCOA_RADAR_LAYER_ID &&
+        !/nexrad-n0q-900913|wms\/nexrad\/n0q\.cgi|nexrad-n0q\//i.test(message))return;
+    console.warn("IEM radar source error",spcoaRadarMode,message);
+    if(spcoaRadarMode==="wms" && spcoaRadarFailureCount===0){
+        spcoaRadarFailureCount=1;
+        spcoaRadarMode="tms";
+        spcoaRadarFailure="";
+        spcoaRadarStatus("WMS failed; trying alternative radar tiles...");
+        spcoaRadarSchedule(100);
+    }else{
+        spcoaRadarFailure="Radar imagery failed ("+spcoaRadarMode.toUpperCase()+"). Check Chrome Network → Img → nexrad.";
+        spcoaRadarStatus(spcoaRadarFailure);
     }
 });
 window.setInterval(()=>{
