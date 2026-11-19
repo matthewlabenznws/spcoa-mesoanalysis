@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V146"; // Radar station synchronization and reliable raster PNG capture
+const SPCOA_VIEWER_BUILD = "V147"; // Active-panel authoritative auto NEXRAD selection
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1722,13 +1722,22 @@ function spcoaL3RefreshStationSelect(){
     const signature=stations.map(x=>x.id).join("|");
     if(select.__spcoaCatalogSignature===signature)return;
     select.replaceChildren();
+    // Placeholder is used ONLY while the active panel is determining its radar.
+    // A saved manual selection must not masquerade as the selected auto radar.
+    const locating = document.createElement("option");
+    locating.value = "";
+    locating.textContent = "Locating nearest radar...";
+    select.append(locating);
     for(const station of stations){
         const option=document.createElement("option");
         option.value=station.id;
         option.textContent=station.id+" — "+station.name.replace(/^K[A-Z0-9]{3}\s*[—-]\s*/,"");
         select.append(option);
     }
-    if(SPCOA_L3_CATALOG.has(selected))select.value=selected;
+    if(prefs.mode === "auto"){
+        select.value = spcoaRadarResolvedSite && SPCOA_L3_CATALOG.has(spcoaRadarResolvedSite)
+            ? spcoaRadarResolvedSite : "";
+    }else if(SPCOA_L3_CATALOG.has(selected))select.value=selected;
     else if(stations.length)select.value=stations[0].id;
     select.__spcoaCatalogSignature=signature;
     // A newly populated station list must not overwrite the computed auto site.
@@ -2194,8 +2203,10 @@ function spcoaSyncRadarControls() {
     const siteCaption=document.getElementById("spcoa-radar-site-caption");
     if(mode && mode!==document.activeElement)mode.value=p.mode;
     if(site && site!==document.activeElement){
-        const shownSite=p.mode==="auto" && spcoaRadarResolvedSite &&
-            SPCOA_L3_CATALOG.has(spcoaRadarResolvedSite) ? spcoaRadarResolvedSite : p.site;
+        const shownSite=p.mode==="auto"
+            ? (spcoaRadarResolvedSite && SPCOA_L3_CATALOG.has(spcoaRadarResolvedSite)
+                ? spcoaRadarResolvedSite : "")
+            : p.site;
         if(Array.from(site.options).some(option=>option.value===shownSite))site.value=shownSite;
     }
     if(siteCaption)siteCaption.textContent=p.mode==="auto" ? "Nearest radar" : "Radar station";
@@ -2209,6 +2220,10 @@ function spcoaSyncRadarControls() {
 function spcoaSaveRadarPrefs(value,broadcast=true) {
     const previous=spcoaReadRadarPrefs();
     const next=spcoaValidateRadarPrefs(value);
+    // A change of radar mode or selected manual site invalidates any station
+    // shown by the prior mode. In multi-panel mode the child will publish its
+    // actual auto station after computing the active map's camera center.
+    if(previous.mode!==next.mode || !next.enabled)spcoaRadarResolvedSite=null;
     if(__MP_CHILD && (previous.mode!==next.mode ||
         (next.mode==="single" && previous.site!==next.site))){
         spcoaL3LastPoll=0;
@@ -3407,6 +3422,10 @@ if (!__MP_CHILD) {
         function childDoc(index = activePanel) {
             try { return panels[index].frame.contentDocument; } catch (_) { return null; }
         }
+        // DevTools diagnostic on the main page (no need to pick an iframe):
+        // __SPCOA_RADAR_ACTIVE_PANEL_STATE()
+        window.__SPCOA_RADAR_ACTIVE_PANEL_STATE=()=>
+            childDoc()?.defaultView?.__spcoaRadarAutoState?.() || null;
 
         function childElById(id, index = activePanel) {
             const d = childDoc(index);
@@ -3460,22 +3479,22 @@ if (!__MP_CHILD) {
                 }
                 hostCityArea.value = childCityArea.value;
             }
-            // Auto-nearest is calculated from the map inside the child iframe.
-            // Mirror its resolved station in the visible host sidebar, while
-            // leaving saved manual station preferences unchanged.
+            // Single source of truth: the ACTIVE CHILD map chooses auto NEXRAD.
+            // The host must never independently choose a station using its own
+            // catalog, its last manual site, or a different panel's camera.
+            // Read the child's actual requested/loaded station snapshot instead.
             if(spcoaReadRadarPrefs().mode==="auto"){
                 const hostSite=document.getElementById("spcoa-radar-site");
-                const childSite=d.getElementById("spcoa-radar-site");
-                // Read the ACTIVE CHILD MAP's real camera, never a stale
-                // saved manual station or an unrelated iframe selection.
-                const center=d.defaultView?.__spcoaRadarGetCenter?.();
-                const nearest=center?spcoaL3NearestAt(Number(center.lat),Number(center.lng)):null;
-                const childResolved=d.defaultView?.__spcoaRadarGetResolvedSite?.();
-                const shown=childResolved && SPCOA_L3_CATALOG.has(childResolved)?childResolved:
-                    (nearest && SPCOA_L3_CATALOG.has(nearest)?nearest:null);
-                if(hostSite && shown){
-                    spcoaRadarResolvedSite=shown;
-                    if(hostSite.value!==shown)hostSite.value=shown;
+                const snapshot=d.defaultView?.__spcoaRadarAutoState?.();
+                // Without a loaded child snapshot, show "Locating" rather than
+                // a misleading KLNX saved preference (or an unrelated radar).
+                const shown=snapshot?.mode==="auto" && snapshot.enabled &&
+                    snapshot.desired && SPCOA_L3_CATALOG.has(snapshot.desired)
+                    ? snapshot.desired : null;
+                spcoaRadarResolvedSite=shown;
+                if(hostSite){
+                    const value=shown || "";
+                    if(hostSite.value!==value)hostSite.value=value;
                 }
             }
             // Update both option lists before copying selection from the active panel.
@@ -8642,24 +8661,32 @@ document.addEventListener("visibilitychange",()=>{
    Radar is live, independent of the selected historical SPCOA analysis time.
    ========================================================================================= */
 const SPCOA_RADAR_LAYER_ID="spcoa-nexrad-base-reflectivity";
-// Same-origin host reads only the active map center for the nearest-radar label.
-window.__spcoaRadarGetCenter=()=>{
-    const c=map.getCenter();return {lat:c.lat,lng:c.lng};
-};
-// The visible multi-panel host must show the station the map is actually
-// loading, which might be the second-nearest if the closest radar is offline.
-window.__spcoaRadarGetResolvedSite=()=>{
+// V147: One authoritative state snapshot from the ACTIVE map iframe.
+// Host sidebar and debugging read this snapshot. No additional site selection
+// occurs in the host or another iframe, and the loaded radar is distinguished
+// from the radar being requested during map moves and scan downloads.
+window.__spcoaRadarAutoState=()=>{
     const prefs=spcoaReadRadarPrefs();
-    // Use the radar that this iframe's *current camera* is requesting;
-    // the last successfully rendered radar may belong to the previous map view.
-    return prefs.enabled && prefs.mode==="auto" ? spcoaL3DesiredSite(prefs) : null;
+    const center=map.getCenter();
+    const desired=prefs.enabled && prefs.mode==="auto" ? spcoaL3DesiredSite(prefs) : null;
+    const loadedMatch=spcoaRadarActiveKey?.match(/^n0b\|(K[A-Z0-9]{3})\|/);
+    const loaded=loadedMatch ? loadedMatch[1] : null;
+    const current=!!desired && desired===loaded && !!spcoaRadarReady &&
+        spcoaL3Data?.site===desired && spcoaL3ScanIsUsable(spcoaL3Data);
+    return {enabled:prefs.enabled,mode:prefs.mode,desired,loaded,ready:current,
+        center:{lat:center.lat,lng:center.lng},
+        scanTime:current ? spcoaL3Data.scan.date.toISOString():null};
 };
+// Console helper: in the child iframe, window.__spcoaRadarAutoState()
+// displays the requested and loaded stations without adding UI clutter.
 let spcoaRadarMosaicTime=null;
 let spcoaRadarMosaicTimeChecked=false;
 function spcoaRadarValidLabel(p,site,singleReady){
     if(!p.enabled)return "Radar: Off";
     if(p.mode!=="mosaic"){
-        if(singleReady)return "Radar valid: "+spcoaObsFormat(spcoaL3Data.scan.date)+" ("+site+" N0B)";
+        const activeMatch=spcoaRadarActiveKey?.match(/^n0b\|(K[A-Z0-9]{3})\|/);
+        if(singleReady && activeMatch?.[1]===site && spcoaRadarReady)
+            return "Radar valid: "+spcoaObsFormat(spcoaL3Data.scan.date)+" ("+site+" N0B)";
         // Auto/individual modes must never be labeled with a mosaic's time.
         if(!site)return "Radar: No recent N0B scans available from nearby radars";
         if(spcoaL3Error && spcoaL3LastRequestedSite===site)
@@ -8844,12 +8871,20 @@ window.addEventListener("storage",event=>{
 map.on("load",()=>spcoaRadarSchedule(150));
 map.on("moveend",()=>{
     const prefs=spcoaReadRadarPrefs();
-    if(prefs.enabled && prefs.mode==="auto")spcoaRadarSchedule(100);
+    if(prefs.enabled && prefs.mode==="auto"){
+        // Camera changed: choose a new radar before another old-site tile is
+        // described as current. Async downloads are guarded by desired-site.
+        spcoaRadarSchedule(0);
+    }
 });
 map.on("sourcedata",event=>{
     if(event.sourceId===SPCOA_RADAR_LAYER_ID && event.isSourceLoaded){
         spcoaRadarReady=true;
         spcoaRadarFailure="";
+        const prefs=spcoaReadRadarPrefs();
+        const site=["auto","single"].includes(prefs.mode)?spcoaL3DesiredSite(prefs):null;
+        const ready=!!site && spcoaL3Data?.site===site && spcoaL3ScanIsUsable(spcoaL3Data);
+        spcoaRadarSetValidText(prefs,site,ready);
         if(spcoaRadarActiveLabel)
             spcoaRadarStatus(spcoaRadarActiveLabel+" · Imagery loaded; echo-free areas transparent");
     }
@@ -21381,9 +21416,10 @@ async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
             const radarPrefs=spcoaReadRadarPrefs();
             if(radarPrefs.mode==="auto" || radarPrefs.mode==="single"){
                 const expectedSite=spcoaL3DesiredSite(radarPrefs);
-                if(!expectedSite || !spcoaRadarActiveKey?.startsWith(`n0b|${expectedSite}|`)){
-                    throw new Error("The selected NEXRAD station is still switching or loading. " +
-                        "PNG export was cancelled to avoid saving an earlier radar scan.");
+                if(!expectedSite || !spcoaRadarActiveKey?.startsWith(`n0b|${expectedSite}|`) ||
+                   !spcoaRadarReady || spcoaL3Data?.site!==expectedSite){
+                    throw new Error("The NEXRAD scan for this map center is not yet rendered. " +
+                        "PNG export was cancelled to avoid saving the wrong radar.");
                 }
             }
         }
