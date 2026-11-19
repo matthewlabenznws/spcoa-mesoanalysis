@@ -1,3 +1,4 @@
+/* V126: GOES-East satellite imagery exclusively through UW–Madison SSEC RealEarth. */
 /* V114: City labels and Cities controls removed from all map views and exports. */
 /* V96 SCOPE FIX — 2026-11-03
    Restores rendering in the multi-panel map iframe: helper functions defined
@@ -164,7 +165,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V124"; // V124: GOES observations, no presets
+const SPCOA_VIEWER_BUILD = "V126"; // V126: SSEC RealEarth-only GOES East
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1033,26 +1034,88 @@ function spcoaInstallMapBackgroundSelector() {
 spcoaInstallMapBackgroundSelector();
 
 /* =========================================================================================
-   V124 — NOAA nowCOAST GOES OBSERVATIONS (not the Mapbox land-imagery background)
-   This new observational layer is independent of SPCOA fields and the Mapbox
-   Satellite (Imagery Only) background. All panels use the same GOES settings.
-   The source can provide UTC scan times; NEVER label a historical SPCOA run
-   with live imagery when the desired scan is not present in WMS capabilities.
+   V126 — SSEC RealEarth GOES observations (independent of Mapbox)
+   Satellite imagery is independent of SPCOA fields and the Mapbox land-image
+   basemap. All panels share the same GOES settings. Historical mode only
+   displays a verified scan at or before the selected SPCOA analysis.
    ========================================================================================= */
-const SPCOA_GOES_WMS = "https://nowcoast.noaa.gov/geoserver/observations/satellite/ows";
+// Preserve the original saved preferences; migrate old NOAA selections below.
 const SPCOA_GOES_PREFS_KEY = "spcoa_goes_observations_v124";
-const SPCOA_GOES_LAYER_CONFIG = Object.freeze({
-    visible: Object.freeze({layer:"goes_visible_imagery",style:"goes-vis",label:"GOES Visible"}),
-    infrared: Object.freeze({layer:"goes_longwave_imagery",style:"goes-lir",label:"GOES Infrared (11.2 µm)"}),
-    water_vapor: Object.freeze({layer:"goes_water_vapor_imagery",style:"goes-wv",label:"GOES Upper-Level Water Vapor (6.2 µm)"})
+/* V126: RealEarth public tile pyramid (NOT the paid SSEC WMS interface).
+ * The catalog calls this category "37 products", including two duplicated
+ * featured entries. There are 35 distinct CONUS product IDs below:
+ * 16 ABI bands + 5 enhancements + 14 RGB composites.
+ * GOES-East is GOES-19, not legacy GOES-16.
+ * Source: https://wms.ssec.wisc.edu/products/
+ * Tiles:  https://wms.ssec.wisc.edu/doc/dataaccess.php
+ */
+const SPCOA_REALEARTH_URL = "https://wms.ssec.wisc.edu";
+const SPCOA_REALEARTH_CONUS_BANDS = Object.freeze([
+    ["01","Blue Visible (0.47 µm)"],
+    ["02","Red Visible (0.64 µm)"],
+    ["03","Veggie / Near IR (0.86 µm)"],
+    ["04","Cirrus (1.37 µm)"],
+    ["05","Snow / Ice (1.61 µm)"],
+    ["06","Cloud Particle Size (2.24 µm)"],
+    ["07","Shortwave IR / Fire (3.9 µm)"],
+    ["08","Upper-Level Water Vapor (6.2 µm)"],
+    ["09","Mid-Level Water Vapor (6.9 µm)"],
+    ["10","Lower-Level Water Vapor (7.3 µm)"],
+    ["11","Cloud Phase (8.5 µm)"],
+    ["12","Ozone (9.6 µm)"],
+    ["13","Clean IR (10.3 µm)"],
+    ["14","IR (11.2 µm)"],
+    ["15","Dirty IR (12.3 µm)"],
+    ["16","CO₂ (13.3 µm)"]
+]);
+const SPCOA_REALEARTH_CONUS_ENHANCED = Object.freeze([
+    ["BAND07-FIRE","Fire Band · Enhanced"],
+    ["BAND08-VAPR","Upper WV · Enhanced"],
+    ["BAND09-VAPR","Mid WV · Enhanced"],
+    ["BAND10-VAPR","Lower WV · Enhanced"],
+    ["BAND13-GRAD","Clean IR · Enhanced"]
+]);
+const SPCOA_REALEARTH_CONUS_RGB = Object.freeze([
+    ["airmass","Air Mass RGB"],
+    ["cloud-phase","Cloud Phase RGB"],
+    ["convection","Day Convection RGB"],
+    ["day-microphysics-abi","Day Microphysics RGB"],
+    ["snow-fog","Day Snow-Fog RGB"],
+    ["water-vapors2","Differential Water Vapor RGB"],
+    ["dust","Dust RGB"],
+    ["fire-temperature-awips","Fire Temperature RGB"],
+    ["geo-color","GeoColor RGB"],
+    ["ir-sandwich","IR Sandwich RGB"],
+    ["night-microphysics","Night Microphysics RGB"],
+    ["so2","Sulfur Dioxide RGB"],
+    ["true-color","True Color RGB"],
+    ["ash","Volcanic Ash RGB"]
+]);
+const SPCOA_REALEARTH_PRODUCTS = Object.freeze([
+    ...SPCOA_REALEARTH_CONUS_BANDS.map(([band,label]) =>
+        ["re_band"+band,"G19-ABI-CONUS-BAND"+band,"B"+band+" · "+label,"SSEC RealEarth · ABI Bands"]),
+    ...SPCOA_REALEARTH_CONUS_ENHANCED.map(([id,label]) =>
+        ["re_"+id.toLowerCase(),"G19-ABI-CONUS-"+id,label,"SSEC RealEarth · Enhanced"]),
+    ...SPCOA_REALEARTH_CONUS_RGB.map(([id,label]) =>
+        ["re_rgb_"+id,"G19-ABI-CONUS-"+id,label,"SSEC RealEarth · RGB"])
+]);
+const SPCOA_GOES_LAYER_CONFIG = Object.freeze(Object.fromEntries(
+    SPCOA_REALEARTH_PRODUCTS.map(([id,productId,label,group]) =>
+        [id,Object.freeze({provider:"realearth",productId,label:"GOES-East · "+label,group,displayLabel:label})])
+));
+// Retain each visitor's V124/V125 satellite selection while removing NOAA choices.
+const SPCOA_GOES_LEGACY_PRODUCTS = Object.freeze({
+    visible:"re_band02", infrared:"re_band13", water_vapor:"re_band08"
 });
 const SPCOA_GOES_DEFAULTS = Object.freeze({product:"off",opacity:75,timeMode:"latest"});
 let spcoaGoesOverride = null;
 function spcoaValidateGoesPrefs(value) {
     const v = value && typeof value === "object" ? value : {};
+    const product=Object.hasOwn(SPCOA_GOES_LEGACY_PRODUCTS,v.product)
+        ? SPCOA_GOES_LEGACY_PRODUCTS[v.product] : v.product;
     return {
-        product: v.product === "off" || Object.hasOwn(SPCOA_GOES_LAYER_CONFIG,v.product)
-            ? v.product : "off",
+        product: product === "off" || Object.hasOwn(SPCOA_GOES_LAYER_CONFIG,product)
+            ? product : "off",
         opacity: Number.isFinite(Number(v.opacity))
             ? Math.max(0,Math.min(100,Math.round(Number(v.opacity)))) : 75,
         timeMode: v.timeMode === "analysis" ? "analysis" : "latest"
@@ -1106,7 +1169,7 @@ function spcoaInstallGoesControls() {
     heading.textContent = "GOES Satellite Observations";
     heading.style.cssText = "font-size:12px;";
     const description = document.createElement("div");
-    description.textContent = "NOAA nowCOAST weather satellite imagery (not Mapbox satellite land imagery).";
+    description.textContent = "GOES-East imagery from UW–Madison SSEC RealEarth. Independent of the Mapbox land-imagery background.";
     description.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;";
     function makeSelect(id,options,labelText) {
         const wrap = document.createElement("label");
@@ -1122,10 +1185,15 @@ function spcoaInstallGoesControls() {
         return select;
     }
     panel.append(heading,description);
-    const product = makeSelect("spcoa-goes-product",[
-        ["off","Off"],["visible","GOES Visible · 0.64 µm"],
-        ["infrared","GOES Infrared · 11.2 µm"],
-        ["water_vapor","GOES Water Vapor · 6.2 µm"]],"Imagery product");
+    const product = makeSelect("spcoa-goes-product",[["off","Off"]],"Imagery product");
+    // Group 35 distinct RealEarth products by ABI bands / enhancements / RGB.
+    // Native optgroups remain compatible with the host's existing select relay.
+    for (const [id,cfg] of Object.entries(SPCOA_GOES_LAYER_CONFIG)) {
+        let group=Array.from(product.children).find(node=>
+            node.tagName==="OPTGROUP" && node.label===cfg.group);
+        if(!group){group=document.createElement("optgroup");group.label=cfg.group;product.appendChild(group);}
+        group.appendChild(new Option(cfg.displayLabel||cfg.label,id));
+    }
     const mode = makeSelect("spcoa-goes-time-mode",[
         ["latest","Latest observed scan"],
         ["analysis","At or before selected SPCOA hour"]],"Observation time");
@@ -1147,6 +1215,16 @@ function spcoaInstallGoesControls() {
     status.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;min-height:28px;";
     status.textContent = "Off";
     panel.append(opacityRow,opacity,status);
+    const credit=document.createElement("div");
+    credit.style.cssText="font-size:10px;color:#9dc2d9;line-height:1.5;";
+    credit.textContent="RealEarth imagery credit: Source: SSEC RealEarth, UW-Madison. ";
+    const creditLink=document.createElement("a");
+    creditLink.href="https://www.ssec.wisc.edu/realearth/";
+    creditLink.target="_blank";creditLink.rel="noopener noreferrer";
+    creditLink.textContent="About RealEarth";
+    creditLink.style.color="#9ccff9";
+    credit.appendChild(creditLink);
+    panel.appendChild(credit);
     const changed = () => spcoaSaveGoesPrefs({product:product.value,opacity:opacity.value,timeMode:mode.value});
     product.addEventListener("change",changed);
     mode.addEventListener("change",changed);
@@ -7250,14 +7328,12 @@ window.addEventListener("message", event => {
 
 
 /* =========================================================================================
-   V124 GOES WMS RASTER LAYER — NOAA nowCOAST, MapLibre EPSG:3857 tiles
+   V126 SATELLITE RASTER UNDERLAY — SSEC RealEarth XYZ tiles only
    ========================================================================================= */
 const SPCOA_GOES_SOURCE_ID = "spcoa-goes-observations";
-const SPCOA_GOES_MAX_CAPABILITIES_AGE_MS = 180000;
-let spcoaGoesAvailableTimes = new Map();
-let spcoaGoesCapabilitiesCheckedAt = 0;
-let spcoaGoesCapabilitiesPromise = null;
 let spcoaGoesActiveKey = null;
+let spcoaGoesActiveMode = null;
+let spcoaGoesActiveAnalysisAt = null;
 let spcoaGoesActiveLabel = "";
 let spcoaGoesTilesReady = false;
 let spcoaGoesGeneration = 0;
@@ -7290,57 +7366,102 @@ function spcoaGoesChooseTime(timestamps,mode,analysisTime) {
     }
     return timestamps[timestamps.length-1];
 }
-async function spcoaGoesLoadCapabilities(force=false) {
-    if (!force && spcoaGoesCapabilitiesCheckedAt &&
-        Date.now()-spcoaGoesCapabilitiesCheckedAt<SPCOA_GOES_MAX_CAPABILITIES_AGE_MS) {
-        return spcoaGoesAvailableTimes;
+/* RealEarth /api/times reports recorded imagery time stamps per product.
+ * The response can vary by deployment/version. Parse common list/object shapes
+ * without treating non-time metadata as an observation timestamp.
+ * If metadata is unavailable, "Latest" can still display un-timed tiles;
+ * "At or before SPCOA" MUST refuse to invent a matching satellite scan.
+ */
+const SPCOA_REALEARTH_TIMES_TTL_MS = 180000;
+const spcoaRealEarthTimesCache = new Map();
+function spcoaRealEarthParseUtc(value) {
+    if (typeof value === "number") {
+        if (value > 1000000000000 && value < 9999999999999) return value;
+        if (value > 1000000000 && value < 9999999999) return value*1000;
+        return NaN;
     }
-    if (spcoaGoesCapabilitiesPromise) return spcoaGoesCapabilitiesPromise;
-    spcoaGoesCapabilitiesPromise = (async()=>{
-        const url=SPCOA_GOES_WMS+"?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities";
-        const controller=new AbortController();
-        const timer=setTimeout(()=>controller.abort(),11000);
-        try {
-            const response=await fetch(url,{cache:"no-store",signal:controller.signal});
-            if(!response.ok) throw new Error("HTTP "+response.status);
-            const xml=new DOMParser().parseFromString(await response.text(),"application/xml");
-            if (xml.querySelector("parsererror")) throw new Error("Invalid WMS XML");
-            const timeMap=new Map();
-            for(const layer of xml.getElementsByTagNameNS("*","Layer")) {
-                const nameNode=Array.from(layer.children).find(c=>c.localName==="Name");
-                const name=nameNode?.textContent?.trim();
-                if(!Object.values(SPCOA_GOES_LAYER_CONFIG).some(v=>v.layer===name))continue;
-                const dimension=Array.from(layer.children).find(c=>c.localName==="Dimension" && c.getAttribute("name")==="time");
-                const available=String(dimension?.textContent||"").trim()
-                    .split(",").map(spcoaGoesUtc).filter(Number.isFinite).sort((a,b)=>a-b);
-                timeMap.set(name,[...new Set(available)]);
+    if (typeof value !== "string") return NaN;
+    const s=value.trim();
+    let m=/^(\d{4})(\d{2})(\d{2})[_T -]?(\d{2})(\d{2})(\d{2})$/.exec(s);
+    if(m) return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
+    m=/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\s*(Z|UTC))?$/.exec(s);
+    if(m) return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]||"00"}Z`);
+    if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) return Date.parse(s.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(s) ? s : s+"Z");
+    return NaN;
+}
+function spcoaRealEarthParseTimes(data) {
+    const found=new Set(),stack=[data];
+    let examined=0;
+    while(stack.length && examined++<10000) {
+        const value=stack.pop();
+        const timestamp=spcoaRealEarthParseUtc(value);
+        if(Number.isFinite(timestamp)) {found.add(timestamp);continue;}
+        if(Array.isArray(value)) {for(const item of value)stack.push(item);continue;}
+        if(value && typeof value==="object") {
+            for(const [key,item] of Object.entries(value)) {
+                // Ignore explanatory strings; recurse on nested time lists/maps.
+                if(["description","name","label","title","units","url","link","product"].includes(key.toLowerCase()))continue;
+                stack.push(item);
             }
-            if(!timeMap.size) throw new Error("No recognized GOES layers found");
-            spcoaGoesAvailableTimes=timeMap;
-            spcoaGoesCapabilitiesCheckedAt=Date.now();
-            return timeMap;
-        } finally {clearTimeout(timer);}
+        }
+    }
+    return Array.from(found).sort((a,b)=>a-b);
+}
+async function spcoaRealEarthLoadTimes(productId,force=false) {
+    const cached=spcoaRealEarthTimesCache.get(productId);
+    if(!force && cached && Date.now()-cached.checkedAt<SPCOA_REALEARTH_TIMES_TTL_MS)return cached.times;
+    if(cached?.promise)return cached.promise;
+    const promise=(async()=>{
+        const controller=new AbortController();
+        const timeout=setTimeout(()=>controller.abort(),10000);
+        try {
+            const url=SPCOA_REALEARTH_URL+"/api/times?products="+encodeURIComponent(productId);
+            const response=await fetch(url,{signal:controller.signal,cache:"no-store"});
+            if(!response.ok)throw new Error("HTTP "+response.status);
+            const times=spcoaRealEarthParseTimes(await response.json());
+            if(!times.length)throw new Error("No parsable RealEarth timestamps returned");
+            spcoaRealEarthTimesCache.set(productId,{times,checkedAt:Date.now()});
+            return times;
+        } finally {clearTimeout(timeout);}
     })();
-    try {return await spcoaGoesCapabilitiesPromise;}
-    finally {spcoaGoesCapabilitiesPromise=null;}
+    spcoaRealEarthTimesCache.set(productId,{...(cached||{}),promise});
+    try{return await promise;}
+    finally {
+        const entry=spcoaRealEarthTimesCache.get(productId);
+        if(entry?.promise===promise)spcoaRealEarthTimesCache.set(productId,{times:entry.times||[],checkedAt:entry.checkedAt||0});
+    }
+}
+function spcoaRealEarthRasterUrl(productId,timestamp) {
+    const base=SPCOA_REALEARTH_URL+"/tiles/"+encodeURIComponent(productId);
+    if(timestamp!==null) {
+        // Freeze every tile on the SAME UTC scan. RealEarth's direct tile path
+        // is /tiles/PRODUCT/YYYYMMDD/HHMMSS/{z}/{x}/{y}.png.
+        const d=new Date(timestamp).toISOString();
+        return base+"/"+d.slice(0,10).replace(/-/g,"")+"/"+
+            d.slice(11,19).replace(/:/g,"")+"/{z}/{x}/{y}.png";
+    }
+    // Without metadata, latest may update under the same URL. Explicit cache
+    // revision forces MapLibre and browser caches to reload every 3 minutes.
+    return base+"/{z}/{x}/{y}.png?revision="+Math.floor(Date.now()/180000);
+}
+function spcoaGoesAttribution() {
+    return '<a href="https://www.ssec.wisc.edu/realearth/" target="_blank" rel="noopener noreferrer">Source: SSEC RealEarth, UW-Madison</a>';
+}
+function spcoaGoesBeforeLayerId() {
+    // Satellite is an UNDERLAY. Keep Mapbox satellite under RealEarth/GOES and
+    // keep pressure, fronts, fills, vectors, roads and boundaries above it.
+    const basemap="spcoa-mapbox-satellite-basemap";
+    return map.getStyle()?.layers?.find(layer=>layer.type!=="background" &&
+        layer.id!==basemap && layer.id!==SPCOA_GOES_SOURCE_ID)?.id;
 }
 function spcoaGoesRemoveLayer() {
     if(map.getLayer(SPCOA_GOES_SOURCE_ID)) map.removeLayer(SPCOA_GOES_SOURCE_ID);
     if(map.getSource(SPCOA_GOES_SOURCE_ID)) map.removeSource(SPCOA_GOES_SOURCE_ID);
     spcoaGoesActiveKey=null;
+    spcoaGoesActiveMode=null;
+    spcoaGoesActiveAnalysisAt=null;
     spcoaGoesActiveLabel="";
     spcoaGoesTilesReady=false;
-}
-function spcoaGoesRasterUrl(config,selectedTimestamp) {
-    const params = [
-        "SERVICE=WMS","VERSION=1.1.1","REQUEST=GetMap",
-        "LAYERS="+encodeURIComponent(config.layer),
-        "STYLES="+encodeURIComponent(config.style),
-        "FORMAT=image%2Fpng","TRANSPARENT=TRUE","SRS=EPSG%3A3857",
-        "WIDTH=256","HEIGHT=256","BBOX={bbox-epsg-3857}"
-    ];
-    if (selectedTimestamp!==null) params.push("TIME="+encodeURIComponent(new Date(selectedTimestamp).toISOString()));
-    return SPCOA_GOES_WMS+"?"+params.join("&");
 }
 async function spcoaGoesRefresh(force=false) {
     const generation=++spcoaGoesGeneration;
@@ -7352,61 +7473,81 @@ async function spcoaGoesRefresh(force=false) {
     }
     const config=SPCOA_GOES_LAYER_CONFIG[p.product];
     if(!config)return;
-    if (!map.getStyle()?.layers?.length) {
-        // Map 'load' listener will retry; never block the SPCOA renderer.
+    if(!map.getStyle()?.layers?.length) {
         spcoaGoesStatus("Waiting for the map style...");
         return;
     }
-    spcoaGoesStatus("Checking GOES observation times...");
+    // Opacity changes never need another upstream capabilities/API lookup.
+    if(spcoaGoesActiveKey && spcoaGoesActiveKey.startsWith(p.product+"|") &&
+       map.getLayer(SPCOA_GOES_SOURCE_ID) && !force) {
+        map.setPaintProperty(SPCOA_GOES_SOURCE_ID,"raster-opacity",p.opacity/100);
+        // Do NOT reuse a latest layer after switching to historical mode,
+        // or an image from the previous SPCOA analysis timestamp.
+        if(spcoaGoesActiveMode===p.timeMode &&
+           (p.timeMode!=="analysis" || spcoaGoesActiveAnalysisAt===String(currentAnalysisTime||""))) {
+            if(spcoaGoesActiveLabel) {
+                spcoaGoesActiveLabel=spcoaGoesActiveLabel.replace(/ · \d+% opacity$/,
+                    " · "+p.opacity+"% opacity");
+                spcoaGoesStatus(spcoaGoesActiveLabel);
+            }
+            return;
+        }
+    }
+    spcoaGoesStatus("Checking SSEC RealEarth scan times...");
     let times=[];
     let metadataError=null;
     try {
-        const available=await spcoaGoesLoadCapabilities(force);
-        times=available.get(config.layer)||[];
-    } catch(error) {
+        times=await spcoaRealEarthLoadTimes(config.productId,force);
+    }catch(error){
         metadataError=error;
-        console.warn("GOES WMS capabilities unavailable:",error);
+        console.warn("GOES satellite metadata unavailable ("+config.provider+"):",error);
     }
-    if(generation!==spcoaGoesGeneration || p.product!==spcoaReadGoesPrefs().product || p.timeMode!==spcoaReadGoesPrefs().timeMode)return;
-    let t=spcoaGoesChooseTime(times,p.timeMode,currentAnalysisTime);
+    if(generation!==spcoaGoesGeneration || p.product!==spcoaReadGoesPrefs().product ||
+       p.timeMode!==spcoaReadGoesPrefs().timeMode)return;
+    const t=spcoaGoesChooseTime(times,p.timeMode,currentAnalysisTime);
     if(p.timeMode==="analysis" && t===null) {
         spcoaGoesRemoveLayer();
         spcoaGoesStatus(metadataError ?
-            "Historical GOES unavailable: cannot verify satellite timestamps." :
-            "No GOES scan within 15 minutes before the selected SPCOA hour.");
+            "Historical satellite unavailable: could not verify scan times." :
+            "No satellite scan within 15 minutes before this SPCOA analysis.");
         return;
     }
-    // For latest imagery only, WMS can choose its default scan if the
-    // capabilities endpoint is blocked; clearly label the time unverified.
-    const url=spcoaGoesRasterUrl(config,t);
-    const key=config.layer+"|"+(t===null?"default":t);
+    const url=spcoaRealEarthRasterUrl(config.productId,t);
+    const key=p.product+"|"+(t===null ? url : t);
     try {
         if(key!==spcoaGoesActiveKey || !map.getLayer(SPCOA_GOES_SOURCE_ID)) {
             spcoaGoesRemoveLayer();
             map.addSource(SPCOA_GOES_SOURCE_ID,{
                 type:"raster",tiles:[url],tileSize:256,
-                attribution:'Satellite imagery: NOAA/NESDIS via <a href="https://nowcoast.noaa.gov/" target="_blank" rel="noopener noreferrer">nowCOAST</a>'
+                attribution:spcoaGoesAttribution(config)
             });
             map.addLayer({id:SPCOA_GOES_SOURCE_ID,type:"raster",source:SPCOA_GOES_SOURCE_ID,
-                paint:{"raster-opacity":p.opacity/100,"raster-fade-duration":0}});
+                paint:{"raster-opacity":p.opacity/100,"raster-fade-duration":0}},spcoaGoesBeforeLayerId());
             spcoaGoesActiveKey=key;
         } else {
             map.setPaintProperty(SPCOA_GOES_SOURCE_ID,"raster-opacity",p.opacity/100);
+            // If another basemap was installed since last refresh, restore z-order.
+            const before=spcoaGoesBeforeLayerId();
+            if(before)map.moveLayer(SPCOA_GOES_SOURCE_ID,before);
         }
-        const suffix = t===null ? "latest scan (time unverified)" : spcoaGoesIsoLabel(t);
-        spcoaGoesActiveLabel=config.label+" · "+suffix+" · "+p.opacity+"% opacity";
+        const suffix=t===null ? "latest image · UTC time unverified" : spcoaGoesIsoLabel(t);
+        spcoaGoesLastAnalysis=String(currentAnalysisTime||"");
+        spcoaGoesActiveMode=p.timeMode;
+        spcoaGoesActiveAnalysisAt=String(currentAnalysisTime||"");
+        spcoaGoesActiveLabel="SSEC RealEarth · "+
+            config.label+" · "+suffix+" · "+p.opacity+"% opacity";
         spcoaGoesStatus((spcoaGoesTilesReady?"":"Loading ")+spcoaGoesActiveLabel);
     } catch(error) {
-        spcoaGoesStatus("GOES image layer failed to initialize; check console.");
-        console.error("GOES WMS map-layer error:",error);
+        spcoaGoesStatus("Satellite image layer failed to initialize; check console.");
+        console.error("GOES raster map-layer error:",error);
     }
 }
 function spcoaGoesSchedule(ms=180) {
     clearTimeout(spcoaGoesTimer);
     spcoaGoesTimer=setTimeout(()=>{void spcoaGoesRefresh(false);},ms);
 }
-// Export waits for the MapLibre raster layer so it isn't captured before NOAA
-// tiles have finished loading. A failed provider tile may trigger timeout.
+// Export waits for the MapLibre raster layer so it isn't captured before
+// RealEarth tiles have loaded. A failed provider tile may trigger a timeout.
 async function spcoaGoesWaitForMapTiles(timeoutMs=12000) {
     if(!spcoaGoesSelected() || !map.getSource(SPCOA_GOES_SOURCE_ID))return;
     if(map.isSourceLoaded(SPCOA_GOES_SOURCE_ID))return;
@@ -7454,9 +7595,9 @@ map.on("sourcedata",event=>{
 });
 map.on("error",event=>{
     if(event.sourceId===SPCOA_GOES_SOURCE_ID) {
-        const message=String(event?.error?.message||"GOES WMS tile request failed");
-        console.warn("NOAA GOES WMS tile error:",message);
-        spcoaGoesStatus("GOES tiles unavailable. Check provider/CORS/network.");
+        const message=String(event?.error?.message||"RealEarth satellite tile request failed");
+        console.warn("GOES tile error:",message);
+        spcoaGoesStatus("Satellite tiles unavailable. Check provider/CORS/network.");
     }
 });
 window.setInterval(()=>{
@@ -19857,7 +19998,7 @@ function spcoaGetSatelliteExportTile(z, x, y) {
 }
 
 async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
-    // V124: GOES is a MapLibre raster layer. The custom Mapbox-only tile
+    // V126: GOES is a MapLibre raster layer. The custom Mapbox-only tile
     // compositor cannot see it. Capture the real map framebuffer instead.
     if (spcoaGoesSelected()) {
         if (!map.getLayer("spcoa-goes-observations")) {
@@ -19960,9 +20101,10 @@ function spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY = 0) {
     ctx.textAlign = "right";
     ctx.textBaseline = "bottom";
     ctx.font = `500 ${Math.max(11, Math.round(outW * 0.0052))}px Arial, sans-serif`;
+    const sourceCredit="Source: SSEC RealEarth, UW-Madison";
     ctx.fillText(spcoaGoesSelected() ?
         (spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE ?
-         "GOES: NOAA/nowCOAST · © Mapbox" : "GOES: NOAA/nowCOAST") :
+         sourceCredit+" · © Mapbox" : sourceCredit) :
         "© Mapbox  © OpenStreetMap", outW - 10, mapY + mapH - 8);
     ctx.restore();
 }
