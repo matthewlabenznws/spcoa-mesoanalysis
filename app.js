@@ -1,3 +1,4 @@
+/* V141: Browser-side BZip2 decoder for Unidata Level III N0B scans; IEM fallback preserved. */
 /* V138: Original 20-stop reflectivity color palette and interpolation function,
  * copied from user-supplied source. IEM WMS dBZ inference remains approximate. */
 /* V135: Correct IEM NEXRAD Web Mercator tile layer and top-origin tile coordinates.
@@ -170,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V140"; // Numerical N0B single-radar option; original reflectivity colors
+const SPCOA_VIEWER_BUILD = "V141"; // N0B BZip2 decode, nationwide station selector, original dBZ colors
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1527,9 +1528,10 @@ if(__MP_CHILD)spcoaRadarInstallPaletteProtocol();
 
    Source: https://unidata-nexrad-level3.s3.amazonaws.com (public S3 archive)
    N0B is a single 0.5-degree-ish lowest-tilt observation, not a CONUS mosaic.
-   The parsing path supports standard zlib/gzip or uncompressed N0B symbology;
-   an unsupported data encoding, unavailable feed, or CORS failure leaves the
-   existing CONUS mosaic intact, and gives a visible status message.
+   The parser handles BZip2 (via a browser-loaded MIT-licensed decoder),
+   standard zlib/gzip, and uncompressed N0B symbology. A failed decoder
+   download, unavailable scan, or CORS failure leaves the IEM CONUS mosaic
+   intact and displays a clear status message. Only app.js must be deployed.
    ========================================================================================= */
 const SPCOA_L3_S3 = "https://unidata-nexrad-level3.s3.amazonaws.com";
 const SPCOA_L3_PROTOCOL = "spcoa-level3-n0b";
@@ -1733,15 +1735,93 @@ async function spcoaL3ListLatestKey(site, signal){
     }
     throw new Error("No recent N0B scans in the public archive for "+site);
 }
+// The small, MIT-licensed bzip2.js decoder is loaded *on demand* from a CDN.
+// No second GitHub Pages script/file is required. This is loaded in each map
+// iframe only if the selected N0B product actually uses BZip2 compression.
+// Source: https://github.com/antimatter15/bzip2.js (MIT, copyright 2011).
+// A CDN outage is reported explicitly; the CONUS mosaic is retained as fallback.
+const SPCOA_L3_BZIP2_DECODER_URL =
+    "https://cdn.jsdelivr.net/gh/antimatter15/bzip2.js@master/bzip2.js";
+const SPCOA_L3_BZIP2_MAX_OUTPUT_BYTES = 24 * 1024 * 1024;
+let spcoaL3Bzip2Loader = null;
+function spcoaL3LoadBzip2(){
+    if(window.bzip2 && typeof window.bzip2.array==="function" &&
+        typeof window.bzip2.header==="function" &&
+        typeof window.bzip2.decompress==="function"){
+        return Promise.resolve(window.bzip2);
+    }
+    if(spcoaL3Bzip2Loader)return spcoaL3Bzip2Loader;
+    spcoaL3Bzip2Loader=new Promise((resolve,reject)=>{
+        const script=document.createElement("script");
+        script.src=SPCOA_L3_BZIP2_DECODER_URL;
+        script.async=true;
+        script.crossOrigin="anonymous";
+        script.dataset.spcoaN0bBzip2="1";
+        let finished=false;
+        const timer=setTimeout(()=>finish(new Error("BZip2 decoder download timed out")),15000);
+        function finish(error){
+            if(finished)return;
+            finished=true;
+            clearTimeout(timer);
+            script.onload=null;
+            script.onerror=null;
+            if(error){script.remove();reject(error);}
+            else resolve(window.bzip2);
+        }
+        script.onload=()=>{
+            if(!window.bzip2 || typeof window.bzip2.array!=="function" ||
+                typeof window.bzip2.header!=="function" ||
+                typeof window.bzip2.decompress!=="function"){
+                finish(new Error("Loaded BZip2 script did not expose its decoder"));
+            }else finish();
+        };
+        script.onerror=()=>finish(new Error("BZip2 decoder CDN unavailable or blocked by browser"));
+        document.head.appendChild(script);
+    }).catch(error=>{spcoaL3Bzip2Loader=null;throw error;});
+    return spcoaL3Bzip2Loader;
+}
+function spcoaL3DecodeBzip2(bytes,bzip2){
+    // bzip2.js decompress() returns binary *strings*, one per compressed block.
+    // Reassemble them as Uint8Array without changing any NEXRAD byte values.
+    const bits=bzip2.array(bytes);
+    const size=bzip2.header(bits);
+    const chunks=[];
+    let total=0,ended=false;
+    for(let blockIndex=0;blockIndex<80;blockIndex++){
+        const block=bzip2.decompress(bits,size);
+        if(block===-1){ended=true;break;}
+        if(typeof block!=="string")throw new Error("Invalid BZip2 block result");
+        total+=block.length;
+        if(total>SPCOA_L3_BZIP2_MAX_OUTPUT_BYTES)
+            throw new Error("N0B BZip2 output exceeds the safe browser memory limit");
+        const chunk=new Uint8Array(block.length);
+        for(let i=0;i<block.length;i++)chunk[i]=block.charCodeAt(i)&255;
+        chunks.push(chunk);
+    }
+    if(!ended || !total)throw new Error("Incomplete or empty BZip2 N0B symbology");
+    const out=new Uint8Array(total);
+    let offset=0;
+    for(const chunk of chunks){out.set(chunk,offset);offset+=chunk.length;}
+    return out;
+}
 async function spcoaL3InflateSymbology(bytes){
     if(bytes[0]===0xFF && bytes[1]===0xFF)return bytes;
-    if(typeof DecompressionStream!=="function")throw new Error("Browser has no DecompressionStream support");
+    if(bytes[0]===0x42 && bytes[1]===0x5A && bytes[2]===0x68){
+        // BZh* is a standard NEXRAD Level III symbology compression format.
+        // Native DecompressionStream does NOT support BZip2.
+        try{
+            const decoder=await spcoaL3LoadBzip2();
+            return spcoaL3DecodeBzip2(bytes,decoder);
+        }catch(error){
+            throw new Error("N0B BZip2 decode failed: "+String(error?.message||error));
+        }
+    }
     let encoding;
     if(bytes[0]===0x1F && bytes[1]===0x8B)encoding="gzip";
-    else if(bytes[0]===0x78)encoding="deflate"; // zlib wrapped N0B
-    else if(bytes[0]===0x42 && bytes[1]===0x5A && bytes[2]===0x68)
-        throw new Error("This N0B scan uses BZip2 (not decoded by the standalone JS mode)");
+    else if(bytes[0]===0x78)encoding="deflate";
     else throw new Error("Unrecognized N0B symbology compression");
+    if(typeof DecompressionStream!=="function")
+        throw new Error("Browser has no gzip/deflate DecompressionStream support");
     const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream(encoding));
     return new Uint8Array(await new Response(stream).arrayBuffer());
 }
