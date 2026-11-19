@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V142"; // Auto-nearest map tracking; compact radar sidebar; N0B BZip2
+const SPCOA_VIEWER_BUILD = "V143"; // Radar/satellite valid times; auto nearest sync; concise radar controls
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1169,6 +1169,111 @@ const SPCOA_GOES_LEGACY_PRODUCTS = Object.freeze({
     re_band13:"iem_band13", re_band14:"iem_band14", re_band15:"iem_band15",
     re_band16:"iem_band16"
 });
+
+/* V143: Valid times are sourced from actual observations or provider metadata.
+   No refresh bucket, cache-busting query, or SPCOA model time is used as an observation time.
+   If the provider does not offer verifiable metadata, the UI says so explicitly. */
+const SPCOA_OBS_META_POLL_MS=5*60*1000;
+const SPCOA_OBS_META_CACHE=new Map();
+function spcoaObsDate(value){
+    if(value instanceof Date)return Number.isFinite(value.getTime())?value:null;
+    if(typeof value==='number' && Number.isFinite(value)){
+        const d=new Date(value<1e11?value*1000:value);return Number.isFinite(d.getTime())?d:null;
+    }
+    if(typeof value!=='string'||!value)return null;
+    const d=new Date(value);
+    return Number.isFinite(d.getTime())?d:null;
+}
+function spcoaObsRecent(value,maxAgeHours=12){
+    const d=spcoaObsDate(value);if(!d)return null;
+    const delta=Date.now()-d.getTime();
+    return delta>=-10*60*1000 && delta<=maxAgeHours*60*60*1000?d:null;
+}
+function spcoaObsFormat(date){
+    const d=spcoaObsDate(date);
+    return d ? d.toISOString().replace('T',' ').slice(0,16)+' UTC' : 'time unavailable';
+}
+function spcoaObsWmsLatestTime(xmlText,layerName){
+    const doc=new DOMParser().parseFromString(xmlText,'application/xml');
+    if(doc.getElementsByTagName('parsererror').length) return null;
+    const layers=Array.from(doc.getElementsByTagName('*')).filter(n=>n.localName==='Layer');
+    const layer=layers.find(n=>Array.from(n.children).some(x=>x.localName==='Name' && x.textContent.trim()===layerName));
+    if(!layer)return null;
+    const elements=Array.from(layer.children).filter(n=>(n.localName==='Dimension'||n.localName==='Extent') &&
+        String(n.getAttribute('name')||'').toLowerCase()==='time');
+    for(const e of elements){
+        const raw=String(e.getAttribute('default')||'').trim();
+        const rawValues=String(e.textContent||'').trim();
+        // Default is authoritative only when it names an explicit UTC timestamp.
+        const candidates=[];
+        if(raw && !/^(current|default|latest)$/i.test(raw))candidates.push(raw);
+        // An interval's last element is an end time, not the period duration.
+        for(const token of rawValues.split(',')){
+            const end=token.trim().split('/');
+            candidates.push(end.length>=2?end[1]:end[0]);
+        }
+        const parsed=candidates.map(x=>spcoaObsRecent(x,12)).filter(Boolean).sort((a,b)=>b-a);
+        if(parsed.length)return parsed[0];
+    }
+    return null;
+}
+async function spcoaObsFetchText(url){
+    const resp=await fetch(url,{mode:'cors',credentials:'omit',cache:'no-store'});
+    if(!resp.ok)throw new Error('Metadata HTTP '+resp.status);
+    return resp.text();
+}
+async function spcoaObsFetchSatelliteTime(config){
+    if(config.provider==='geomet'){
+        const url=SPCOA_ECCC_GEOMET_WMS+'?service=WMS&version=1.3.0&request=GetCapabilities&layer='+
+            encodeURIComponent(config.layer);
+        return spcoaObsWmsLatestTime(await spcoaObsFetchText(url),config.layer);
+    }
+    if(config.provider==='iem'){
+        const m=String(config.layer||'').match(/ch(\d\d)$/);
+        if(!m)return null;
+        // IEM documents per-ABI-channel JSON metadata. GOES-19 is the active East satellite;
+        // try the legacy filename only if current and therefore demonstrably valid.
+        const base='https://mesonet.agron.iastate.edu/data/gis/images/GOES/conus/channel'+m[1]+'/';
+        for(const bird of ['GOES-19','GOES-16']){
+            try{
+                const json=JSON.parse(await spcoaObsFetchText(base+bird+'_C'+m[1]+'.json'));
+                const valid=spcoaObsRecent(json?.meta?.valid??json?.valid??json?.time,12);
+                if(valid)return valid;
+            }catch(e){/* one filename or metadata path may no longer exist */}
+        }
+        return null;
+    }
+    // NOAA NESDIS's _current cached ImageServers explicitly are not time-enabled;
+    // NASA's `default` WMTS timestamp is not a verified scan time in this viewer.
+    return null;
+}
+function spcoaObsCached(key,load){
+    const old=SPCOA_OBS_META_CACHE.get(key);
+    if(old && (Date.now()-old.started)<SPCOA_OBS_META_POLL_MS)return old.promise;
+    const promise=Promise.resolve().then(load).catch(error=>{
+        console.info('Observation time metadata unavailable',key,error?.message||error);
+        return null;
+    });
+    SPCOA_OBS_META_CACHE.set(key,{started:Date.now(),promise});
+    return promise;
+}
+function spcoaObsSatelliteValid(config){
+    return spcoaObsCached('sat:'+config.provider+':'+(config.layer||config.service),
+        ()=>spcoaObsFetchSatelliteTime(config));
+}
+function spcoaObsRadarMosaicValid(){
+    // The IEM historical N0Q WMS-T publishes a time extent. It is an indicator
+    // of the latest archive mosaic, not a timestamp asserted from live WMS pixels.
+    const url='https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.1.1';
+    return spcoaObsCached('radar:iem-n0q-archive',async()=>{
+        const xml=await spcoaObsFetchText(url);
+        const doc=new DOMParser().parseFromString(xml,'application/xml');
+        const names=Array.from(doc.getElementsByTagName('*'))
+            .filter(el=>el.localName==='Name').map(el=>el.textContent.trim());
+        const layerName=names.find(x=>/nexrad-n0q-wmst|n0q.*wmst/i.test(x));
+        return layerName?spcoaObsWmsLatestTime(xml,layerName):null;
+    });
+}
 const SPCOA_GOES_DEFAULTS = Object.freeze({product:"off",opacity:75,timeMode:"latest"});
 let spcoaGoesOverride = null;
 function spcoaValidateGoesPrefs(value) {
@@ -1262,7 +1367,8 @@ function spcoaInstallGoesControls() {
     }
     const mode = makeSelect("spcoa-goes-time-mode",[
         ["latest","Latest provider imagery (UTC scan time unverified)"]],"Observation time");
-    mode.disabled = true; // Current service URLs cannot provide verified historical scans.
+    mode.disabled = true; // Kept in DOM for saved-state compatibility.
+    mode.closest("label").style.display="none"; // Use the verified timestamp below instead.
     const opacityRow = document.createElement("label");
     opacityRow.htmlFor = "spcoa-goes-opacity";
     opacityRow.style.cssText = "display:flex;justify-content:space-between;gap:12px;";
@@ -1682,19 +1788,22 @@ async function spcoaL3LoadCatalog(force=false){
     })().finally(()=>{spcoaL3CatalogLoadPromise=null;});
     return spcoaL3CatalogLoadPromise;
 }
-function spcoaL3DesiredSite(p){
-    if(p.mode!=="auto")return p.site;
-    if(!__MP_CHILD)return p.site;
-    // This function is called after the child map has initialized.
-    const center=map.getCenter();
+function spcoaL3NearestAt(centerLat,centerLon){
+    if(!Number.isFinite(centerLat)||!Number.isFinite(centerLon))return null;
     let nearest=null,best=Infinity;
-    const lat=center.lat*Math.PI/180,lon=center.lng*Math.PI/180;
+    const lat=centerLat*Math.PI/180,lon=centerLon*Math.PI/180;
     for(const station of SPCOA_L3_CATALOG.values()){
+        if(!Number.isFinite(station.lat)||!Number.isFinite(station.lon))continue;
         const rlat=station.lat*Math.PI/180,rlon=station.lon*Math.PI/180;
         const a=Math.sin((rlat-lat)/2)**2+Math.cos(lat)*Math.cos(rlat)*Math.sin((rlon-lon)/2)**2;
         if(a<best){best=a;nearest=station.id;}
     }
-    return nearest||p.site;
+    return nearest;
+}
+function spcoaL3DesiredSite(p){
+    if(p.mode!=="auto" || !__MP_CHILD)return p.site;
+    const center=map.getCenter();
+    return spcoaL3NearestAt(center.lat,center.lng)||p.site;
 }
 // Load in both host and map iframe; the first response is cached in localStorage.
 spcoaL3LoadCatalog().catch(e=>console.warn("NEXRAD catalog unavailable",e));
@@ -2080,7 +2189,7 @@ function spcoaInstallRadarControls() {
     const heading=document.createElement("strong");
     heading.textContent="Weather Radar Observations";
     const description=document.createElement("div");
-    description.textContent="CONUS mosaic or numerical N0B from any CONUS WSR-88D, with automatic nearest-radar selection. Selected radar scans use actual dBZ and the exact reflectivity palette.";
+    description.textContent="CONUS mosaic or numerical N0B from any CONUS WSR-88D, with automatic nearest-radar selection.";
     description.style.cssText="font-size:10px;color:#b5cee0;line-height:1.5;";
     const toggleLabel=document.createElement("label");
     toggleLabel.style.cssText="display:flex;align-items:center;gap:7px;cursor:pointer;";
@@ -2128,9 +2237,11 @@ function spcoaInstallRadarControls() {
     opacity.type="range";
     opacity.min="0";opacity.max="100";opacity.step="5";
     opacity.style.cssText="width:100%;accent-color:#69baf5;";
-    // The loading/scan text and troubleshooting links are intentionally absent.
-    // Radar errors are logged to DevTools; map and export attribution remain.
-    panel.append(heading,description,toggleLabel,modeLabel,siteLabel,catalogStatus,opacityRow,opacity);
+    const radarValid=document.createElement("div");
+    radarValid.id="spcoa-radar-valid";
+    radarValid.style.cssText="font-size:10px;color:#b5cee0;line-height:1.4;";
+    radarValid.textContent="Radar valid: unavailable";
+    panel.append(heading,description,toggleLabel,modeLabel,siteLabel,catalogStatus,opacityRow,opacity,radarValid);
     const changed=()=>spcoaSaveRadarPrefs({enabled:toggle.checked,mode:mode.value,site:site.value,opacity:opacity.value});
     toggle.addEventListener("change",changed);
     mode.addEventListener("change",changed);
@@ -3308,9 +3419,15 @@ if (!__MP_CHILD) {
             if(spcoaReadRadarPrefs().mode==="auto"){
                 const hostSite=document.getElementById("spcoa-radar-site");
                 const childSite=d.getElementById("spcoa-radar-site");
-                if(hostSite && childSite && SPCOA_L3_CATALOG.has(childSite.value)){
-                    spcoaRadarResolvedSite=childSite.value;
-                    if(hostSite.value!==childSite.value)hostSite.value=childSite.value;
+                // Read the ACTIVE CHILD MAP's real camera, never a stale
+                // saved manual station or an unrelated iframe selection.
+                const center=d.defaultView?.__spcoaRadarGetCenter?.();
+                const nearest=center?spcoaL3NearestAt(Number(center.lat),Number(center.lng)):null;
+                const shown=nearest && SPCOA_L3_CATALOG.has(nearest)?nearest:
+                    (childSite && SPCOA_L3_CATALOG.has(childSite.value)?childSite.value:null);
+                if(hostSite && shown){
+                    spcoaRadarResolvedSite=shown;
+                    if(hostSite.value!==shown)hostSite.value=shown;
                 }
             }
             // Update both option lists before copying selection from the active panel.
@@ -3344,7 +3461,7 @@ if (!__MP_CHILD) {
             // Mirror run information and loading status from the active map panel.
             // These labels live in the host sidebar and otherwise remain stuck
             // at the HTML defaults ("Loading..." / "Initializing...").
-            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status", "surface-obs-status", "spcoa-hodo-status", "spcoa-goes-status", "spcoa-radar-status"].forEach(id => {
+            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status", "surface-obs-status", "spcoa-hodo-status", "spcoa-goes-status", "spcoa-radar-status", "spcoa-radar-valid"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child && !(hostGifExporting && id === "status")) host.textContent = child.textContent;
             });
@@ -8265,6 +8382,13 @@ let spcoaGoesTilesReady = false;
 let spcoaGoesGeneration = 0;
 let spcoaGoesTimer = null;
 let spcoaGoesLastAnalysis = "";
+let spcoaGoesValidProduct="";
+let spcoaGoesValidTime=null;
+let spcoaGoesValidChecked=false;
+function spcoaGoesValidText(){
+    return "Satellite valid: "+(spcoaGoesValidTime?spcoaObsFormat(spcoaGoesValidTime):
+        spcoaGoesValidChecked?"time unavailable":"checking provider...");
+}
 function spcoaGoesStatus(message) {
     const node=document.getElementById("spcoa-goes-status");
     if(node && node.textContent!==message) node.textContent=message;
@@ -8339,12 +8463,26 @@ async function spcoaGoesRefresh(force=false) {
     const generation=++spcoaGoesGeneration;
     const p=spcoaReadGoesPrefs();
     if(p.product==="off") {
+        spcoaGoesValidProduct="";spcoaGoesValidTime=null;spcoaGoesValidChecked=false;
         spcoaGoesRemoveLayer();
         spcoaGoesStatus("Off");
         return;
     }
     const config=SPCOA_GOES_LAYER_CONFIG[p.product];
     if(!config)return;
+    if(spcoaGoesValidProduct!==p.product){
+        spcoaGoesValidProduct=p.product;
+        spcoaGoesValidTime=null;spcoaGoesValidChecked=false;
+    }
+    void spcoaObsSatelliteValid(config).then(t=>{
+        if(spcoaReadGoesPrefs().product!==p.product)return;
+        const next=spcoaObsRecent(t,12);
+        spcoaGoesValidTime=next;spcoaGoesValidChecked=true;
+        if(spcoaGoesActiveKey){
+            spcoaGoesActiveLabel=(config.displayLabel||config.label)+" · "+spcoaGoesValidText();
+            spcoaGoesStatus(spcoaGoesActiveLabel);
+        }
+    });
     if(!map.getStyle()?.layers?.length) {
         spcoaGoesStatus("Waiting for the map style...");
         return;
@@ -8376,9 +8514,7 @@ async function spcoaGoesRefresh(force=false) {
         spcoaGoesLastAnalysis=String(currentAnalysisTime||"");
         spcoaGoesActiveMode="latest";
         spcoaGoesActiveAnalysisAt=null;
-        spcoaGoesActiveLabel=(config.displayLabel || config.label)+
-            " · latest available imagery (scan UTC unverified)"+
-            " · "+p.opacity+"% opacity";
+        spcoaGoesActiveLabel=(config.displayLabel || config.label)+" · "+spcoaGoesValidText();
         spcoaGoesStatus((spcoaGoesTilesReady?"":"Loading ")+spcoaGoesActiveLabel);
     } catch(error) {
         spcoaGoesStatus("Satellite layer failed to initialize; check console.");
@@ -8458,6 +8594,24 @@ document.addEventListener("visibilitychange",()=>{
    Radar is live, independent of the selected historical SPCOA analysis time.
    ========================================================================================= */
 const SPCOA_RADAR_LAYER_ID="spcoa-nexrad-base-reflectivity";
+// Same-origin host reads only the active map center for the nearest-radar label.
+window.__spcoaRadarGetCenter=()=>{
+    const c=map.getCenter();return {lat:c.lat,lng:c.lng};
+};
+let spcoaRadarMosaicTime=null;
+let spcoaRadarMosaicTimeChecked=false;
+function spcoaRadarValidLabel(p,site,singleReady){
+    if(!p.enabled)return "Radar: Off";
+    if(singleReady)return "Radar valid: "+spcoaObsFormat(spcoaL3Data.scan.date)+" ("+site+" N0B)";
+    if(p.mode!=="mosaic" && !spcoaRadarMosaicTimeChecked)
+        return "Radar valid: loading "+site+" scan...";
+    return "Radar valid: "+(spcoaRadarMosaicTime?spcoaObsFormat(spcoaRadarMosaicTime)+" (IEM latest mosaic listed)":
+        spcoaRadarMosaicTimeChecked?"time unavailable (CONUS mosaic)":"checking IEM...");
+}
+function spcoaRadarSetValidText(p,site,singleReady){
+    const node=document.getElementById('spcoa-radar-valid');
+    if(node){const text=spcoaRadarValidLabel(p,site,singleReady);if(node.textContent!==text)node.textContent=text;}
+}
 let spcoaRadarActiveKey=null;
 let spcoaRadarReady=false;
 let spcoaRadarRefreshTimer=null;
@@ -8487,6 +8641,7 @@ function spcoaRadarRefresh(){
     const p=spcoaReadRadarPrefs();
     if(!p.enabled){
         if(spcoaRadarResolvedSite!==null){spcoaRadarResolvedSite=null;spcoaSyncRadarControls();}
+        spcoaRadarSetValidText(p,p.site,false);
         spcoaRadarRemoveLayer();spcoaRadarStatus("Off");
         spcoaRadarFailure="";spcoaRadarFailureCount=0;
         return;
@@ -8504,6 +8659,20 @@ function spcoaRadarRefresh(){
     }
     const singleReady=wantsSingle && spcoaL3ProtocolAvailable &&
         spcoaL3Data?.site===radarSite && spcoaL3ScanIsUsable(spcoaL3Data);
+    spcoaRadarSetValidText(p,radarSite,singleReady);
+    // Metadata may not be available from the live WMS. Use the IEM archive
+    // time if verifiable and recent; do not equate browser refresh with scan time.
+    if(!singleReady){
+        void spcoaObsRadarMosaicValid().then(time=>{
+            spcoaRadarMosaicTime=spcoaObsRecent(time,1);
+            spcoaRadarMosaicTimeChecked=true;
+            const current=spcoaReadRadarPrefs();
+            const site=current.mode==='auto'?spcoaL3DesiredSite(current):current.site;
+            const ready=(current.mode!=='mosaic') && spcoaL3Data?.site===site &&
+                spcoaL3ScanIsUsable(spcoaL3Data);
+            spcoaRadarSetValidText(current,site,ready);
+        });
+    }
     if(wantsSingle && !singleReady &&
         (!spcoaL3Request || spcoaL3Request.site!==radarSite) &&
         (radarSite!==spcoaL3LastRequestedSite || Date.now()-spcoaL3LastPoll>=SPCOA_L3_POLL_MS))
