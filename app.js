@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V144"; // Auto/individual N0B modes no longer silently display the national mosaic
+const SPCOA_VIEWER_BUILD = "V145"; // Auto nearest tries available nearby N0B stations; manual mode unchanged
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1800,10 +1800,40 @@ function spcoaL3NearestAt(centerLat,centerLon){
     }
     return nearest;
 }
+// Auto Nearest must choose a station that actually provides a recent N0B scan.
+// The nearest station can be in maintenance, delayed, or temporarily missing
+// N0B data even though a neighboring station loads correctly in manual mode.
+// Keep the six nearest *candidates*, and briefly skip a site after a failed
+// request. Never apply this fallback to the manually selected NEXRAD mode.
+const SPCOA_L3_AUTO_CANDIDATE_LIMIT = 6;
+const SPCOA_L3_AUTO_FAILED_RETRY_MS = 3 * 60 * 1000;
+const spcoaL3AutoFailedUntil = new Map();
+function spcoaL3NearbyStations(centerLat,centerLon){
+    if(!Number.isFinite(centerLat)||!Number.isFinite(centerLon))return [];
+    const rad=Math.PI/180,lat=centerLat*rad,lon=centerLon*rad;
+    return Array.from(SPCOA_L3_CATALOG.values())
+        .filter(station=>Number.isFinite(station.lat)&&Number.isFinite(station.lon))
+        .map(station=>{
+            const slat=station.lat*rad,slon=station.lon*rad;
+            const a=Math.sin((slat-lat)/2)**2+
+                Math.cos(lat)*Math.cos(slat)*Math.sin((slon-lon)/2)**2;
+            return {id:station.id,distance:a};
+        })
+        .sort((a,b)=>a.distance-b.distance)
+        .slice(0,SPCOA_L3_AUTO_CANDIDATE_LIMIT)
+        .map(entry=>entry.id);
+}
 function spcoaL3DesiredSite(p){
     if(p.mode!=="auto" || !__MP_CHILD)return p.site;
     const center=map.getCenter();
-    return spcoaL3NearestAt(center.lat,center.lng)||p.site;
+    const stations=spcoaL3NearbyStations(center.lat,center.lng);
+    const now=Date.now();
+    for(const site of stations){
+        if((spcoaL3AutoFailedUntil.get(site)||0)<=now)return site;
+    }
+    // No nearby candidate has a currently usable N0B feed. Do NOT silently
+    // select an unrelated manual site or a national radar mosaic instead.
+    return null;
 }
 // Load in both host and map iframe; the first response is cached in localStorage.
 spcoaL3LoadCatalog().catch(e=>console.warn("NEXRAD catalog unavailable",e));
@@ -2031,6 +2061,7 @@ function spcoaL3EnsureScan(site){
         const active=spcoaReadRadarPrefs();
         if(!["single","auto"].includes(active.mode)||spcoaL3DesiredSite(active)!==site)return null;
         spcoaL3Data={site,filename:key,scan,version:++spcoaL3Version};
+        spcoaL3AutoFailedUntil.delete(site);
         spcoaL3Error="";spcoaL3LastPoll=Date.now();
         if(__MP_CHILD && typeof spcoaRadarSchedule==="function")spcoaRadarSchedule(20);
         return spcoaL3Data;
@@ -2038,7 +2069,16 @@ function spcoaL3EnsureScan(site){
         if(error.name!=="AbortError"){
             spcoaL3Error=String(error.message||error);
             spcoaL3LastPoll=Date.now();
-            console.warn("SPCOA numeric N0B unavailable",site,error);
+            const prefs=spcoaReadRadarPrefs();
+            if(__MP_CHILD && prefs.mode==="auto"){
+                // Next radar-refresh will attempt the next closest station.
+                // This timeout also prevents an unavailable station from
+                // causing a repeated S3 fetch/abort loop on every map move.
+                spcoaL3AutoFailedUntil.set(site,Date.now()+SPCOA_L3_AUTO_FAILED_RETRY_MS);
+                console.warn("SPCOA auto NEXRAD trying a nearby station after",site,spcoaL3Error);
+            }else{
+                console.warn("SPCOA numeric N0B unavailable",site,error);
+            }
             if(__MP_CHILD && typeof spcoaRadarSchedule==="function")spcoaRadarSchedule(40);
         }
         return null;
@@ -2173,6 +2213,7 @@ function spcoaSaveRadarPrefs(value,broadcast=true) {
         (next.mode==="single" && previous.site!==next.site))){
         spcoaL3LastPoll=0;
         spcoaL3Error="";
+        if(previous.mode!==next.mode && next.mode==="auto")spcoaL3AutoFailedUntil.clear();
     }
     spcoaRadarOverride=next;
     try {localStorage.setItem(SPCOA_RADAR_PREFS_KEY,JSON.stringify(next));} catch (_) {}
@@ -3429,8 +3470,10 @@ if (!__MP_CHILD) {
                 // saved manual station or an unrelated iframe selection.
                 const center=d.defaultView?.__spcoaRadarGetCenter?.();
                 const nearest=center?spcoaL3NearestAt(Number(center.lat),Number(center.lng)):null;
-                const shown=nearest && SPCOA_L3_CATALOG.has(nearest)?nearest:
-                    (childSite && SPCOA_L3_CATALOG.has(childSite.value)?childSite.value:null);
+                const childResolved=d.defaultView?.__spcoaRadarGetResolvedSite?.();
+                const shown=childResolved && SPCOA_L3_CATALOG.has(childResolved)?childResolved:
+                    (nearest && SPCOA_L3_CATALOG.has(nearest)?nearest:
+                    (childSite && SPCOA_L3_CATALOG.has(childSite.value)?childSite.value:null));
                 if(hostSite && shown){
                     spcoaRadarResolvedSite=shown;
                     if(hostSite.value!==shown)hostSite.value=shown;
@@ -8604,6 +8647,10 @@ const SPCOA_RADAR_LAYER_ID="spcoa-nexrad-base-reflectivity";
 window.__spcoaRadarGetCenter=()=>{
     const c=map.getCenter();return {lat:c.lat,lng:c.lng};
 };
+// The visible multi-panel host must show the station the map is actually
+// loading, which might be the second-nearest if the closest radar is offline.
+window.__spcoaRadarGetResolvedSite=()=>spcoaReadRadarPrefs().mode==="auto"
+    ? spcoaRadarResolvedSite : null;
 let spcoaRadarMosaicTime=null;
 let spcoaRadarMosaicTimeChecked=false;
 function spcoaRadarValidLabel(p,site,singleReady){
@@ -8611,6 +8658,7 @@ function spcoaRadarValidLabel(p,site,singleReady){
     if(p.mode!=="mosaic"){
         if(singleReady)return "Radar valid: "+spcoaObsFormat(spcoaL3Data.scan.date)+" ("+site+" N0B)";
         // Auto/individual modes must never be labeled with a mosaic's time.
+        if(!site)return "Radar: No recent N0B scans available from nearby radars";
         if(spcoaL3Error && spcoaL3LastRequestedSite===site)
             return "Radar: "+site+" N0B unavailable (see console)";
         return "Radar: Loading "+site+" N0B...";
@@ -8660,6 +8708,15 @@ function spcoaRadarRefresh(){
     const bucket=Math.floor(Date.now()/SPCOA_RADAR_REFRESH_MS);
     const wantsSingle=p.mode==="single" || p.mode==="auto";
     const radarSite=wantsSingle ? spcoaL3DesiredSite(p) : p.site;
+    // When every nearby site has recently failed, show a specific explanation
+    // rather than reusing the last manual station or drawing the CONUS mosaic.
+    if(wantsSingle && !radarSite){
+        spcoaRadarResolvedSite=null;
+        spcoaRadarRemoveLayer();
+        spcoaRadarSetValidText(p,null,false);
+        spcoaRadarStatus("No recent N0B scans available among the nearby radars; retrying automatically.");
+        return;
+    }
     // The radar site selector shows which radar is actually being requested in
     // auto mode. Recompute on each map moveend and after catalog refreshes.
     const resolvedSite=p.mode==="auto" ? radarSite : null;
