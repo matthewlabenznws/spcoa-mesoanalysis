@@ -1,5 +1,5 @@
-/* V130: Switch GOES imagery to NOAA NESDIS tiles and Iowa Environmental Mesonet WMS;
- * Site-wide registered access remains supported; no key is bundled in this file. */
+/* V132: Add ECCC GeoMet public GOES-East WMS RGB/composite imagery to V131.
+ * All imagery is requested from public NOAA/IEM/NASA/ECCC services; no account key. */
 /* V114: City labels and Cities controls removed from all map views and exports. */
 /* V96 SCOPE FIX — 2026-11-03
    Restores rendering in the multi-panel map iframe: helper functions defined
@@ -166,7 +166,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V130"; // V130: NOAA NESDIS + IEM GOES observations
+const SPCOA_VIEWER_BUILD = "V132"; // V132: + ECCC GeoMet GOES-East RGB WMS
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1035,7 +1035,7 @@ function spcoaInstallMapBackgroundSelector() {
 spcoaInstallMapBackgroundSelector();
 
 /* =========================================================================================
-   V130 — GOES observational imagery with no RealEarth account or access key.
+   V132 — GOES observational imagery from NOAA/IEM/NASA/ECCC; no SSEC.
    NOAA NESDIS provides cached ArcGIS XYZ image tiles (256px, Web Mercator).
    IEM provides all 16 ABI channels through its public CONUS WMS GetMap.
    IMPORTANT: these "current" services do not expose an exact scan timestamp
@@ -1043,7 +1043,19 @@ spcoaInstallMapBackgroundSelector();
    ========================================================================================= */
 const SPCOA_GOES_PREFS_KEY = "spcoa_goes_observations_v124"; // Retain preferences across upgrades.
 const SPCOA_NOAA_SATELLITE_ROOT = "https://satellitemaps.nesdis.noaa.gov/arcgis/rest/services";
+// NASA GIBS WMTS EPSG:3857 "best" map tiles. Public, no access key.
+// The GOES RGB sources below are 2-km products (Web Mercator Level6).
+// GIBS supports "default" as a special time value for latest available imagery;
+// it is NOT the instantaneous GOES scan. Latency can be ~40 minutes.
+const SPCOA_NASA_GIBS_WMTS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
 const SPCOA_IEM_GOES_WMS = "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi";
+// Environment and Climate Change Canada (ECCC) GeoMet is a public OGC WMS.
+// Official layer catalog: https://eccc-msc.github.io/open-data/msc-data/obs_satellite/readme_satellite_geomet_en/
+// GeoMet GetMap supplies georeferenced imagery for arbitrary EPSG:3857 tile BBOXes.
+// These are 256x256 virtual WMS tiles (not a pre-rendered XYZ tile pyramid).
+// Satellite product catalogue update interval: approximately every 10 minutes.
+const SPCOA_ECCC_GEOMET_WMS = "https://geo.weather.gc.ca/geomet";
+const SPCOA_ECCC_GOES_REFRESH_MS = 10 * 60 * 1000;
 const SPCOA_GOES_REFRESH_MS = 5 * 60 * 1000;
 const SPCOA_GOES_ABI_BANDS = Object.freeze([
     ["01","Blue Visible (0.47 µm)"],
@@ -1070,6 +1082,44 @@ const SPCOA_GOES_LAYER_CONFIG = Object.freeze({
         label:"GOES-East · Band 13 Clean Infrared (10.3 µm)",displayLabel:"Clean Infrared · B13",group:"NOAA NESDIS · Native Tiles"}),
     noaa_water_vapor: Object.freeze({provider:"nesdis",service:"ABI10_current",
         label:"GOES-East · Band 10 Lower-Level Water Vapor (7.3 µm)",displayLabel:"Lower Water Vapor · B10",group:"NOAA NESDIS · Native Tiles"}),
+    // These three NOAA GOES-East RGB composites are served by NASA GIBS
+    // as public WMTS map tiles. Other RealEarth RGBs are not advertised by GIBS.
+    nasa_airmass: Object.freeze({provider:"gibs",layer:"GOES-East_ABI_Air_Mass",
+        label:"GOES-East · Air Mass RGB",displayLabel:"Air Mass RGB",group:"NASA GIBS · GOES-East RGB"}),
+    nasa_dust: Object.freeze({provider:"gibs",layer:"GOES-East_ABI_Dust",
+        label:"GOES-East · Dust RGB",displayLabel:"Dust RGB",group:"NASA GIBS · GOES-East RGB"}),
+    nasa_firetemp: Object.freeze({provider:"gibs",layer:"GOES-East_ABI_FireTemp",
+        label:"GOES-East · Fire Temperature RGB",displayLabel:"Fire Temperature RGB",group:"NASA GIBS · GOES-East RGB"}),
+    // ECCC GeoMet's official GOES-East WMS products; IDs intentionally match its
+    // public catalogue. Some are day/night combinations, NOT separate all-day RGBs.
+    eccc_night_micro: Object.freeze({provider:"geomet",layer:"GOES-East_2km_NightMicrophysics",
+        label:"GOES-East · Night Microphysics RGB",displayLabel:"Night Microphysics RGB (2 km)",group:"ECCC GeoMet · Specialty RGBs"}),
+    eccc_day_convection: Object.freeze({provider:"geomet",layer:"GOES-East_1km_DayVis",
+        label:"GOES-East · Day Visibility / Day Cloud Convection",displayLabel:"Day Visible / Cloud Convection (1 km)",group:"ECCC GeoMet · Specialty RGBs"}),
+    eccc_snow_fog: Object.freeze({provider:"geomet",layer:"GOES-East_1km_SnowFog-NightMicrophysics",
+        label:"GOES-East · Day Snow/Fog / Night Microphysics",displayLabel:"Day Snow/Fog → Night Microphysics (1 km)",group:"ECCC GeoMet · Day/Night Composites"}),
+    eccc_day_cloud_type: Object.freeze({provider:"geomet",layer:"GOES-East_1km_DayCloudType-NightMicrophysics",
+        label:"GOES-East · Day Cloud Type / Night Microphysics",displayLabel:"Day Cloud Type → Night Microphysics (1 km)",group:"ECCC GeoMet · Day/Night Composites"}),
+    eccc_sandwich: Object.freeze({provider:"geomet",layer:"GOES-East_1km_VisibleIRSandwich-NightMicrophysicsIR",
+        label:"GOES-East · Visible/IR Sandwich / Night Microphysics IR",displayLabel:"Visible/IR Sandwich → Night Microphysics IR (1 km)",group:"ECCC GeoMet · Day/Night Composites"}),
+    eccc_dayvis_nightir: Object.freeze({provider:"geomet",layer:"GOES-East_1km_DayVis-NightIR",
+        label:"GOES-East · Day Visible / Night IR",displayLabel:"Day Visible → Night IR (1 km)",group:"ECCC GeoMet · Day/Night Composites"}),
+    eccc_smoke: Object.freeze({provider:"geomet",layer:"GOES-East_1km_SmokeABIband1-SWIR",
+        label:"GOES-East · Day Smoke / Night SWIR",displayLabel:"Day Smoke → Night SWIR (1 km)",group:"ECCC GeoMet · Day/Night Composites"}),
+    eccc_landcloudfire: Object.freeze({provider:"geomet",layer:"GOES-East_1km_DayLandCloudFire-SWIR",
+        label:"GOES-East · Day Land Cloud Fire / Night SWIR",displayLabel:"Day Land Cloud Fire → Night SWIR (1 km)",group:"ECCC GeoMet · Day/Night Composites"}),
+    eccc_firetemp: Object.freeze({provider:"geomet",layer:"GOES-East_1km_FireTemperature-SWIR",
+        label:"GOES-East · Day Fire Temperature / Night SWIR",displayLabel:"Day Fire Temperature → Night SWIR (1 km)",group:"ECCC GeoMet · Day/Night Composites"}),
+    eccc_dust: Object.freeze({provider:"geomet",layer:"GOES-East_2km_Dust",
+        label:"GOES-East · Dust RGB",displayLabel:"Dust RGB (2 km)",group:"ECCC GeoMet · Specialty RGBs"}),
+    eccc_ash: Object.freeze({provider:"geomet",layer:"GOES-East_2km_Ash",
+        label:"GOES-East · Volcanic Ash RGB",displayLabel:"Volcanic Ash RGB (2 km)",group:"ECCC GeoMet · Specialty RGBs"}),
+    eccc_so2: Object.freeze({provider:"geomet",layer:"GOES-East_2km_SO2",
+        label:"GOES-East · Sulfur Dioxide RGB",displayLabel:"SO₂ RGB (2 km)",group:"ECCC GeoMet · Specialty RGBs"}),
+    eccc_night_ir: Object.freeze({provider:"geomet",layer:"GOES-East_2km_NightIR",
+        label:"GOES-East · Night Infrared",displayLabel:"Night IR (2 km)",group:"ECCC GeoMet · Specialty RGBs"}),
+    eccc_natural: Object.freeze({provider:"geomet",layer:"GOES-East_1km_NaturalColor",
+        label:"GOES-East · Natural Color",displayLabel:"Natural Color (day, 1 km)",group:"ECCC GeoMet · Specialty RGBs"}),
     ...Object.fromEntries(SPCOA_GOES_ABI_BANDS.map(([band,name]) => [
         "iem_band"+band,Object.freeze({provider:"iem",layer:"conus_ch"+band,
             label:"GOES-East · Band "+band+" "+name,displayLabel:"B"+band+" · "+name,
@@ -1080,6 +1130,13 @@ const SPCOA_GOES_LAYER_CONFIG = Object.freeze({
 const SPCOA_GOES_LEGACY_PRODUCTS = Object.freeze({
     visible:"iem_band02", infrared:"noaa_ir", water_vapor:"iem_band08",
     re_rgb_geo_color:"noaa_geocolor", "re_rgb_geo-color":"noaa_geocolor",
+    re_rgb_airmass:"nasa_airmass", re_rgb_dust:"nasa_dust",
+    re_rgb_fire_temperature_awips:"nasa_firetemp",
+    // Migrate old SSEC choices where a substantially equivalent ECCC feed exists.
+    re_rgb_convection:"eccc_day_convection", re_rgb_snow_fog:"eccc_snow_fog",
+    "re_rgb_snow-fog":"eccc_snow_fog", "re_rgb_ir-sandwich":"eccc_sandwich",
+    "re_rgb_night-microphysics":"eccc_night_micro",
+    re_rgb_so2:"eccc_so2", re_rgb_ash:"eccc_ash",
     re_band01:"iem_band01", re_band02:"iem_band02", re_band03:"iem_band03",
     re_band04:"iem_band04", re_band05:"iem_band05", re_band06:"iem_band06",
     re_band07:"iem_band07", re_band08:"iem_band08", re_band09:"iem_band09",
@@ -1149,7 +1206,7 @@ function spcoaInstallGoesControls() {
     heading.textContent = "GOES Satellite Observations";
     heading.style.cssText = "font-size:12px;";
     const description = document.createElement("div");
-    description.textContent = "Current NOAA NESDIS GeoColor/IR/WV tiles and Iowa Mesonet GOES ABI bands. No account needed. Provider imagery times are not verified against historical SPCOA runs.";
+    description.textContent = "NOAA native tiles, NASA GIBS RGB, ECCC GeoMet specialty RGB/day-night composites, and IEM 16 ABI bands. No SSEC account/key. Latest imagery only; historical SPCOA times are not synchronized.";
     description.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;";
     function makeSelect(id,options,labelText) {
         const wrap = document.createElement("label");
@@ -1166,7 +1223,7 @@ function spcoaInstallGoesControls() {
     }
     panel.append(heading,description);
     const product = makeSelect("spcoa-goes-product",[["off","Off"]],"Imagery product");
-    // Group current NOAA native tiles and 16 IEM ABI WMS channels.
+    // Group NOAA native tiles, NASA RGBs, ECCC GeoMet RGB/WMS and 16 IEM ABI bands.
     // Native optgroups remain compatible with the host's existing select relay.
     for (const [id,cfg] of Object.entries(SPCOA_GOES_LAYER_CONFIG)) {
         let group=Array.from(product.children).find(node=>
@@ -1197,7 +1254,7 @@ function spcoaInstallGoesControls() {
     panel.append(opacityRow,opacity,status);
     const credit=document.createElement("div");
     credit.style.cssText="font-size:10px;color:#9dc2d9;line-height:1.5;";
-    credit.textContent="Sources: NOAA NESDIS and Iowa Environmental Mesonet. Public imagery; keep source attribution. ";
+    credit.textContent="Sources: NOAA NESDIS, NASA GIBS/ESDIS, ECCC GeoMet (Government of Canada), and Iowa Environmental Mesonet. Keep source attribution. ";
     panel.appendChild(credit);
     const changed = () => spcoaSaveGoesPrefs({product:product.value,opacity:opacity.value,timeMode:mode.value});
     product.addEventListener("change",changed);
@@ -7302,7 +7359,7 @@ window.addEventListener("message", event => {
 
 
 /* =========================================================================================
-   V130 — Satellite raster underlay: NOAA cached XYZ + IEM WMS virtual tiles.
+   V132 — Satellite underlay: NOAA XYZ, NASA GIBS WMTS, IEM and ECCC WMS.
    No SSEC requests, registration, access key or watermarking code.
    ========================================================================================= */
 const SPCOA_GOES_SOURCE_ID = "spcoa-goes-observations";
@@ -7319,11 +7376,35 @@ function spcoaGoesStatus(message) {
     if(node && node.textContent!==message) node.textContent=message;
 }
 function spcoaGoesRasterUrl(config,refreshBucket) {
-    const version="v="+refreshBucket; // Change only every 5 minutes to avoid needless downloads.
+    // GeoMet publishes GOES imagery at 10-minute cadence, so reuse tiles across
+    // two of our 5-minute checks instead of requesting the same imagery twice.
+    const effectiveBucket=config.provider==="geomet"
+        ? Math.floor((refreshBucket*SPCOA_GOES_REFRESH_MS)/SPCOA_ECCC_GOES_REFRESH_MS)
+        : refreshBucket;
+    const version="v="+effectiveBucket;
     if(config.provider==="nesdis") {
         // NOAA's ImageServer tile cache uses z/y/x with 256 px EPSG:3857 tiles.
         return SPCOA_NOAA_SATELLITE_ROOT+"/"+encodeURIComponent(config.service)+
             "/ImageServer/tile/{z}/{y}/{x}?"+version;
+    }
+    if(config.provider==="gibs") {
+        // NASA GIBS RESTful WMTS: Layer/Style/Time/TileMatrixSet/Z/Y/X.
+        // The special "default" TIME selects the latest available scan on the
+        // server. Its timestamp is not guaranteed to match the SPCOA analysis.
+        // 2 km GOES RGBs use GoogleMapsCompatible_Level6, zoom 0–6; MapLibre
+        // overscales these tiles at higher zooms rather than requesting bad Zs.
+        return SPCOA_NASA_GIBS_WMTS+"/"+encodeURIComponent(config.layer)+
+            "/default/default/GoogleMapsCompatible_Level6/{z}/{y}/{x}.png?"+version;
+    }
+    if(config.provider==="geomet") {
+        // Public ECCC GeoMet GetMap uses EPSG:3857, so WMS 1.3.0 BBOX axis
+        // order is minX,minY,maxX,maxY. MapLibre substitutes each tile BBOX.
+        // No TIME selects GeoMet's latest/default valid imagery; never imply
+        // it matches the chosen SPCOA model-analysis timestamp.
+        return SPCOA_ECCC_GEOMET_WMS+"?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"+
+            "&LAYERS="+encodeURIComponent(config.layer)+
+            "&STYLES=&FORMAT=image/png&TRANSPARENT=TRUE&CRS=EPSG:3857"+
+            "&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&"+version;
     }
     if(config.provider==="iem") {
         // MapLibre substitutes {bbox-epsg-3857}; each WMS request is 256x256.
@@ -7338,6 +7419,10 @@ function spcoaGoesRasterUrl(config,refreshBucket) {
 function spcoaGoesAttribution(config) {
     if(config.provider==="nesdis")
         return '<a href="https://satellitemaps.nesdis.noaa.gov/" target="_blank" rel="noopener noreferrer">Source: NOAA NESDIS Satellite Maps</a>';
+    if(config.provider==="gibs")
+        return '<a href="https://gibs.earthdata.nasa.gov/" target="_blank" rel="noopener noreferrer">Source: NASA GIBS / ESDIS (GOES-East ABI)</a>';
+    if(config.provider==="geomet")
+        return '<a href="https://eccc-msc.github.io/open-data/msc-data/obs_satellite/readme_satellite_geomet_en/" target="_blank" rel="noopener noreferrer">Source: ECCC / MSC GeoMet — Government of Canada</a>';
     return '<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Source: Iowa Environmental Mesonet</a>';
 }
 function spcoaGoesBeforeLayerId() {
@@ -7382,6 +7467,7 @@ async function spcoaGoesRefresh(force=false) {
             spcoaGoesRemoveLayer();
             map.addSource(SPCOA_GOES_SOURCE_ID,{
                 type:"raster",tiles:[url],tileSize:256,
+                ...(config.provider==="gibs" ? {maxzoom:6} : {}),
                 attribution:spcoaGoesAttribution(config)
             });
             map.addLayer({id:SPCOA_GOES_SOURCE_ID,type:"raster",source:SPCOA_GOES_SOURCE_ID,
@@ -7396,7 +7482,9 @@ async function spcoaGoesRefresh(force=false) {
         spcoaGoesLastAnalysis=String(currentAnalysisTime||"");
         spcoaGoesActiveMode="latest";
         spcoaGoesActiveAnalysisAt=null;
-        spcoaGoesActiveLabel=(config.provider==="nesdis"?"NOAA NESDIS":"Iowa Mesonet")+
+        spcoaGoesActiveLabel=(config.provider==="nesdis"?"NOAA NESDIS":
+            config.provider==="gibs"?"NASA GIBS":
+            config.provider==="geomet"?"ECCC GeoMet":"Iowa Mesonet")+
             " · "+config.label+" · latest provider tiles (scan UTC unverified)"+
             " · "+p.opacity+"% opacity";
         spcoaGoesStatus((spcoaGoesTilesReady?"":"Loading ")+spcoaGoesActiveLabel);
@@ -7458,7 +7546,7 @@ map.on("sourcedata",event=>{
 });
 map.on("error",event=>{
     if(event.sourceId===SPCOA_GOES_SOURCE_ID) {
-        const message=String(event?.error?.message||"NOAA/IEM satellite tile request failed");
+        const message=String(event?.error?.message||"GOES satellite tile request failed");
         console.warn("GOES tile error:",message);
         spcoaGoesStatus("Satellite tiles unavailable. Check provider/CORS/network.");
     }
@@ -19861,7 +19949,7 @@ function spcoaGetSatelliteExportTile(z, x, y) {
 }
 
 async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
-    // V130: GOES is a MapLibre raster layer. The custom Mapbox-only tile
+    // V132: GOES is a MapLibre raster layer. The custom Mapbox-only tile
     // compositor cannot see it. Capture the real map framebuffer instead.
     if (spcoaGoesSelected()) {
         if (!map.getLayer("spcoa-goes-observations")) {
@@ -19966,6 +20054,8 @@ function spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY = 0) {
     ctx.font = `500 ${Math.max(11, Math.round(outW * 0.0052))}px Arial, sans-serif`;
     const provider=SPCOA_GOES_LAYER_CONFIG[spcoaReadGoesPrefs().product]?.provider;
     const sourceCredit=provider==="iem" ? "Source: Iowa Environmental Mesonet" :
+        provider==="gibs" ? "Source: NASA GIBS / ESDIS (GOES-East ABI)" :
+        provider==="geomet" ? "Source: ECCC / MSC GeoMet — Government of Canada" :
         "Source: NOAA NESDIS Satellite Maps";
     ctx.fillText(spcoaGoesSelected() ?
         (spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE ?
