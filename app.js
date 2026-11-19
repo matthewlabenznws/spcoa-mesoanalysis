@@ -164,7 +164,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V120";
+const SPCOA_VIEWER_BUILD = "V121";
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1772,7 +1772,9 @@ if (!__MP_CHILD) {
         if (!document.getElementById("spcoa-v118-panel-badge-style")) {
             const style = document.createElement("style");
             style.id = "spcoa-v118-panel-badge-style";
-            style.textContent = `.mp-panel-badge[hidden] { display:none !important; visibility:hidden !important; }`;
+            // V121: the grid layout is the source of truth; no single-panel badge
+            // even if a host stylesheet overrides the hidden property.
+            style.textContent = `.mp-panel-badge[hidden], .layout-1 .mp-panel-badge { display:none !important; visibility:hidden !important; }`;
             document.head.appendChild(style);
         }
 
@@ -2678,6 +2680,10 @@ if (!__MP_CHILD) {
                         await Promise.all(windows.map(w=>w.__mpGifSetRun(runs[i])));
                         const images = await spcoaVideoPanelImages(windows,panelW);
                         const composed = composePngPanelLayout(images,count,panelW);
+                        if (composed.width > videoW || composed.height > videoH) {
+                            throw new Error(`Video frame layout grew to ${composed.width}×${composed.height}px ` +
+                                `while encoding at ${videoW}×${videoH}px. Restart export with a stable panel layout.`);
+                        }
                         // Clear the optional 1px right/bottom padding and
                         // copy PNG pixels exactly; avoid any second resample.
                         ctx.fillStyle = "#ffffff";
@@ -10539,6 +10545,39 @@ function spcoaSampleGaussianChangeFill(prepared, x, y, fallback) {
 }
 
 /* =========================================================================================
+   V121 — CONSISTENT FILL STATE FOR SATELLITE AND IMAGE/VIDEO EXPORT
+   Avoid exporting Plain neutral pixels on top of an active Satellite basemap.
+   Stamps are set ONLY after a completed field draw or valid cached frame reuse.
+   ========================================================================================= */
+let spcoaCompletedFillState = null;
+function spcoaCurrentFillState() {
+    return {
+        run: currentRun,
+        field: activeField,
+        background: spcoaReadMapBackground(),
+        camera: getNumericalCameraSnapshot()
+    };
+}
+function spcoaFillReadyForExport() {
+    if (!activeField || activeField === "none") return true;
+    const done = spcoaCompletedFillState;
+    return Boolean(done && done.run === currentRun &&
+        done.field === activeField &&
+        done.background === spcoaReadMapBackground() &&
+        matchesNumericalCamera(done.camera));
+}
+async function spcoaEnsureExportFillReady() {
+    if (spcoaFillReadyForExport()) return;
+    // The previous render may still be working when Satellite was selected.
+    // Await an accurate, final render before compositing the base and layers.
+    await renderWeather();
+    if (!spcoaFillReadyForExport()) {
+        throw new Error("The selected weather layer is not ready for export at this hour/view. " +
+            "Allow the current map to finish loading and retry.");
+    }
+}
+
+/* =========================================================================================
    WEATHER RENDERER
    ========================================================================================= */
 
@@ -10547,7 +10586,8 @@ async function renderWeather() {
 
     const generation =
         ++scalarRenderGeneration;
-
+    // Any asynchronous or superseded render makes the older stamp invalid.
+    spcoaCompletedFillState = null;
 
     prepareContext(
 
@@ -11030,6 +11070,8 @@ async function renderWeather() {
         height
 
     );
+    // A completed draw certifies this run, active field, background and camera.
+    spcoaCompletedFillState = spcoaCurrentFillState();
 
     if (perfStart) {
         console.info(`[SPCOA performance] ${activeField}: tiles=${(tilesReadyAt - perfStart).toFixed(0)}ms, ` +
@@ -16174,6 +16216,8 @@ function spcoaUseRenderedFrame(key) {
     });
     spcoaRenderedFrames.delete(key);
     spcoaRenderedFrames.set(key,entry);
+    // The key already requires exact background/run/field/camera matching.
+    spcoaCompletedFillState = spcoaCurrentFillState();
     if(__MP_PARAMS.get('perf')==='1') console.info('[SPCOA V111] rendered-frame cache HIT',currentRun);
     return true;
 }
@@ -19369,6 +19413,13 @@ function spcoaPlanExportFooter(outW, options = {}) {
                     x += item.renderedTextWidth;
                 });
             });
+            // Small diagnostic version label, below the last parameter row.
+            // It never consumes text-width from the selected parameter labels.
+            ctx.fillStyle = "#87949f";
+            ctx.textAlign = "right";
+            ctx.font = `500 ${Math.max(unit(10), Math.round(fontSize * 0.59))}px Arial, sans-serif`;
+            ctx.fillText(SPCOA_VIEWER_BUILD, outW - unit(8),
+                footerY + footerH - Math.max(unit(7), Math.round(fontSize * 0.28)));
             if (full) {
                 ctx.fillStyle = "#66727c";
                 ctx.font = `500 ${creditFontSize}px Inter, "Segoe UI", Arial, sans-serif`;
@@ -19414,6 +19465,7 @@ async function saveCurrentMapPng4k() {
     }
 
     try {
+        await spcoaEnsureExportFillReady();
         renderAnnotations();
         await spcoaRefreshVectorColorsForExport();
         if (hodoToggle?.checked) await hodoPendingPromise;
@@ -19563,6 +19615,7 @@ if (savePngButton) {
    ========================================================================================= */
 
 async function buildGifFrameCanvas(outW = SPCOA_GIF_PANEL_WIDTH) {
+    await spcoaEnsureExportFillReady();
     renderAnnotations();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
@@ -20232,6 +20285,7 @@ window.setInterval(()=>{if (!document.hidden) spcoaV120UpdateStatus();},60000);
     }
 
     window.__mpCapturePanel = async function(outW = 1800, options = {}) {
+        await spcoaEnsureExportFillReady();
         renderAnnotations();
         await spcoaRefreshVectorColorsForExport();
         if (hodoToggle?.checked) await hodoPendingPromise;
