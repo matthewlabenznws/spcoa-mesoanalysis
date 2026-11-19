@@ -164,7 +164,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V122";
+const SPCOA_VIEWER_BUILD = "V122.1";
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2193,6 +2193,10 @@ if (!__MP_CHILD) {
             refreshSpcoaSectorOptions(document.getElementById("sector-select"));
             refreshSpcoaSectorOptions(d.getElementById("sector-select"));
             document.querySelectorAll("#sidebar input[id], #sidebar select[id], #drawing-toolbar input[id], #timeline-bar input[id], #timeline-bar select[id]").forEach(host => {
+                // V122.1: Finder UI is local to each document. The host's search
+                // must never inherit the empty search text from the hidden iframe.
+                // This also preserves the finder's type/category filters and focus.
+                if (host.closest("#spcoa-v122-parameter-explorer")) return;
                 if (host.id === "layout-select" || host.id === "parameter-scope" ||
                     host.id === "drawing-scope" || host.id === "spcoa-sounding-toggle" ||
                     (hostTimelineDragging && host.id === "timeline-slider")) return;
