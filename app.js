@@ -164,7 +164,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V122.1";
+const SPCOA_VIEWER_BUILD = "V124"; // V124: GOES observations, no presets
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1032,6 +1032,133 @@ function spcoaInstallMapBackgroundSelector() {
 }
 spcoaInstallMapBackgroundSelector();
 
+/* =========================================================================================
+   V124 — NOAA nowCOAST GOES OBSERVATIONS (not the Mapbox land-imagery background)
+   This new observational layer is independent of SPCOA fields and the Mapbox
+   Satellite (Imagery Only) background. All panels use the same GOES settings.
+   The source can provide UTC scan times; NEVER label a historical SPCOA run
+   with live imagery when the desired scan is not present in WMS capabilities.
+   ========================================================================================= */
+const SPCOA_GOES_WMS = "https://nowcoast.noaa.gov/geoserver/observations/satellite/ows";
+const SPCOA_GOES_PREFS_KEY = "spcoa_goes_observations_v124";
+const SPCOA_GOES_LAYER_CONFIG = Object.freeze({
+    visible: Object.freeze({layer:"goes_visible_imagery",style:"goes-vis",label:"GOES Visible"}),
+    infrared: Object.freeze({layer:"goes_longwave_imagery",style:"goes-lir",label:"GOES Infrared (11.2 µm)"}),
+    water_vapor: Object.freeze({layer:"goes_water_vapor_imagery",style:"goes-wv",label:"GOES Upper-Level Water Vapor (6.2 µm)"})
+});
+const SPCOA_GOES_DEFAULTS = Object.freeze({product:"off",opacity:75,timeMode:"latest"});
+let spcoaGoesOverride = null;
+function spcoaValidateGoesPrefs(value) {
+    const v = value && typeof value === "object" ? value : {};
+    return {
+        product: v.product === "off" || Object.hasOwn(SPCOA_GOES_LAYER_CONFIG,v.product)
+            ? v.product : "off",
+        opacity: Number.isFinite(Number(v.opacity))
+            ? Math.max(0,Math.min(100,Math.round(Number(v.opacity)))) : 75,
+        timeMode: v.timeMode === "analysis" ? "analysis" : "latest"
+    };
+}
+function spcoaReadGoesPrefs() {
+    if (spcoaGoesOverride) return spcoaGoesOverride;
+    try { spcoaGoesOverride = spcoaValidateGoesPrefs(JSON.parse(localStorage.getItem(SPCOA_GOES_PREFS_KEY))); }
+    catch (_) { spcoaGoesOverride = {...SPCOA_GOES_DEFAULTS}; }
+    return spcoaGoesOverride;
+}
+function spcoaGoesSelected() { return spcoaReadGoesPrefs().product !== "off"; }
+// Meteorological white/neutral pixel transparency should also reveal GOES, not
+// only the land-imagery basemap. Do not change which background the dropdown shows.
+function spcoaHasSatelliteUnderlay() {
+    return spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE || spcoaGoesSelected();
+}
+function spcoaSyncGoesControls() {
+    const p = spcoaReadGoesPrefs();
+    const prod = document.getElementById("spcoa-goes-product");
+    const mode = document.getElementById("spcoa-goes-time-mode");
+    const slider = document.getElementById("spcoa-goes-opacity");
+    const pct = document.getElementById("spcoa-goes-opacity-pct");
+    if (prod && prod !== document.activeElement) prod.value = p.product;
+    if (mode && mode !== document.activeElement) mode.value = p.timeMode;
+    if (slider && slider !== document.activeElement) slider.value = p.opacity;
+    if (pct) pct.textContent = p.opacity + "%";
+}
+function spcoaSaveGoesPrefs(value, broadcast=true) {
+    const next = spcoaValidateGoesPrefs(value);
+    const wasUnderlay = spcoaHasSatelliteUnderlay();
+    spcoaGoesOverride = next;
+    try {localStorage.setItem(SPCOA_GOES_PREFS_KEY,JSON.stringify(next));}catch(_){}
+    spcoaSyncGoesControls();
+    window.dispatchEvent(new CustomEvent("spcoa-goes-settings-changed",{detail:{wasUnderlay}}));
+    if (broadcast && !__MP_CHILD) {
+        document.querySelectorAll("iframe").forEach(frame => {
+            try { frame.contentWindow?.postMessage({type:"spcoa-goes-sync",prefs:next},window.location.origin); }
+            catch (_) {}
+        });
+    }
+}
+function spcoaInstallGoesControls() {
+    if (document.getElementById("spcoa-goes-controls")) return;
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar) return;
+    const panel = document.createElement("section");
+    panel.id = "spcoa-goes-controls";
+    panel.style.cssText = "margin:8px 0;padding:10px;border:1px solid #31526a;border-radius:6px;background:#10283a;color:#e6f5ff;font:12px Inter,Arial,sans-serif;display:flex;flex-direction:column;gap:8px;";
+    const heading = document.createElement("strong");
+    heading.textContent = "GOES Satellite Observations";
+    heading.style.cssText = "font-size:12px;";
+    const description = document.createElement("div");
+    description.textContent = "NOAA nowCOAST weather satellite imagery (not Mapbox satellite land imagery).";
+    description.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;";
+    function makeSelect(id,options,labelText) {
+        const wrap = document.createElement("label");
+        wrap.textContent = labelText;
+        wrap.htmlFor = id;
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;";
+        const select = document.createElement("select");
+        select.id = id;
+        select.style.cssText = "width:100%;min-width:0;padding:6px;border:1px solid #527085;border-radius:4px;background:#173348;color:#fff;";
+        for (const [value,text] of options) select.add(new Option(text,value));
+        wrap.appendChild(select);
+        panel.appendChild(wrap);
+        return select;
+    }
+    panel.append(heading,description);
+    const product = makeSelect("spcoa-goes-product",[
+        ["off","Off"],["visible","GOES Visible · 0.64 µm"],
+        ["infrared","GOES Infrared · 11.2 µm"],
+        ["water_vapor","GOES Water Vapor · 6.2 µm"]],"Imagery product");
+    const mode = makeSelect("spcoa-goes-time-mode",[
+        ["latest","Latest observed scan"],
+        ["analysis","At or before selected SPCOA hour"]],"Observation time");
+    const opacityRow = document.createElement("label");
+    opacityRow.htmlFor = "spcoa-goes-opacity";
+    opacityRow.style.cssText = "display:flex;justify-content:space-between;gap:12px;";
+    opacityRow.append(document.createTextNode("Opacity"));
+    const pct = document.createElement("span");
+    pct.id = "spcoa-goes-opacity-pct";
+    opacityRow.appendChild(pct);
+    const opacity = document.createElement("input");
+    opacity.type = "range";
+    opacity.id = "spcoa-goes-opacity";
+    opacity.min = "0"; opacity.max = "100"; opacity.step = "5";
+    opacity.style.cssText = "width:100%;accent-color:#69baf5;";
+    const status = document.createElement("div");
+    status.id = "spcoa-goes-status";
+    status.setAttribute("role","status");
+    status.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;min-height:28px;";
+    status.textContent = "Off";
+    panel.append(opacityRow,opacity,status);
+    const changed = () => spcoaSaveGoesPrefs({product:product.value,opacity:opacity.value,timeMode:mode.value});
+    product.addEventListener("change",changed);
+    mode.addEventListener("change",changed);
+    opacity.addEventListener("input", () => { pct.textContent = opacity.value + "%"; changed(); });
+    const after = document.getElementById("spcoa-map-background-controls");
+    if (after && after.parentElement) after.insertAdjacentElement("afterend",panel);
+    else sidebar.prepend(panel);
+    spcoaSyncGoesControls();
+}
+spcoaInstallGoesControls();
+
+
 /* V89 — 3/6/12/24-hour height/pressure changes, derived from archived contour tiles.
    No invented values: a field is blank if its exact prior UTC analysis is absent. */
 const SPCOA_CHANGE_FIELDS = Object.freeze(Object.fromEntries(
@@ -1099,7 +1226,7 @@ const SPCOA_CHANGE_FILL_GAUSSIAN_SIGMA_KM = 50;
 // V115: Match Q-vector divergence's transparent neutral legend on Satellite,
 // while keeping the original opaque white band on the Plain background.
 function spcoaChangeLegendColors(sourceColors) {
-    const neutralColor = spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE
+    const neutralColor = spcoaHasSatelliteUnderlay()
         ? 'rgba(255,255,255,0)' : '#ffffff';
     return sourceColors.map((color, index) => index === 9 ? neutralColor : color);
 }
@@ -2197,6 +2324,7 @@ if (!__MP_CHILD) {
                 // must never inherit the empty search text from the hidden iframe.
                 // This also preserves the finder's type/category filters and focus.
                 if (host.closest("#spcoa-v122-parameter-explorer")) return;
+                if (host.closest("#spcoa-goes-controls")) return;
                 if (host.id === "layout-select" || host.id === "parameter-scope" ||
                     host.id === "drawing-scope" || host.id === "spcoa-sounding-toggle" ||
                     (hostTimelineDragging && host.id === "timeline-slider")) return;
@@ -2219,7 +2347,7 @@ if (!__MP_CHILD) {
             // Mirror run information and loading status from the active map panel.
             // These labels live in the host sidebar and otherwise remain stuck
             // at the HTML defaults ("Loading..." / "Initializing...").
-            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status", "surface-obs-status", "spcoa-hodo-status"].forEach(id => {
+            ["run-id", "analysis-time", "status", "timeline-speed-label", "timeline-time-label", "draw-hint", "city-count-label", "roads-data-status", "surface-obs-status", "spcoa-hodo-status", "spcoa-goes-status"].forEach(id => {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child && !(hostGifExporting && id === "status")) host.textContent = child.textContent;
             });
@@ -2291,7 +2419,7 @@ if (!__MP_CHILD) {
         // Forward it immediately rather than letting the 350-ms host sync restore purple.
         sidebar.addEventListener("input", event => {
             const el = event.target;
-            if (!el) return;
+            if (!el || el.closest("#spcoa-goes-controls")) return;
             if (el.type === "color" && el.dataset.vectorField) {
                 spcoaSaveVectorColor(el.dataset.vectorField, el.value);
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "input");
@@ -2313,7 +2441,7 @@ if (!__MP_CHILD) {
 
         sidebar.addEventListener("change", event => {
             const el = event.target;
-            if (!el || !el.id || el.id === "layout-select" || el.id === "parameter-scope") return;
+            if (!el || !el.id || el.id === "layout-select" || el.id === "parameter-scope" || el.closest("#spcoa-goes-controls")) return;
             if (el.id === "sector-select") {
                 for (let i = 0; i < layoutCount; i++) dispatchChildValue(el, i, "change");
             } else if (el.id === "cwa-border-color") {
@@ -2456,6 +2584,9 @@ if (!__MP_CHILD) {
                         // Do not rely on cross-frame localStorage consistency.
                         panels[i].frame.contentWindow.postMessage({
                             type: "spcoa-basemap-sync", choice: spcoaReadMapBackground()
+                        }, window.location.origin);
+                        panels[i].frame.contentWindow.postMessage({
+                            type: "spcoa-goes-sync", prefs: spcoaReadGoesPrefs()
                         }, window.location.origin);
                     } catch (_) {}
                 }
@@ -4456,7 +4587,7 @@ Object.assign(WEATHER_FIELDS, SPCOA_CHANGE_FIELDS);
 function spcoaChangeRgb(value, def) {
     if (!def || !Number.isFinite(value)) return null;
     if (Math.abs(value) <= SPCOA_CHANGE_NEUTRAL_LIMIT) {
-        return spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE
+        return spcoaHasSatelliteUnderlay()
             ? null : {r:255, g:255, b:255};
     }
     const cap = spcoaChangeColorMax(def);
@@ -7009,7 +7140,7 @@ function spcoaAddMapboxRasterBasemap(sourceId, tilesetId, opacity) {
 // Keep the map fill's intentionally neutral-value transparency synchronized with the basemap.
 // This variable only prevents an unnecessary duplicate numerical render at load.
 let spcoaLastWhiteFillMode =
-    spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
+    spcoaHasSatelliteUnderlay();
 
 let spcoaBasemapApplyPending = false;
 function spcoaApplyMapBackground() {
@@ -7054,7 +7185,7 @@ function spcoaApplyMapBackground() {
     }
 
     // Re-render intentional neutral-value transparency when the background changes.
-    const hideWhiteFill = choice === SPCOA_BASEMAP_SATELLITE;
+    const hideWhiteFill = spcoaHasSatelliteUnderlay();
     if (hideWhiteFill !== spcoaLastWhiteFillMode) {
         spcoaLastWhiteFillMode = hideWhiteFill;
         if (activeField && activeField !== "none") {
@@ -7115,6 +7246,224 @@ window.addEventListener("message", event => {
     } else if (event.data.type === "spcoa-basemap-status" && !__MP_CHILD) {
         spcoaMapBackgroundMessage(String(event.data.message || ""));
     }
+});
+
+
+/* =========================================================================================
+   V124 GOES WMS RASTER LAYER — NOAA nowCOAST, MapLibre EPSG:3857 tiles
+   ========================================================================================= */
+const SPCOA_GOES_SOURCE_ID = "spcoa-goes-observations";
+const SPCOA_GOES_MAX_CAPABILITIES_AGE_MS = 180000;
+let spcoaGoesAvailableTimes = new Map();
+let spcoaGoesCapabilitiesCheckedAt = 0;
+let spcoaGoesCapabilitiesPromise = null;
+let spcoaGoesActiveKey = null;
+let spcoaGoesActiveLabel = "";
+let spcoaGoesTilesReady = false;
+let spcoaGoesGeneration = 0;
+let spcoaGoesTimer = null;
+let spcoaGoesLastAnalysis = "";
+function spcoaGoesStatus(message) {
+    const node=document.getElementById("spcoa-goes-status");
+    if(node && node.textContent!==message) node.textContent=message;
+}
+function spcoaGoesUtc(value) {
+    const n = Date.parse(value);
+    return Number.isFinite(n) ? n : NaN;
+}
+function spcoaGoesIsoLabel(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "time unknown" :
+        date.toISOString().replace("T"," ").slice(0,16)+"Z";
+}
+// Pure function: at/before analysis ONLY, never substitute a later scan.
+function spcoaGoesChooseTime(timestamps,mode,analysisTime) {
+    if (!timestamps?.length) return null;
+    const reference = spcoaGoesUtc(analysisTime);
+    if (mode === "analysis") {
+        if (!Number.isFinite(reference)) return null;
+        const eligible = timestamps.filter(t=>t<=reference);
+        // Avoid pairing an hourly SPCOA historical analysis with an unrelated
+        // old satellite scan if there is a gap/outage in observations.
+        const candidate=eligible.length ? eligible[eligible.length-1] : null;
+        return candidate!==null && reference-candidate<=15*60000 ? candidate:null;
+    }
+    return timestamps[timestamps.length-1];
+}
+async function spcoaGoesLoadCapabilities(force=false) {
+    if (!force && spcoaGoesCapabilitiesCheckedAt &&
+        Date.now()-spcoaGoesCapabilitiesCheckedAt<SPCOA_GOES_MAX_CAPABILITIES_AGE_MS) {
+        return spcoaGoesAvailableTimes;
+    }
+    if (spcoaGoesCapabilitiesPromise) return spcoaGoesCapabilitiesPromise;
+    spcoaGoesCapabilitiesPromise = (async()=>{
+        const url=SPCOA_GOES_WMS+"?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities";
+        const controller=new AbortController();
+        const timer=setTimeout(()=>controller.abort(),11000);
+        try {
+            const response=await fetch(url,{cache:"no-store",signal:controller.signal});
+            if(!response.ok) throw new Error("HTTP "+response.status);
+            const xml=new DOMParser().parseFromString(await response.text(),"application/xml");
+            if (xml.querySelector("parsererror")) throw new Error("Invalid WMS XML");
+            const timeMap=new Map();
+            for(const layer of xml.getElementsByTagNameNS("*","Layer")) {
+                const nameNode=Array.from(layer.children).find(c=>c.localName==="Name");
+                const name=nameNode?.textContent?.trim();
+                if(!Object.values(SPCOA_GOES_LAYER_CONFIG).some(v=>v.layer===name))continue;
+                const dimension=Array.from(layer.children).find(c=>c.localName==="Dimension" && c.getAttribute("name")==="time");
+                const available=String(dimension?.textContent||"").trim()
+                    .split(",").map(spcoaGoesUtc).filter(Number.isFinite).sort((a,b)=>a-b);
+                timeMap.set(name,[...new Set(available)]);
+            }
+            if(!timeMap.size) throw new Error("No recognized GOES layers found");
+            spcoaGoesAvailableTimes=timeMap;
+            spcoaGoesCapabilitiesCheckedAt=Date.now();
+            return timeMap;
+        } finally {clearTimeout(timer);}
+    })();
+    try {return await spcoaGoesCapabilitiesPromise;}
+    finally {spcoaGoesCapabilitiesPromise=null;}
+}
+function spcoaGoesRemoveLayer() {
+    if(map.getLayer(SPCOA_GOES_SOURCE_ID)) map.removeLayer(SPCOA_GOES_SOURCE_ID);
+    if(map.getSource(SPCOA_GOES_SOURCE_ID)) map.removeSource(SPCOA_GOES_SOURCE_ID);
+    spcoaGoesActiveKey=null;
+    spcoaGoesActiveLabel="";
+    spcoaGoesTilesReady=false;
+}
+function spcoaGoesRasterUrl(config,selectedTimestamp) {
+    const params = [
+        "SERVICE=WMS","VERSION=1.1.1","REQUEST=GetMap",
+        "LAYERS="+encodeURIComponent(config.layer),
+        "STYLES="+encodeURIComponent(config.style),
+        "FORMAT=image%2Fpng","TRANSPARENT=TRUE","SRS=EPSG%3A3857",
+        "WIDTH=256","HEIGHT=256","BBOX={bbox-epsg-3857}"
+    ];
+    if (selectedTimestamp!==null) params.push("TIME="+encodeURIComponent(new Date(selectedTimestamp).toISOString()));
+    return SPCOA_GOES_WMS+"?"+params.join("&");
+}
+async function spcoaGoesRefresh(force=false) {
+    const generation=++spcoaGoesGeneration;
+    const p=spcoaReadGoesPrefs();
+    if(p.product==="off") {
+        spcoaGoesRemoveLayer();
+        spcoaGoesStatus("Off");
+        return;
+    }
+    const config=SPCOA_GOES_LAYER_CONFIG[p.product];
+    if(!config)return;
+    if (!map.getStyle()?.layers?.length) {
+        // Map 'load' listener will retry; never block the SPCOA renderer.
+        spcoaGoesStatus("Waiting for the map style...");
+        return;
+    }
+    spcoaGoesStatus("Checking GOES observation times...");
+    let times=[];
+    let metadataError=null;
+    try {
+        const available=await spcoaGoesLoadCapabilities(force);
+        times=available.get(config.layer)||[];
+    } catch(error) {
+        metadataError=error;
+        console.warn("GOES WMS capabilities unavailable:",error);
+    }
+    if(generation!==spcoaGoesGeneration || p.product!==spcoaReadGoesPrefs().product || p.timeMode!==spcoaReadGoesPrefs().timeMode)return;
+    let t=spcoaGoesChooseTime(times,p.timeMode,currentAnalysisTime);
+    if(p.timeMode==="analysis" && t===null) {
+        spcoaGoesRemoveLayer();
+        spcoaGoesStatus(metadataError ?
+            "Historical GOES unavailable: cannot verify satellite timestamps." :
+            "No GOES scan within 15 minutes before the selected SPCOA hour.");
+        return;
+    }
+    // For latest imagery only, WMS can choose its default scan if the
+    // capabilities endpoint is blocked; clearly label the time unverified.
+    const url=spcoaGoesRasterUrl(config,t);
+    const key=config.layer+"|"+(t===null?"default":t);
+    try {
+        if(key!==spcoaGoesActiveKey || !map.getLayer(SPCOA_GOES_SOURCE_ID)) {
+            spcoaGoesRemoveLayer();
+            map.addSource(SPCOA_GOES_SOURCE_ID,{
+                type:"raster",tiles:[url],tileSize:256,
+                attribution:'Satellite imagery: NOAA/NESDIS via <a href="https://nowcoast.noaa.gov/" target="_blank" rel="noopener noreferrer">nowCOAST</a>'
+            });
+            map.addLayer({id:SPCOA_GOES_SOURCE_ID,type:"raster",source:SPCOA_GOES_SOURCE_ID,
+                paint:{"raster-opacity":p.opacity/100,"raster-fade-duration":0}});
+            spcoaGoesActiveKey=key;
+        } else {
+            map.setPaintProperty(SPCOA_GOES_SOURCE_ID,"raster-opacity",p.opacity/100);
+        }
+        const suffix = t===null ? "latest scan (time unverified)" : spcoaGoesIsoLabel(t);
+        spcoaGoesActiveLabel=config.label+" · "+suffix+" · "+p.opacity+"% opacity";
+        spcoaGoesStatus((spcoaGoesTilesReady?"":"Loading ")+spcoaGoesActiveLabel);
+    } catch(error) {
+        spcoaGoesStatus("GOES image layer failed to initialize; check console.");
+        console.error("GOES WMS map-layer error:",error);
+    }
+}
+function spcoaGoesSchedule(ms=180) {
+    clearTimeout(spcoaGoesTimer);
+    spcoaGoesTimer=setTimeout(()=>{void spcoaGoesRefresh(false);},ms);
+}
+// Export waits for the MapLibre raster layer so it isn't captured before NOAA
+// tiles have finished loading. A failed provider tile may trigger timeout.
+async function spcoaGoesWaitForMapTiles(timeoutMs=12000) {
+    if(!spcoaGoesSelected() || !map.getSource(SPCOA_GOES_SOURCE_ID))return;
+    if(map.isSourceLoaded(SPCOA_GOES_SOURCE_ID))return;
+    await new Promise((resolve,reject)=>{
+        let finished=false;
+        const finish=(error)=>{
+            if(finished)return;finished=true;
+            clearTimeout(timer);map.off("sourcedata",onData);map.off("error",onError);
+            if(error)reject(error);else resolve();
+        };
+        const onData=e=>{if(e.sourceId===SPCOA_GOES_SOURCE_ID && e.isSourceLoaded)finish();};
+        const onError=e=>{if(e.sourceId===SPCOA_GOES_SOURCE_ID)finish(new Error("GOES imagery tiles failed to load"));};
+        const timer=setTimeout(()=>finish(new Error("GOES imagery still loading; export cancelled to prevent missing imagery")),timeoutMs);
+        map.on("sourcedata",onData);map.on("error",onError);
+        if(map.isSourceLoaded(SPCOA_GOES_SOURCE_ID))finish();
+    });
+}
+window.addEventListener("spcoa-goes-settings-changed",event=>{
+    spcoaSyncGoesControls();
+    spcoaGoesSchedule(50);
+    const oldUnderlay=Boolean(event.detail?.wasUnderlay);
+    if(oldUnderlay!==spcoaHasSatelliteUnderlay()) {
+        spcoaLastWhiteFillMode=spcoaHasSatelliteUnderlay();
+        if(activeField&&activeField!=="none") void renderWeather().catch(console.warn);
+        updateLegend();
+    }
+});
+window.addEventListener("message",event=>{
+    if(event.origin!==window.location.origin || event.data?.type!=="spcoa-goes-sync" || !__MP_CHILD)return;
+    spcoaSaveGoesPrefs(event.data.prefs,false);
+});
+window.addEventListener("storage",event=>{
+    if(event.key===SPCOA_GOES_PREFS_KEY){
+        spcoaGoesOverride=null;
+        spcoaSyncGoesControls();
+        spcoaGoesSchedule();
+    }
+});
+map.on("load",()=>spcoaGoesSchedule(100));
+map.on("sourcedata",event=>{
+    if(event.sourceId===SPCOA_GOES_SOURCE_ID && event.isSourceLoaded){
+        spcoaGoesTilesReady=true;
+        if(spcoaGoesActiveLabel)spcoaGoesStatus(spcoaGoesActiveLabel);
+    }
+});
+map.on("error",event=>{
+    if(event.sourceId===SPCOA_GOES_SOURCE_ID) {
+        const message=String(event?.error?.message||"GOES WMS tile request failed");
+        console.warn("NOAA GOES WMS tile error:",message);
+        spcoaGoesStatus("GOES tiles unavailable. Check provider/CORS/network.");
+    }
+});
+window.setInterval(()=>{
+    if(!document.hidden && spcoaGoesSelected())void spcoaGoesRefresh(true);
+},180000);
+document.addEventListener("visibilitychange",()=>{
+    if(!document.hidden && spcoaGoesSelected())spcoaGoesSchedule(100);
 });
 
 map.dragRotate.disable();
@@ -8125,6 +8474,10 @@ function updateTimelineUi() {
     if (timelineLoopToggle) timelineLoopToggle.checked = timelineState.looping;
     if (timelineLiveButton) timelineLiveButton.classList.toggle("active", timelineState.isLive);
     if (timelineHistorySelect) timelineHistorySelect.value = String(timelineState.historyHours);
+    if (__MP_CHILD && spcoaGoesSelected() && spcoaReadGoesPrefs().timeMode === "analysis") {
+        const key=String(currentAnalysisTime||"");
+        if (spcoaGoesLastAnalysis!==key) { spcoaGoesLastAnalysis=key; spcoaGoesSchedule(120); }
+    }
 }
 
 function stopPlaybackTimer() {
@@ -10871,6 +11224,7 @@ function spcoaCurrentFillState() {
         run: currentRun,
         field: activeField,
         background: spcoaReadMapBackground(),
+        satelliteUnderlay: spcoaHasSatelliteUnderlay(),
         camera: getNumericalCameraSnapshot()
     };
 }
@@ -10880,6 +11234,7 @@ function spcoaFillReadyForExport() {
     return Boolean(done && done.run === currentRun &&
         done.field === activeField &&
         done.background === spcoaReadMapBackground() &&
+        done.satelliteUnderlay === spcoaHasSatelliteUnderlay() &&
         matchesNumericalCamera(done.camera));
 }
 async function spcoaEnsureExportFillReady() {
@@ -11137,7 +11492,7 @@ async function renderWeather() {
     // Important: use the numerical interval, never a general RGB=white test,
     // because white can represent a valid category in other weather fields.
     const satelliteFill =
-        spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE;
+        spcoaHasSatelliteUnderlay();
     const satelliteFieldType = WEATHER_FIELDS[activeField]?.type;
 
     // V78: In Satellite mode, hide ONLY the first five white-to-light-gray
@@ -16495,7 +16850,7 @@ function spcoaRenderedFrameKey(camera=getNumericalCameraSnapshot()) {
     return JSON.stringify([
         currentRun,activeField,overlaySignature,
         activeField==='ecape'?spcoaProductRun('ecape'):null,
-        spcoaReadMapBackground(),getDataZoom(),
+        spcoaReadMapBackground(),spcoaHasSatelliteUnderlay(),getDataZoom(),
         camera.lng.toFixed(7),camera.lat.toFixed(7),camera.zoom.toFixed(7),
         Math.round(camera.width),Math.round(camera.height),
         map.getBearing().toFixed(5),map.getPitch().toFixed(5),
@@ -19502,6 +19857,22 @@ function spcoaGetSatelliteExportTile(z, x, y) {
 }
 
 async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
+    // V124: GOES is a MapLibre raster layer. The custom Mapbox-only tile
+    // compositor cannot see it. Capture the real map framebuffer instead.
+    if (spcoaGoesSelected()) {
+        if (!map.getLayer("spcoa-goes-observations")) {
+            throw new Error("GOES is selected, but satellite imagery is unavailable for export.");
+        }
+        // Match observational time to this exported SPCOA frame before capture.
+        await spcoaGoesRefresh(false);
+        if (!map.getLayer("spcoa-goes-observations")) {
+            throw new Error("No matching GOES scan is available for this SPCOA hour.");
+        }
+        await spcoaGoesWaitForMapTiles(12000);
+        const frame = map.getCanvas();
+        ctx.drawImage(frame,0,0,frame.width,frame.height,0,mapY,outW,mapH);
+        return;
+    }
     if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE) {
         const sourceCanvas = map.getCanvas();
         ctx.drawImage(sourceCanvas, 0, 0, sourceCanvas.width, sourceCanvas.height,
@@ -19579,7 +19950,7 @@ async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
 }
 
 function spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY = 0) {
-    if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE) return;
+    if (spcoaReadMapBackground() !== SPCOA_BASEMAP_SATELLITE && !spcoaGoesSelected()) return;
     ctx.save();
     ctx.globalAlpha = 0.75;
     ctx.fillStyle = "#fff";
@@ -19589,7 +19960,10 @@ function spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY = 0) {
     ctx.textAlign = "right";
     ctx.textBaseline = "bottom";
     ctx.font = `500 ${Math.max(11, Math.round(outW * 0.0052))}px Arial, sans-serif`;
-    ctx.fillText("© Mapbox  © OpenStreetMap", outW - 10, mapY + mapH - 8);
+    ctx.fillText(spcoaGoesSelected() ?
+        (spcoaReadMapBackground() === SPCOA_BASEMAP_SATELLITE ?
+         "GOES: NOAA/nowCOAST · © Mapbox" : "GOES: NOAA/nowCOAST") :
+        "© Mapbox  © OpenStreetMap", outW - 10, mapY + mapH - 8);
     ctx.restore();
 }
 
@@ -19654,6 +20028,8 @@ function spcoaPlanExportFooter(outW, options = {}) {
             text: String(item.text || ""),
             color: item.color || null
         })),
+        ...(spcoaGoesSelected() && spcoaGoesActiveLabel ?
+            [{text:spcoaGoesActiveLabel,color:null}]:[]),
         { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
     ].filter(item => item.text);
 
