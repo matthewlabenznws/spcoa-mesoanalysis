@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V141"; // N0B BZip2 decode, nationwide station selector, original dBZ colors
+const SPCOA_VIEWER_BUILD = "V142"; // Auto-nearest map tracking; compact radar sidebar; N0B BZip2
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1562,6 +1562,8 @@ for(const [id,label] of Object.entries(SPCOA_L3_SITES)){
     SPCOA_L3_CATALOG.set(id,{id,name:label.replace(/^K[A-Z0-9]{3}\s*[—-]\s*/,''),lat:coords[0],lon:coords[1]});
 }
 let spcoaL3CatalogLoadPromise=null,spcoaL3CatalogStatus="Loading the CONUS radar station list...";
+// This is the radar nearest the *current map center*, not the last manually chosen station.
+let spcoaRadarResolvedSite=null;
 function spcoaL3NormalizeStation(rawId,name,lat,lon,radarType){
     let id=String(rawId||"").trim().toUpperCase();
     if(/^[A-Z0-9]{3}$/.test(id))id="K"+id;
@@ -1605,7 +1607,9 @@ function spcoaL3RefreshStationSelect(){
     const status=document.getElementById("spcoa-radar-catalog-status");
     if(status)status.textContent=spcoaL3CatalogStatus;
     if(!select)return;
-    const selected=spcoaReadRadarPrefs().site;
+    const prefs=spcoaReadRadarPrefs();
+    const selected=prefs.mode==="auto" && spcoaRadarResolvedSite &&
+        SPCOA_L3_CATALOG.has(spcoaRadarResolvedSite) ? spcoaRadarResolvedSite : prefs.site;
     const stations=Array.from(SPCOA_L3_CATALOG.values())
         .sort((a,b)=>a.id.localeCompare(b.id));
     // Don't recreate an open select on each host/iframe synchronization tick.
@@ -1619,8 +1623,11 @@ function spcoaL3RefreshStationSelect(){
         select.append(option);
     }
     if(SPCOA_L3_CATALOG.has(selected))select.value=selected;
-    else if(stations.length)select.value="KLNX";
+    else if(stations.length)select.value=stations[0].id;
     select.__spcoaCatalogSignature=signature;
+    // A newly populated station list must not overwrite the computed auto site.
+    if(prefs.mode==="auto" && typeof spcoaSyncRadarControls==="function")
+        spcoaSyncRadarControls();
 }
 async function spcoaL3LoadCatalog(force=false){
     if(spcoaL3CatalogLoadPromise && !force)return spcoaL3CatalogLoadPromise;
@@ -2035,16 +2042,20 @@ function spcoaSyncRadarControls() {
     const pct=document.getElementById("spcoa-radar-opacity-pct");
     const mode=document.getElementById("spcoa-radar-mode");
     const site=document.getElementById("spcoa-radar-site");
+    const siteCaption=document.getElementById("spcoa-radar-site-caption");
     if(mode && mode!==document.activeElement)mode.value=p.mode;
-    if(site && site!==document.activeElement)site.value=p.site;
+    if(site && site!==document.activeElement){
+        const shownSite=p.mode==="auto" && spcoaRadarResolvedSite &&
+            SPCOA_L3_CATALOG.has(spcoaRadarResolvedSite) ? spcoaRadarResolvedSite : p.site;
+        if(Array.from(site.options).some(option=>option.value===shownSite))site.value=shownSite;
+    }
+    if(siteCaption)siteCaption.textContent=p.mode==="auto" ? "Nearest radar" : "Radar station";
     if(mode)mode.disabled=!p.enabled;
     if(site)site.disabled=!p.enabled || p.mode!=="single";
     if(toggle && toggle!==document.activeElement)toggle.checked=p.enabled;
     if(opacity && opacity!==document.activeElement)opacity.value=p.opacity;
     if(opacity)opacity.disabled=!p.enabled;
     if(pct)pct.textContent=p.opacity+"%";
-    const credit=document.querySelector("#spcoa-radar-controls a[href='https://mesonet.agron.iastate.edu/ogc/']");
-    if(credit)credit.textContent=p.mode!=="mosaic" ? "Radar: NWS NEXRAD Level III / Unidata" : "Radar: IEM / NWS NEXRAD";
 }
 function spcoaSaveRadarPrefs(value,broadcast=true) {
     const next=spcoaValidateRadarPrefs(value);
@@ -2090,7 +2101,10 @@ function spcoaInstallRadarControls() {
     modeLabel.appendChild(mode);
     const siteLabel=document.createElement("label");
     siteLabel.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:8px;";
-    siteLabel.textContent="Radar station";
+    const siteCaption=document.createElement("span");
+    siteCaption.id="spcoa-radar-site-caption";
+    siteCaption.textContent="Radar station";
+    siteLabel.appendChild(siteCaption);
     const site=document.createElement("select");
     site.id="spcoa-radar-site";
     site.style.cssText="min-width:145px;max-width:60%;font-size:11px;";
@@ -2114,22 +2128,9 @@ function spcoaInstallRadarControls() {
     opacity.type="range";
     opacity.min="0";opacity.max="100";opacity.step="5";
     opacity.style.cssText="width:100%;accent-color:#69baf5;";
-    const status=document.createElement("div");
-    status.id="spcoa-radar-status";
-    status.setAttribute("role","status");
-    status.style.cssText="font-size:10px;color:#b5cee0;line-height:1.5;min-height:24px;";
-    status.textContent="Off";
-    const credit=document.createElement("a");
-    credit.textContent="Radar: IEM / NWS NEXRAD";
-    credit.href="https://mesonet.agron.iastate.edu/ogc/";
-    credit.target="_blank"; credit.rel="noopener noreferrer";
-    credit.style.cssText="font-size:10px;color:#a1c8e8;text-decoration:underline;";
-    const radarCheck=document.createElement("a");
-    radarCheck.textContent="Check current CONUS radar mosaic";
-    radarCheck.href="https://mesonet.agron.iastate.edu/current/mcview.phtml";
-    radarCheck.target="_blank";radarCheck.rel="noopener noreferrer";
-    radarCheck.style.cssText="font-size:10px;color:#a1c8e8;text-decoration:underline;";
-    panel.append(heading,description,toggleLabel,modeLabel,siteLabel,catalogStatus,opacityRow,opacity,status,radarCheck,credit);
+    // The loading/scan text and troubleshooting links are intentionally absent.
+    // Radar errors are logged to DevTools; map and export attribution remain.
+    panel.append(heading,description,toggleLabel,modeLabel,siteLabel,catalogStatus,opacityRow,opacity);
     const changed=()=>spcoaSaveRadarPrefs({enabled:toggle.checked,mode:mode.value,site:site.value,opacity:opacity.value});
     toggle.addEventListener("change",changed);
     mode.addEventListener("change",changed);
@@ -3300,6 +3301,17 @@ if (!__MP_CHILD) {
                     hostCityArea.__spcoaCityOptionSig = sig;
                 }
                 hostCityArea.value = childCityArea.value;
+            }
+            // Auto-nearest is calculated from the map inside the child iframe.
+            // Mirror its resolved station in the visible host sidebar, while
+            // leaving saved manual station preferences unchanged.
+            if(spcoaReadRadarPrefs().mode==="auto"){
+                const hostSite=document.getElementById("spcoa-radar-site");
+                const childSite=d.getElementById("spcoa-radar-site");
+                if(hostSite && childSite && SPCOA_L3_CATALOG.has(childSite.value)){
+                    spcoaRadarResolvedSite=childSite.value;
+                    if(hostSite.value!==childSite.value)hostSite.value=childSite.value;
+                }
             }
             // Update both option lists before copying selection from the active panel.
             refreshSpcoaSectorOptions(document.getElementById("sector-select"));
@@ -8454,8 +8466,9 @@ let spcoaRadarMode="wms"; // Falls back to "tms" once on a genuine image loading
 let spcoaRadarFailure="";
 let spcoaRadarFailureCount=0;
 function spcoaRadarStatus(message){
-    const node=document.getElementById("spcoa-radar-status");
-    if(node && node.textContent!==message)node.textContent=message;
+    // Sidebar status removed in V142; leave diagnostic state on the window.
+    // Errors are also emitted by existing console.error / console.warn paths.
+    window.__SPCOA_RADAR_LAST_STATUS=String(message||"");
 }
 function spcoaRadarBeforeLayerId(){
     // Keep Mapbox and GOES BELOW radar, all other weather/geography ABOVE it.
@@ -8473,6 +8486,7 @@ function spcoaRadarRemoveLayer(){
 function spcoaRadarRefresh(){
     const p=spcoaReadRadarPrefs();
     if(!p.enabled){
+        if(spcoaRadarResolvedSite!==null){spcoaRadarResolvedSite=null;spcoaSyncRadarControls();}
         spcoaRadarRemoveLayer();spcoaRadarStatus("Off");
         spcoaRadarFailure="";spcoaRadarFailureCount=0;
         return;
@@ -8481,6 +8495,13 @@ function spcoaRadarRefresh(){
     const bucket=Math.floor(Date.now()/SPCOA_RADAR_REFRESH_MS);
     const wantsSingle=p.mode==="single" || p.mode==="auto";
     const radarSite=wantsSingle ? spcoaL3DesiredSite(p) : p.site;
+    // The radar site selector shows which radar is actually being requested in
+    // auto mode. Recompute on each map moveend and after catalog refreshes.
+    const resolvedSite=p.mode==="auto" ? radarSite : null;
+    if(resolvedSite!==spcoaRadarResolvedSite){
+        spcoaRadarResolvedSite=resolvedSite;
+        spcoaSyncRadarControls();
+    }
     const singleReady=wantsSingle && spcoaL3ProtocolAvailable &&
         spcoaL3Data?.site===radarSite && spcoaL3ScanIsUsable(spcoaL3Data);
     if(wantsSingle && !singleReady &&
@@ -8524,7 +8545,7 @@ function spcoaRadarRefresh(){
                 (usePalette?"custom colors":(spcoaRadarPaletteLastError?"original IEM colors — custom unavailable":spcoaRadarMode.toUpperCase()))+
                 ") · CONUS mosaic, UTC scan unverified · "+p.opacity+"% opacity";
         if(wantsSingle && !singleReady)
-            spcoaRadarActiveLabel += spcoaL3Error ? " · N0B unavailable: "+spcoaL3Error : " · fetching "+p.site+" N0B";
+            spcoaRadarActiveLabel += spcoaL3Error ? " · N0B unavailable: "+spcoaL3Error : " · fetching "+radarSite+" N0B";
         spcoaRadarStatus(spcoaRadarFailure || (
             spcoaRadarReady ? spcoaRadarActiveLabel+" · Imagery loaded; clear areas are transparent"
                 : "Loading "+spcoaRadarActiveLabel));
