@@ -1,4 +1,5 @@
-/* V134: Live NEXRAD base reflectivity radar overlay; V133 GOES selector preserved.
+/* V135: Correct IEM NEXRAD Web Mercator tile layer and top-origin tile coordinates.
+ * V134: Live NEXRAD base reflectivity radar overlay; V133 GOES selector preserved.
  * V133: Product-first GOES satellite selector; all 16 ABI bands before RGBs.
  * All imagery is requested from public NOAA/IEM/NASA/ECCC services; no account key. */
 /* V114: City labels and Cities controls removed from all map views and exports. */
@@ -167,7 +168,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V134"; // V133: ABI-first product categories; no provider labels in selector
+const SPCOA_VIEWER_BUILD = "V135"; // Fixed radar tile projection, coordinate origin, and messaging
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1292,11 +1293,12 @@ spcoaInstallGoesControls();
    V134 — LIVE NEXRAD BASE REFLECTIVITY (IEM TMS)
    Independent of GOES and SPCOA analyses; not historical or time-matched.
    IEM generates its CONUS N0Q-format mosaic from Level III N0B observations.
-   The IEM TMS interface uses bottom-origin (TMS) Y coordinates: scheme="tms".
+   Use IEM's Web Mercator (-900913) layer and XYZ/top-origin Y coordinates,
+   as shown in its working Bing Maps tile integrations. Do NOT invert Y.
    ========================================================================================= */
 const SPCOA_RADAR_PREFS_KEY = "spcoa_radar_overlay_v134";
 const SPCOA_RADAR_REFRESH_MS = 5 * 60 * 1000;
-const SPCOA_RADAR_TMS_BASE = "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q";
+const SPCOA_RADAR_TMS_BASE = "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913";
 const SPCOA_RADAR_DEFAULTS = Object.freeze({enabled:false,opacity:85});
 let spcoaRadarOverride = null;
 function spcoaValidateRadarPrefs(value) {
@@ -7722,11 +7724,11 @@ function spcoaRadarRefresh(){
         if(key!==spcoaRadarActiveKey || !map.getLayer(SPCOA_RADAR_LAYER_ID)){
             spcoaRadarStatus("Loading base reflectivity...");
             spcoaRadarRemoveLayer();
-            // IEM TileCache uses TMS (inverted Y), NOT XYZ; MapLibre handles
-            // coordinate conversion with scheme="tms".
+            // IEM's Web Mercator radar endpoint expects top-origin XYZ tile Y.
+            // The generic TMS scheme inverted Y and requested the wrong hemisphere.
             const url=SPCOA_RADAR_TMS_BASE+"/{z}/{x}/{y}.png?v="+bucket;
             map.addSource(SPCOA_RADAR_LAYER_ID,{
-                type:"raster",tiles:[url],tileSize:256,scheme:"tms",
+                type:"raster",tiles:[url],tileSize:256,scheme:"xyz",
                 attribution:'<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Radar: Iowa Environmental Mesonet / NWS NEXRAD</a>'
             });
             map.addLayer({
@@ -7783,7 +7785,7 @@ map.on("load",()=>spcoaRadarSchedule(150));
 map.on("sourcedata",event=>{
     if(event.sourceId===SPCOA_RADAR_LAYER_ID && event.isSourceLoaded){
         spcoaRadarReady=true;
-        if(spcoaRadarActiveLabel)spcoaRadarStatus(spcoaRadarActiveLabel);
+        if(spcoaRadarActiveLabel)spcoaRadarStatus(spcoaRadarActiveLabel+" · Tiles loaded (echo-free areas are transparent)");
     }
 });
 map.on("error",event=>{
