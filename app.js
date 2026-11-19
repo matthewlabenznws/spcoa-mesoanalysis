@@ -1,4 +1,4 @@
-/* V126: GOES-East satellite imagery exclusively through UW–Madison SSEC RealEarth. */
+/* V127: Registered RealEarth access key support + browser-only authorization test. */
 /* V114: City labels and Cities controls removed from all map views and exports. */
 /* V96 SCOPE FIX — 2026-11-03
    Restores rendering in the multi-panel map iframe: helper functions defined
@@ -165,7 +165,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V126"; // V126: SSEC RealEarth-only GOES East
+const SPCOA_VIEWER_BUILD = "V127"; // V127: registered RealEarth key with private browser test
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1034,7 +1034,7 @@ function spcoaInstallMapBackgroundSelector() {
 spcoaInstallMapBackgroundSelector();
 
 /* =========================================================================================
-   V126 — SSEC RealEarth GOES observations (independent of Mapbox)
+   V127 — Registered SSEC RealEarth GOES observations (independent of Mapbox)
    Satellite imagery is independent of SPCOA fields and the Mapbox land-image
    basemap. All panels share the same GOES settings. Historical mode only
    displays a verified scan at or before the selected SPCOA analysis.
@@ -1050,6 +1050,26 @@ const SPCOA_GOES_PREFS_KEY = "spcoa_goes_observations_v124";
  * Tiles:  https://wms.ssec.wisc.edu/doc/dataaccess.php
  */
 const SPCOA_REALEARTH_URL = "https://wms.ssec.wisc.edu";
+/* SSEC requires an accesskey on imagery requests for registered/referrer-based limits.
+ * Leave the published key empty while testing. Paste your key into the site's
+ * GOES controls (stored only in YOUR browser), not into ChatGPT or GitHub.
+ * Optional LATER: put a referrer-restricted publishable key below so all
+ * site visitors can use it; note that it WILL be visible in public JavaScript
+ * and in network requests, and all visitors share your account quotas.
+ */
+const SPCOA_REALEARTH_PUBLISHED_ACCESS_KEY = "";
+const SPCOA_REALEARTH_LOCAL_KEY_STORAGE = "spcoa_realearth_access_key_v1";
+function spcoaRealEarthAccessKey() {
+    try {
+        const local = String(localStorage.getItem(SPCOA_REALEARTH_LOCAL_KEY_STORAGE)||"").trim();
+        if (local) return local;
+    } catch (_) {}
+    return String(SPCOA_REALEARTH_PUBLISHED_ACCESS_KEY||"").trim();
+}
+function spcoaRealEarthAuthSuffix() {
+    const key=spcoaRealEarthAccessKey();
+    return key ? "&accesskey="+encodeURIComponent(key) : "";
+}
 const SPCOA_REALEARTH_CONUS_BANDS = Object.freeze([
     ["01","Blue Visible (0.47 µm)"],
     ["02","Red Visible (0.64 µm)"],
@@ -1215,6 +1235,53 @@ function spcoaInstallGoesControls() {
     status.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;min-height:28px;";
     status.textContent = "Off";
     panel.append(opacityRow,opacity,status);
+    // Authentication is configured in the host sidebar only. The iframe map
+    // panels read the same browser-local setting without exposing a key here.
+    if (!__MP_CHILD) {
+        const auth=document.createElement("div");
+        auth.style.cssText="padding-top:7px;border-top:1px solid #31526a;display:flex;flex-direction:column;gap:5px;";
+        const caption=document.createElement("label");
+        caption.textContent="Registered RealEarth access key (this browser only)";
+        caption.htmlFor="spcoa-re-access-key";
+        caption.style.cssText="font-size:11px;color:#c7e4f3;";
+        const entry=document.createElement("input");
+        entry.id="spcoa-re-access-key";entry.type="password";entry.autocomplete="off";
+        entry.placeholder="Paste access key here";
+        entry.style.cssText="width:100%;box-sizing:border-box;padding:6px;border:1px solid #527085;border-radius:4px;background:#173348;color:#fff;";
+        const actions=document.createElement("div");
+        actions.style.cssText="display:flex;gap:6px;";
+        const save=document.createElement("button");
+        save.type="button";save.textContent="Save key locally";
+        const clear=document.createElement("button");
+        clear.type="button";clear.textContent="Clear local key";
+        for(const button of [save,clear])button.style.cssText="padding:5px 6px;font-size:10px;cursor:pointer;border:1px solid #527085;border-radius:4px;background:#173348;color:#fff;";
+        const note=document.createElement("div");
+        note.style.cssText="font-size:10px;color:#9dc2d9;line-height:1.4;";
+        const updateNote=()=>{
+            let present=false;
+            try {present=!!localStorage.getItem(SPCOA_REALEARTH_LOCAL_KEY_STORAGE);}catch(_){}
+            note.textContent=present ?
+                "Local access key saved. Only this browser will use it. Reload or change a satellite layer to test." :
+                "No local key saved. Other website visitors still use anonymous limits unless a public key is configured.";
+        };
+        const notifyPanels=()=>{
+            document.querySelectorAll("iframe").forEach(frame=>{
+                try {frame.contentWindow?.postMessage({type:"spcoa-realearth-auth-changed"},window.location.origin);}catch(_){}
+            });
+        };
+        save.addEventListener("click",()=>{
+            const value=entry.value.trim();
+            if(!value || value.length>256){note.textContent="Enter a valid access key (up to 256 characters).";return;}
+            try {localStorage.setItem(SPCOA_REALEARTH_LOCAL_KEY_STORAGE,value);entry.value="";updateNote();notifyPanels();}
+            catch(_) {note.textContent="Browser blocked key storage; try a normal browser window.";}
+        });
+        clear.addEventListener("click",()=>{
+            try {localStorage.removeItem(SPCOA_REALEARTH_LOCAL_KEY_STORAGE);}catch(_){}
+            entry.value="";updateNote();notifyPanels();
+        });
+        actions.append(save,clear);auth.append(caption,entry,actions,note);panel.appendChild(auth);
+        updateNote();
+    }
     const credit=document.createElement("div");
     credit.style.cssText="font-size:10px;color:#9dc2d9;line-height:1.5;";
     credit.textContent="RealEarth imagery credit: Source: SSEC RealEarth, UW-Madison. ";
@@ -7328,7 +7395,7 @@ window.addEventListener("message", event => {
 
 
 /* =========================================================================================
-   V126 SATELLITE RASTER UNDERLAY — SSEC RealEarth XYZ tiles only
+   V127 SATELLITE RASTER UNDERLAY — SSEC RealEarth API tiles with access keys
    ========================================================================================= */
 const SPCOA_GOES_SOURCE_ID = "spcoa-goes-observations";
 let spcoaGoesActiveKey = null;
@@ -7415,7 +7482,7 @@ async function spcoaRealEarthLoadTimes(productId,force=false) {
         const controller=new AbortController();
         const timeout=setTimeout(()=>controller.abort(),10000);
         try {
-            const url=SPCOA_REALEARTH_URL+"/api/times?products="+encodeURIComponent(productId);
+            const url=SPCOA_REALEARTH_URL+"/api/times?products="+encodeURIComponent(productId)+spcoaRealEarthAuthSuffix();
             const response=await fetch(url,{signal:controller.signal,cache:"no-store"});
             if(!response.ok)throw new Error("HTTP "+response.status);
             const times=spcoaRealEarthParseTimes(await response.json());
@@ -7432,17 +7499,18 @@ async function spcoaRealEarthLoadTimes(productId,force=false) {
     }
 }
 function spcoaRealEarthRasterUrl(productId,timestamp) {
-    const base=SPCOA_REALEARTH_URL+"/tiles/"+encodeURIComponent(productId);
+    // Registered requests use the documented RealEarth tile API. Unlike the
+    // path-only /tiles URLs, this can append the user's accesskey parameter.
+    // The same product + UTC scan is used across all tiles in the viewport.
+    let product=productId;
     if(timestamp!==null) {
-        // Freeze every tile on the SAME UTC scan. RealEarth's direct tile path
-        // is /tiles/PRODUCT/YYYYMMDD/HHMMSS/{z}/{x}/{y}.png.
         const d=new Date(timestamp).toISOString();
-        return base+"/"+d.slice(0,10).replace(/-/g,"")+"/"+
-            d.slice(11,19).replace(/:/g,"")+"/{z}/{x}/{y}.png";
+        product += "_"+d.slice(0,10).replace(/-/g,"")+"_"+d.slice(11,19).replace(/:/g,"");
     }
-    // Without metadata, latest may update under the same URL. Explicit cache
-    // revision forces MapLibre and browser caches to reload every 3 minutes.
-    return base+"/{z}/{x}/{y}.png?revision="+Math.floor(Date.now()/180000);
+    let url=SPCOA_REALEARTH_URL+"/api/image?products="+encodeURIComponent(product)+
+        "&x={x}&y={y}&z={z}&format=png"+spcoaRealEarthAuthSuffix();
+    if(timestamp===null)url+="&revision="+Math.floor(Date.now()/180000);
+    return url;
 }
 function spcoaGoesAttribution() {
     return '<a href="https://www.ssec.wisc.edu/realearth/" target="_blank" rel="noopener noreferrer">Source: SSEC RealEarth, UW-Madison</a>';
@@ -7513,7 +7581,8 @@ async function spcoaGoesRefresh(force=false) {
         return;
     }
     const url=spcoaRealEarthRasterUrl(config.productId,t);
-    const key=p.product+"|"+(t===null ? url : t);
+    // Include full tile URL in cache identity so changing credentials reloads tiles.
+    const key=p.product+"|"+url;
     try {
         if(key!==spcoaGoesActiveKey || !map.getLayer(SPCOA_GOES_SOURCE_ID)) {
             spcoaGoesRemoveLayer();
@@ -7576,8 +7645,12 @@ window.addEventListener("spcoa-goes-settings-changed",event=>{
     }
 });
 window.addEventListener("message",event=>{
-    if(event.origin!==window.location.origin || event.data?.type!=="spcoa-goes-sync" || !__MP_CHILD)return;
-    spcoaSaveGoesPrefs(event.data.prefs,false);
+    if(event.origin!==window.location.origin || !__MP_CHILD)return;
+    if(event.data?.type==="spcoa-goes-sync") spcoaSaveGoesPrefs(event.data.prefs,false);
+    if(event.data?.type==="spcoa-realearth-auth-changed") {
+        // Reload source even if product and valid time are unchanged.
+        void spcoaGoesRefresh(true);
+    }
 });
 window.addEventListener("storage",event=>{
     if(event.key===SPCOA_GOES_PREFS_KEY){
@@ -7585,6 +7658,7 @@ window.addEventListener("storage",event=>{
         spcoaSyncGoesControls();
         spcoaGoesSchedule();
     }
+    if(event.key===SPCOA_REALEARTH_LOCAL_KEY_STORAGE)void spcoaGoesRefresh(true);
 });
 map.on("load",()=>spcoaGoesSchedule(100));
 map.on("sourcedata",event=>{
