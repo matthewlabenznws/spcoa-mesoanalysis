@@ -1,4 +1,4 @@
-/* V127: Registered RealEarth access key support + browser-only authorization test. */
+/* V128: Hide manual RealEarth key entry when a site-wide published access key is configured. */
 /* V114: City labels and Cities controls removed from all map views and exports. */
 /* V96 SCOPE FIX — 2026-11-03
    Restores rendering in the multi-panel map iframe: helper functions defined
@@ -165,7 +165,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V127"; // V127: registered RealEarth key with private browser test
+const SPCOA_VIEWER_BUILD = "V128"; // V128: auto-hide access-key entry when public key configured
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1235,9 +1235,10 @@ function spcoaInstallGoesControls() {
     status.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;min-height:28px;";
     status.textContent = "Off";
     panel.append(opacityRow,opacity,status);
-    // Authentication is configured in the host sidebar only. The iframe map
-    // panels read the same browser-local setting without exposing a key here.
-    if (!__MP_CHILD) {
+    // Only show the manual key form while NO site-wide key is configured.
+    // Once the published referrer-restricted key is set, every visitor uses it
+    // automatically and the sidebar credential form is hidden.
+    if (!__MP_CHILD && !SPCOA_REALEARTH_PUBLISHED_ACCESS_KEY.trim()) {
         const auth=document.createElement("div");
         auth.style.cssText="padding-top:7px;border-top:1px solid #31526a;display:flex;flex-direction:column;gap:5px;";
         const caption=document.createElement("label");
