@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V147"; // Active-panel authoritative auto NEXRAD selection
+const SPCOA_VIEWER_BUILD = "V148"; // Auto radar selection and availability states kept separate
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1726,7 +1726,7 @@ function spcoaL3RefreshStationSelect(){
     // A saved manual selection must not masquerade as the selected auto radar.
     const locating = document.createElement("option");
     locating.value = "";
-    locating.textContent = "Locating nearest radar...";
+    locating.textContent = "Waiting for map...";
     select.append(locating);
     for(const station of stations){
         const option=document.createElement("option");
@@ -3486,11 +3486,25 @@ if (!__MP_CHILD) {
             if(spcoaReadRadarPrefs().mode==="auto"){
                 const hostSite=document.getElementById("spcoa-radar-site");
                 const snapshot=d.defaultView?.__spcoaRadarAutoState?.();
-                // Without a loaded child snapshot, show "Locating" rather than
-                // a misleading KLNX saved preference (or an unrelated radar).
-                const shown=snapshot?.mode==="auto" && snapshot.enabled &&
-                    snapshot.desired && SPCOA_L3_CATALOG.has(snapshot.desired)
-                    ? snapshot.desired : null;
+                // The child reports the radar it is attempting (`desired`),
+                // plus the geographic nearest station (`nearest`). When all
+                // six nearby scans have failed, `desired` is null. Still show
+                // the actual nearest geographic station rather than leaving
+                // the selector stuck at "Waiting for map..." forever.
+                // The Radar valid line separately reports data availability.
+                const known=id=>id && SPCOA_L3_CATALOG.has(id) ? id : null;
+                let shown=known(snapshot?.mode==="auto" && snapshot.enabled
+                    ? snapshot.desired : null);
+                if(!shown)shown=known(snapshot?.nearest);
+                const center=snapshot?.center || d.defaultView?.__spcoaRadarMapCenter?.();
+                if(!shown && Number.isFinite(center?.lat) &&
+                    Number.isFinite(center?.lng)) {
+                    shown=known(spcoaL3NearestAt(center.lat,center.lng));
+                }
+                // If the map iframe hasn't finished initializing, preserve
+                // its last valid selection instead of clearing it on every
+                // 350-ms host synchronization pass.
+                if(!shown)shown=known(spcoaRadarResolvedSite);
                 spcoaRadarResolvedSite=shown;
                 if(hostSite){
                     const value=shown || "";
@@ -8239,6 +8253,13 @@ const map = new maplibregl.Map({
 
 });
 
+// Early camera snapshot is available as soon as the child map exists. This
+// lets the visible host show the proper nearest radar even while the N0B
+// network/decoder initialization or the late radar-state getter is pending.
+window.__spcoaRadarMapCenter = () => {
+    const c = map.getCenter();
+    return {lat: c.lat, lng: c.lng};
+};
 
 /* =========================================================================================
    OPTIONAL MAPBOX SATELLITE IMAGERY BACKGROUND (V25)
@@ -8668,12 +8689,17 @@ const SPCOA_RADAR_LAYER_ID="spcoa-nexrad-base-reflectivity";
 window.__spcoaRadarAutoState=()=>{
     const prefs=spcoaReadRadarPrefs();
     const center=map.getCenter();
+    // Geographic nearest is always defined when a valid map center and
+    // station catalog are present, even if the nearest N0B feed is down.
+    // `desired` is the radar actually being attempted after availability
+    // fallbacks; NEVER conflate `nearest` with a scan that has loaded.
+    const nearest=spcoaL3NearestAt(center.lat,center.lng);
     const desired=prefs.enabled && prefs.mode==="auto" ? spcoaL3DesiredSite(prefs) : null;
     const loadedMatch=spcoaRadarActiveKey?.match(/^n0b\|(K[A-Z0-9]{3})\|/);
     const loaded=loadedMatch ? loadedMatch[1] : null;
     const current=!!desired && desired===loaded && !!spcoaRadarReady &&
         spcoaL3Data?.site===desired && spcoaL3ScanIsUsable(spcoaL3Data);
-    return {enabled:prefs.enabled,mode:prefs.mode,desired,loaded,ready:current,
+    return {enabled:prefs.enabled,mode:prefs.mode,nearest,desired,loaded,ready:current,
         center:{lat:center.lat,lng:center.lng},
         scanTime:current ? spcoaL3Data.scan.date.toISOString():null};
 };
@@ -8743,10 +8769,15 @@ function spcoaRadarRefresh(){
     // When every nearby site has recently failed, show a specific explanation
     // rather than reusing the last manual station or drawing the CONUS mosaic.
     if(wantsSingle && !radarSite){
-        spcoaRadarResolvedSite=null;
+        // All nearby scans may temporarily be unavailable. We still know
+        // the nearest geographic radar; distinguish selection from imagery.
+        const center = map.getCenter();
+        spcoaRadarResolvedSite = p.mode === "auto"
+            ? spcoaL3NearestAt(center.lat, center.lng) : null;
+        spcoaSyncRadarControls();
         spcoaRadarRemoveLayer();
         spcoaRadarSetValidText(p,null,false);
-        spcoaRadarStatus("No recent N0B scans available among the nearby radars; retrying automatically.");
+        spcoaRadarStatus("No current N0B scan from nearby radars; will retry.");
         return;
     }
     // The radar site selector shows which radar is actually being requested in
