@@ -164,7 +164,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V119";
+const SPCOA_VIEWER_BUILD = "V120";
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1206,6 +1206,55 @@ function installSpcoaChangeControls() {
 }
 installSpcoaChangeControls();
 
+/* =============================================================================
+   V120 — VERIFIED PRODUCT VALID TIMES (visible in both host and child)
+   Child panels are the source of truth; the host mirrors the active child.
+   No assertions of availability are made until archive verification succeeds.
+   ============================================================================= */
+function spcoaV120InstallStatusPanel() {
+    const sidebar=document.getElementById('sidebar');
+    if (!sidebar || document.getElementById('spcoa-v120-data-status')) return;
+    if (!document.getElementById('spcoa-v120-status-style')) {
+        const style=document.createElement('style');
+        style.id='spcoa-v120-status-style';
+        style.textContent=`
+          #spcoa-v120-data-status {box-sizing:border-box;margin:8px 8px 12px;padding:10px 11px;
+             border-radius:8px;border:1px solid rgba(147,165,185,.35);background:rgba(20,34,48,.7);
+             color:#edf4fc;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.45;}
+          #spcoa-v120-data-status .spcoa-v120-head {font-weight:700;font-size:12px;margin-bottom:5px;}
+          #spcoa-v120-data-status .spcoa-v120-row {display:flex;align-items:baseline;justify-content:space-between;gap:6px;
+             padding:3px 0;border-top:1px solid rgba(180,196,210,.13);}
+          #spcoa-v120-data-status .spcoa-v120-label {white-space:nowrap;color:#d9e7f5;}
+          #spcoa-v120-data-status .spcoa-v120-value {text-align:right;font-variant-numeric:tabular-nums;min-width:0;overflow-wrap:anywhere;}
+          #spcoa-v120-data-status .spcoa-v120-ok {color:#9ee1bd;}
+          #spcoa-v120-data-status .spcoa-v120-warn {color:#ffe29e;}
+          #spcoa-v120-data-status .spcoa-v120-error {color:#ffacac;}
+          #spcoa-v120-data-status .spcoa-v120-muted {color:#b5c3d0;}
+          #spcoa-v120-data-status .spcoa-v120-note {margin-top:6px;font-size:10px;color:#b8c9d8;}
+        `;
+        document.head.appendChild(style);
+    }
+    const root=document.createElement('section');
+    root.id='spcoa-v120-data-status';
+    root.setAttribute('role','group');
+    root.setAttribute('aria-label','SPCOA product valid times');
+    const head=document.createElement('div');
+    head.className='spcoa-v120-head';head.textContent='Data Valid Times (UTC)';
+    root.appendChild(head);
+    for (const [key,label] of [['analysis','SPCOA Analysis'],['ecape','ECAPE'],['hodographs','Hodographs'],['soundings','Soundings']]) {
+        const row=document.createElement('div');row.className='spcoa-v120-row';
+        const name=document.createElement('span');name.className='spcoa-v120-label';name.textContent=label;
+        const value=document.createElement('span');value.id=`spcoa-v120-${key}`;
+        value.className='spcoa-v120-value spcoa-v120-muted';value.textContent='Checking…';
+        row.append(name,value);root.appendChild(row);
+    }
+    const note=document.createElement('div');note.id='spcoa-v120-note';note.className='spcoa-v120-note';
+    note.textContent='Older diagnostic data remain at their original valid times; they are not adjusted to the selected SPCOA hour.';
+    root.appendChild(note);
+    sidebar.prepend(root);
+}
+spcoaV120InstallStatusPanel();
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -1856,6 +1905,15 @@ if (!__MP_CHILD) {
                 const host = document.getElementById(id), child = d.getElementById(id);
                 if (host && child && !(hostGifExporting && id === "status")) host.textContent = child.textContent;
             });
+            // V120: status is computed in the active iframe, never guessed in the shell.
+            const hostFreshness=document.getElementById('spcoa-v120-data-status');
+            const childFreshness=d.getElementById('spcoa-v120-data-status');
+            if (hostFreshness && childFreshness &&
+                hostFreshness.dataset.signature!==childFreshness.dataset.signature) {
+                // The HTML is produced entirely by our own textContent-based renderer.
+                hostFreshness.innerHTML=childFreshness.innerHTML;
+                hostFreshness.dataset.signature=childFreshness.dataset.signature||'';
+            }
             updateSpcoaDensityUi();
             const hs = document.getElementById("timeline-slider"), cs = d.getElementById("timeline-slider");
             if (hs && cs && !hostTimelineDragging) {
@@ -4598,6 +4656,111 @@ const spcoaProductVerified = {
 };
 const spcoaProductMissingUntil = new Map();
 const spcoaProductProbes = new Map();
+/* Each product gets its own explicit verification state. A visible time is
+   never inferred from the SPCOA run merely because its archive is missing. */
+const spcoaV120ProductStates={
+    ecape:{analysisRun:null,phase:'idle',checkedAt:0},
+    hodographs:{analysisRun:null,phase:'idle',checkedAt:0},
+    soundings:{analysisRun:null,phase:'idle',checkedAt:0}
+};
+let spcoaV120TimelineError=false;
+let spcoaV120LastTimelineCheck=0;
+function spcoaV120LatestVerified(product,analysisRun) {
+    const seen=spcoaProductVerified[product];
+    if (!seen || !analysisRun) return null;
+    for (let age=0;age<=SPCOA_FALLBACK_MAX_HOURS;age++) {
+        const run=spcoaOffsetRunHour(analysisRun,-age);
+        if (run && seen.has(run)) return run;
+    }
+    return null;
+}
+function spcoaV120HourDifference(analysisRun,productRun) {
+    const a=Date.parse(runIdToIso(analysisRun)||'');
+    const b=Date.parse(runIdToIso(productRun)||'');
+    return Number.isFinite(a)&&Number.isFinite(b)?Math.max(0,Math.round((a-b)/3600000)):null;
+}
+function spcoaV120RunLabel(run) {
+    const iso=runIdToIso(run);
+    if (!iso) return '—';
+    const d=new Date(iso);
+    return `${d.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})} ${String(d.getUTCHours()).padStart(2,'0')}Z`;
+}
+function spcoaV120Write(key,message,level='muted',tooltip='') {
+    const node=document.getElementById(`spcoa-v120-${key}`);
+    if (!node) return;
+    const newClass=`spcoa-v120-value spcoa-v120-${level}`;
+    if (node.textContent!==message) node.textContent=message;
+    if (node.className!==newClass) node.className=newClass;
+    if (node.title!==tooltip) node.title=tooltip;
+}
+let spcoaV120LastStatusSignature='';
+let spcoaV120RenderedRun=null;
+function spcoaV120MissingMetadata() {
+    if (!currentRun || spcoaV120RenderedRun!==currentRun || timelineState.switching ||
+        typeof selectedProductKeys!=='function') return [];
+    const picked=selectedProductKeys();
+    const fields=(picked.scalar||[]).filter(k=>k!=='ecape' && !fieldMetadata?.[k]);
+    const vectors=(picked.vectors||[]).filter(k=>!vectorMetadata?.[k]);
+    const contours=(picked.contours||[]).filter(k=>!contourMetadata?.[k]);
+    return [...fields,...vectors,...contours];
+}
+function spcoaV120UpdateStatus() {
+    const root=document.getElementById('spcoa-v120-data-status');
+    if (!root || !currentRun) return;
+    const label=spcoaV120RunLabel(currentRun);
+    const isLatest=currentRun===timelineState.latestRun;
+    const ageHours=(Date.now()-Date.parse(runIdToIso(currentRun)||''))/3600000;
+    let mainNote=isLatest?'latest posted':'archive selected';
+    if (isLatest && ageHours>4) mainNote=`${Math.floor(ageHours)}h since valid`;
+    if (spcoaV120TimelineError) mainNote+=' · refresh failed';
+    spcoaV120Write('analysis',`${label} · ${mainNote}`,
+        spcoaV120TimelineError?'warn':(isLatest&&ageHours>4?'warn':'ok'),
+        `Valid: ${runIdToIso(currentRun)}. Latest timeline check: ${spcoaV120LastTimelineCheck?new Date(spcoaV120LastTimelineCheck).toISOString():'not checked'}`);
+    const statusParts=[currentRun,timelineState.latestRun,spcoaV120TimelineError];
+    for (const product of ['ecape','hodographs','soundings']) {
+        const record=spcoaV120ProductStates[product];
+        const run=spcoaV120LatestVerified(product,currentRun);
+        const checkedThisHour=record.analysisRun===currentRun;
+        const phase=checkedThisHour?record.phase:'idle';
+        const lag=run?spcoaV120HourDifference(currentRun,run):null;
+        let message,level='muted';
+        if (run) {
+            message=`${spcoaV120RunLabel(run)}${lag>0?` · ${lag}h older`:''}`;
+            level=lag!==null&&lag>=3?'warn':'ok';
+            if (phase==='checking') message+=' · checking';
+            if (phase==='error') message+=' · recheck failed';
+        } else if (phase==='checking') message='Checking archive…';
+        else if (phase==='unavailable') {message='No recent archive';level='error';}
+        else if (phase==='error') {message='Unable to check';level='error';}
+        else message='Not checked';
+        spcoaV120Write(product,message,level,
+            run?`Verified valid time: ${runIdToIso(run)} (selected SPCOA: ${runIdToIso(currentRun)}).`
+               :(phase==='idle'?'Enable this product to check its availability.':
+                 `Checked against ${currentRun}; archives remain unavailable until published.`));
+        statusParts.push(product,run||'',phase,record.checkedAt);
+    }
+    const foot=document.getElementById('spcoa-v120-note');
+    const message=spcoaV120TimelineError
+        ? 'Timeline refresh failed. Showing last successfully loaded analysis; verify connectivity before operational use.'
+        : 'Each product is displayed at its own verified valid time. “Not checked” means its data have not been requested.';
+    const missingMeta=spcoaV120MissingMetadata();
+    const finalMessage=missingMeta.length
+        ? `${message} Selected layers without metadata: ${missingMeta.slice(0,4).join(', ')}${missingMeta.length>4?'…':''}.`
+        : message;
+    if (foot && foot.textContent!==finalMessage) foot.textContent=finalMessage;
+    const signature=JSON.stringify(statusParts)+String(mainNote)+finalMessage;
+    if (signature!==spcoaV120LastStatusSignature) {
+        root.dataset.signature=signature;
+        spcoaV120LastStatusSignature=signature;
+    }
+}
+function spcoaV120SetProductState(product,analysisRun,phase) {
+    const record=spcoaV120ProductStates[product];
+    if (!record || (currentRun && analysisRun!==currentRun)) return;
+    record.analysisRun=analysisRun;record.phase=phase;
+    if (phase!=='checking') record.checkedAt=Date.now();
+    spcoaV120UpdateStatus();
+}
 function spcoaOffsetRunHour(run, deltaHours) {
     const iso = runIdToIso(run);
     if (!iso) return null;
@@ -4626,13 +4789,19 @@ async function spcoaProbeProductRun(product, run, force=false) {
         try {
             if (product==='ecape') {
                 const r=await fetch(`${S3_BASE_URL}/runs/${run}/ecape/metadata.json`, {cache:'no-store'});
-                if (!r.ok) return false;
+                if (!r.ok) {
+                    if (![403,404].includes(r.status))
+                        console.warn(`ECAPE archive ${run}: HTTP ${r.status}`);
+                    return false;
+                }
                 const meta=await r.json();
                 if (meta?.run!==run || meta?.native_horizontal_stride!==1 || meta.complete===false) return false;
             } else if (product==='soundings') {
                 // The sounding loader already validates run, completeness,
                 // native grid dimensions, binary format and schema.
                 await spcoaSndManifest(run);
+                // A complete manifest alone can precede its geographic index.
+                await spcoaSndIndex(run);
             } else if (product==='hodographs') {
                 const r=await fetch(`${S3_BASE_URL}/runs/${run}/overlays/hodographs/metadata.json`,{cache:'no-store'});
                 if (r.ok) {
@@ -4663,13 +4832,26 @@ async function spcoaProbeProductRun(product, run, force=false) {
     return task;
 }
 async function spcoaResolveProductRun(product, analysisRun=currentRun, force=false) {
-    if (!analysisRun) return null;
-    for (let age=0;age<=SPCOA_FALLBACK_MAX_HOURS;age++) {
-        const run=spcoaOffsetRunHour(analysisRun,-age);
-        if (!run) break;
-        if (await spcoaProbeProductRun(product,run,force)) return run;
+    if (!analysisRun || !spcoaProductVerified[product]) return null;
+    spcoaV120SetProductState(product,analysisRun,'checking');
+    try {
+        for (let age=0;age<=SPCOA_FALLBACK_MAX_HOURS;age++) {
+            const run=spcoaOffsetRunHour(analysisRun,-age);
+            if (!run) break;
+            // Already verified complete archives terminate the search: a
+            // newer incomplete hour must never evict the working older hour.
+            if (await spcoaProbeProductRun(product,run,force)) {
+                spcoaV120SetProductState(product,analysisRun,'ready');
+                return run;
+            }
+        }
+        spcoaV120SetProductState(product,analysisRun,'unavailable');
+        return null;
+    } catch(error) {
+        console.warn(`SPCOA ${product} archive check failed:`,error);
+        spcoaV120SetProductState(product,analysisRun,'error');
+        return spcoaV120LatestVerified(product,analysisRun);
     }
-    return null;
 }
 // Refresh only products actually in use; do not alter their workflow cron.
 let spcoaFallbackRefreshInFlight=false;
@@ -4687,7 +4869,7 @@ async function spcoaRefreshIndependentProducts() {
         await Promise.all(products.map(async product=>{
             const before=spcoaProductRun(product,analysisRun);
             const beforeVerified=spcoaProductVerified[product].has(before);
-            const found=await spcoaResolveProductRun(product,analysisRun,true);
+            const found=await spcoaResolveProductRun(product,analysisRun,false);
             if (analysisRun!==currentRun || !found) return;
             const after=spcoaProductRun(product,analysisRun);
             if (before===after && beforeVerified) return;
@@ -7444,7 +7626,7 @@ async function spcoaLoadProductMetadata(runId, bundle, kind, field) {
         : `runs/${runId}/overlays/${field}/metadata.json`;
     const task = (async () => {
         const meta = await fetchJSON(`${S3_BASE_URL}/${path}`);
-        if (field === 'ecape' && (meta?.run !== sourceRun || meta?.native_horizontal_stride !== 1)) {
+        if (field === 'ecape' && (meta?.run !== sourceRun || meta?.native_horizontal_stride !== 1 || meta.complete === false)) {
             throw new Error(`ECAPE metadata does not match ${sourceRun}`);
         }
         store[field] = meta;
@@ -7525,6 +7707,7 @@ async function applyRun(runItem, { render = true, preload = true, scrub = false 
             timelineScrubPendingRun.run !== runItem.run) return false;
         invalidateNumericalRenders();
         currentRun = runItem.run;
+        spcoaV120UpdateStatus();
         currentAnalysisTime = runItem.analysis_time || bundle.metadata.analysis_time || runIdToIso(runItem.run);
         void refreshSurfaceObsForRun();
         void refreshHodographsForRun();
@@ -7546,6 +7729,7 @@ async function applyRun(runItem, { render = true, preload = true, scrub = false 
         timelineState.currentIndex = windowRuns.findIndex(item => item.run === currentRun);
         timelineState.isLive = currentRun === timelineState.latestRun;
         updateTimelineUi();
+        spcoaV120UpdateStatus();
         updateLegend();
         requestAnimationFrame(updateActiveLayersStrip);
         if (render) {
@@ -7556,6 +7740,7 @@ async function applyRun(runItem, { render = true, preload = true, scrub = false 
             } else await renderAll();
         }
         if (statusElement) statusElement.textContent = `Loaded ${currentRun}`;
+        spcoaV120RenderedRun=currentRun;
         if (currentRun === timelineState.latestRun) timelineState.pendingLiveSwitch = false;
         if (preload) scheduleAdjacentPreload();
         return true;
@@ -7565,6 +7750,7 @@ async function applyRun(runItem, { render = true, preload = true, scrub = false 
         return false;
     } finally {
         timelineState.switching = false;
+        spcoaV120UpdateStatus();
         if (timelineState.playing) scheduleNextPlaybackFrame();
     }
 }
@@ -7574,9 +7760,13 @@ async function loadLatestRun() {
     let manifest;
     try {
         manifest = await loadAvailableTimesManifest();
+        spcoaV120TimelineError=false;
+        spcoaV120LastTimelineCheck=Date.now();
     } catch (error) {
         console.warn("available_times.json unavailable; falling back to latest.json", error);
         const latest = await fetchJSON(`${S3_BASE_URL}/latest.json?t=${Date.now()}`);
+        spcoaV120TimelineError=false;
+        spcoaV120LastTimelineCheck=Date.now();
         timelineState.availableRuns = [{ run: latest.run, analysis_time: latest.analysis_time || runIdToIso(latest.run) }];
         timelineState.latestRun = latest.run;
     }
@@ -7733,24 +7923,39 @@ function scheduleAdjacentPreload() {
     else setTimeout(startPreload,180);
 }
 
+let spcoaV120ManifestRefreshInFlight=false;
 async function refreshAvailableTimes() {
+    if (spcoaV120ManifestRefreshInFlight || document.hidden || timelineState.switching || window.__spcoaGifExporting) return;
+    spcoaV120ManifestRefreshInFlight=true;
     try {
-        if (document.hidden || timelineState.switching || window.__spcoaGifExporting) return;
         const wasLive = timelineState.isLive;
         const oldLatest = timelineState.latestRun;
         await loadAvailableTimesManifest();
+        spcoaV120TimelineError=false;
+        spcoaV120LastTimelineCheck=Date.now();
         const followLive = wasLive || timelineState.pendingLiveSwitch ||
             (oldLatest && currentRun === oldLatest);
         if (followLive && timelineState.latestRun && timelineState.latestRun !== currentRun) {
             timelineState.pendingLiveSwitch = true;
             const latest = timelineState.availableRuns.find(item => item.run === timelineState.latestRun);
-            if (latest) await applyRun(latest);
+            if (latest) {
+                const switched=await applyRun(latest);
+                if (!switched) {
+                    spcoaV120TimelineError=true;
+                    console.warn('SPCOA V120: advertised latest run could not be loaded; keeping prior analysis');
+                }
+            }
         }
         updateTimelineUi();
+        spcoaV120UpdateStatus();
         // Products may publish later than the already-visible SPCOA hour.
         void spcoaRefreshIndependentProducts();
     } catch (error) {
-        console.warn("Timeline manifest refresh failed:", error);
+        spcoaV120TimelineError=true;
+        spcoaV120UpdateStatus();
+        console.warn("Timeline manifest refresh failed; retaining last good analysis:", error);
+    } finally {
+        spcoaV120ManifestRefreshInFlight=false;
     }
 }
 
@@ -19743,8 +19948,16 @@ requestAnimationFrame(renderAnnotations);
 /* Timeline manifest refresh is intentionally lightweight; tiles remain demand-loaded. */
 setInterval(refreshAvailableTimes, LIVE_MANIFEST_REFRESH_MS);
 document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && currentRun) refreshAvailableTimes();
+    if (!document.hidden && currentRun) {
+        void refreshAvailableTimes();
+        spcoaV120UpdateStatus();
+    }
 });
+window.addEventListener('online',()=>{
+    if (currentRun && !document.hidden) void refreshAvailableTimes();
+});
+// Even without a new publication, the live SPCOA age warning needs to advance.
+window.setInterval(()=>{if (!document.hidden) spcoaV120UpdateStatus();},60000);
 
 /* =========================================================================================
    MULTI-PANEL CHILD BRIDGE
