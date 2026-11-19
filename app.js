@@ -1057,7 +1057,7 @@ const SPCOA_REALEARTH_URL = "https://wms.ssec.wisc.edu";
  * site visitors can use it; note that it WILL be visible in public JavaScript
  * and in network requests, and all visitors share your account quotas.
  */
-const SPCOA_REALEARTH_PUBLISHED_ACCESS_KEY = "";
+const SPCOA_REALEARTH_PUBLISHED_ACCESS_KEY = "89e43d65cd1840f651ad1ee5a11190d9";
 const SPCOA_REALEARTH_LOCAL_KEY_STORAGE = "spcoa_realearth_access_key_v1";
 function spcoaRealEarthAccessKey() {
     try {
