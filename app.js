@@ -1,4 +1,4 @@
-/* V132: Add ECCC GeoMet public GOES-East WMS RGB/composite imagery to V131.
+/* V133: Product-first GOES satellite selector; all 16 ABI bands before RGBs.
  * All imagery is requested from public NOAA/IEM/NASA/ECCC services; no account key. */
 /* V114: City labels and Cities controls removed from all map views and exports. */
 /* V96 SCOPE FIX — 2026-11-03
@@ -166,7 +166,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V132"; // V132: + ECCC GeoMet GOES-East RGB WMS
+const SPCOA_VIEWER_BUILD = "V133"; // V133: ABI-first product categories; no provider labels in selector
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1035,7 +1035,7 @@ function spcoaInstallMapBackgroundSelector() {
 spcoaInstallMapBackgroundSelector();
 
 /* =========================================================================================
-   V132 — GOES observational imagery from NOAA/IEM/NASA/ECCC; no SSEC.
+   V133 — GOES observational imagery from NOAA/IEM/NASA/ECCC; no SSEC.
    NOAA NESDIS provides cached ArcGIS XYZ image tiles (256px, Web Mercator).
    IEM provides all 16 ABI channels through its public CONUS WMS GetMap.
    IMPORTANT: these "current" services do not expose an exact scan timestamp
@@ -1126,6 +1126,26 @@ const SPCOA_GOES_LAYER_CONFIG = Object.freeze({
             group:"Iowa Environmental Mesonet · ABI Bands"})
     ]))
 });
+/* V133: User-facing satellite menu is organized by what the image SHOWS,
+   not by who serves the tiles. Keep the actual provider metadata and legally
+   required map/export attribution in SPCOA_GOES_LAYER_CONFIG. */
+const SPCOA_GOES_SELECTOR_GROUPS = Object.freeze([
+    Object.freeze({label:"ABI Bands (1–16)",ids:Object.freeze(
+        SPCOA_GOES_ABI_BANDS.map(([band]) => "iem_band"+band))}),
+    Object.freeze({label:"RGB & Color Imagery",ids:Object.freeze([
+        "noaa_geocolor", "eccc_natural", "nasa_airmass", "nasa_dust",
+        "eccc_dust", "nasa_firetemp", "eccc_night_micro",
+        "eccc_day_convection", "eccc_ash", "eccc_so2"
+    ])}),
+    Object.freeze({label:"Day / Night Composites",ids:Object.freeze([
+        "eccc_snow_fog", "eccc_day_cloud_type", "eccc_sandwich",
+        "eccc_dayvis_nightir", "eccc_smoke", "eccc_landcloudfire",
+        "eccc_firetemp"
+    ])}),
+    Object.freeze({label:"Additional Imagery",ids:Object.freeze([
+        "noaa_ir", "noaa_water_vapor", "eccc_night_ir"
+    ])})
+]);
 // Convert recognized saved V124–V129 satellite choices; never request RealEarth.
 const SPCOA_GOES_LEGACY_PRODUCTS = Object.freeze({
     visible:"iem_band02", infrared:"noaa_ir", water_vapor:"iem_band08",
@@ -1206,7 +1226,7 @@ function spcoaInstallGoesControls() {
     heading.textContent = "GOES Satellite Observations";
     heading.style.cssText = "font-size:12px;";
     const description = document.createElement("div");
-    description.textContent = "NOAA native tiles, NASA GIBS RGB, ECCC GeoMet specialty RGB/day-night composites, and IEM 16 ABI bands. No SSEC account/key. Latest imagery only; historical SPCOA times are not synchronized.";
+    description.textContent = "Choose an ABI band, RGB product, or day/night composite. The latest available satellite imagery is not synchronized to historical SPCOA analysis times.";
     description.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;";
     function makeSelect(id,options,labelText) {
         const wrap = document.createElement("label");
@@ -1223,13 +1243,17 @@ function spcoaInstallGoesControls() {
     }
     panel.append(heading,description);
     const product = makeSelect("spcoa-goes-product",[["off","Off"]],"Imagery product");
-    // Group NOAA native tiles, NASA RGBs, ECCC GeoMet RGB/WMS and 16 IEM ABI bands.
-    // Native optgroups remain compatible with the host's existing select relay.
-    for (const [id,cfg] of Object.entries(SPCOA_GOES_LAYER_CONFIG)) {
-        let group=Array.from(product.children).find(node=>
-            node.tagName==="OPTGROUP" && node.label===cfg.group);
-        if(!group){group=document.createElement("optgroup");group.label=cfg.group;product.appendChild(group);}
-        group.appendChild(new Option(cfg.displayLabel||cfg.label,id));
+    // Explicit product-first order, independent of the data service.
+    // Retain stable option IDs for saved preferences and multi-panel relay.
+    for (const section of SPCOA_GOES_SELECTOR_GROUPS) {
+        const group = document.createElement("optgroup");
+        group.label = section.label;
+        for (const id of section.ids) {
+            const cfg = SPCOA_GOES_LAYER_CONFIG[id];
+            if (!cfg) { console.warn("Satellite menu: unknown product",id); continue; }
+            group.appendChild(new Option(cfg.displayLabel || cfg.label, id));
+        }
+        product.appendChild(group);
     }
     const mode = makeSelect("spcoa-goes-time-mode",[
         ["latest","Latest provider imagery (UTC scan time unverified)"]],"Observation time");
@@ -1252,10 +1276,6 @@ function spcoaInstallGoesControls() {
     status.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;min-height:28px;";
     status.textContent = "Off";
     panel.append(opacityRow,opacity,status);
-    const credit=document.createElement("div");
-    credit.style.cssText="font-size:10px;color:#9dc2d9;line-height:1.5;";
-    credit.textContent="Sources: NOAA NESDIS, NASA GIBS/ESDIS, ECCC GeoMet (Government of Canada), and Iowa Environmental Mesonet. Keep source attribution. ";
-    panel.appendChild(credit);
     const changed = () => spcoaSaveGoesPrefs({product:product.value,opacity:opacity.value,timeMode:mode.value});
     product.addEventListener("change",changed);
     mode.addEventListener("change",changed);
@@ -7359,7 +7379,7 @@ window.addEventListener("message", event => {
 
 
 /* =========================================================================================
-   V132 — Satellite underlay: NOAA XYZ, NASA GIBS WMTS, IEM and ECCC WMS.
+   V133 — Satellite underlay: NOAA XYZ, NASA GIBS WMTS, IEM and ECCC WMS.
    No SSEC requests, registration, access key or watermarking code.
    ========================================================================================= */
 const SPCOA_GOES_SOURCE_ID = "spcoa-goes-observations";
@@ -7482,10 +7502,8 @@ async function spcoaGoesRefresh(force=false) {
         spcoaGoesLastAnalysis=String(currentAnalysisTime||"");
         spcoaGoesActiveMode="latest";
         spcoaGoesActiveAnalysisAt=null;
-        spcoaGoesActiveLabel=(config.provider==="nesdis"?"NOAA NESDIS":
-            config.provider==="gibs"?"NASA GIBS":
-            config.provider==="geomet"?"ECCC GeoMet":"Iowa Mesonet")+
-            " · "+config.label+" · latest provider tiles (scan UTC unverified)"+
+        spcoaGoesActiveLabel=(config.displayLabel || config.label)+
+            " · latest available imagery (scan UTC unverified)"+
             " · "+p.opacity+"% opacity";
         spcoaGoesStatus((spcoaGoesTilesReady?"":"Loading ")+spcoaGoesActiveLabel);
     } catch(error) {
@@ -19949,7 +19967,7 @@ function spcoaGetSatelliteExportTile(z, x, y) {
 }
 
 async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
-    // V132: GOES is a MapLibre raster layer. The custom Mapbox-only tile
+    // V133: GOES is a MapLibre raster layer. The custom Mapbox-only tile
     // compositor cannot see it. Capture the real map framebuffer instead.
     if (spcoaGoesSelected()) {
         if (!map.getLayer("spcoa-goes-observations")) {
