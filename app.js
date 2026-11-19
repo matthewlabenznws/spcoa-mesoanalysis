@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V145"; // Auto nearest tries available nearby N0B stations; manual mode unchanged
+const SPCOA_VIEWER_BUILD = "V146"; // Radar station synchronization and reliable raster PNG capture
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3472,8 +3472,7 @@ if (!__MP_CHILD) {
                 const nearest=center?spcoaL3NearestAt(Number(center.lat),Number(center.lng)):null;
                 const childResolved=d.defaultView?.__spcoaRadarGetResolvedSite?.();
                 const shown=childResolved && SPCOA_L3_CATALOG.has(childResolved)?childResolved:
-                    (nearest && SPCOA_L3_CATALOG.has(nearest)?nearest:
-                    (childSite && SPCOA_L3_CATALOG.has(childSite.value)?childSite.value:null));
+                    (nearest && SPCOA_L3_CATALOG.has(nearest)?nearest:null);
                 if(hostSite && shown){
                     spcoaRadarResolvedSite=shown;
                     if(hostSite.value!==shown)hostSite.value=shown;
@@ -8649,8 +8648,12 @@ window.__spcoaRadarGetCenter=()=>{
 };
 // The visible multi-panel host must show the station the map is actually
 // loading, which might be the second-nearest if the closest radar is offline.
-window.__spcoaRadarGetResolvedSite=()=>spcoaReadRadarPrefs().mode==="auto"
-    ? spcoaRadarResolvedSite : null;
+window.__spcoaRadarGetResolvedSite=()=>{
+    const prefs=spcoaReadRadarPrefs();
+    // Use the radar that this iframe's *current camera* is requesting;
+    // the last successfully rendered radar may belong to the previous map view.
+    return prefs.enabled && prefs.mode==="auto" ? spcoaL3DesiredSite(prefs) : null;
+};
 let spcoaRadarMosaicTime=null;
 let spcoaRadarMosaicTimeChecked=false;
 function spcoaRadarValidLabel(p,site,singleReady){
@@ -8691,6 +8694,8 @@ function spcoaRadarBeforeLayerId(){
 function spcoaRadarRemoveLayer(){
     if(map.getLayer(SPCOA_RADAR_LAYER_ID))map.removeLayer(SPCOA_RADAR_LAYER_ID);
     if(map.getSource(SPCOA_RADAR_LAYER_ID))map.removeSource(SPCOA_RADAR_LAYER_ID);
+    // Clear the old station's footer immediately. A selection may be loading,
+    // but the last scan must never be described as the new radar's scan.
     spcoaRadarActiveKey=null;
     spcoaRadarReady=false;
     spcoaRadarActiveLabel="";
@@ -8726,6 +8731,9 @@ function spcoaRadarRefresh(){
     }
     const singleReady=wantsSingle && spcoaL3ProtocolAvailable &&
         spcoaL3Data?.site===radarSite && spcoaL3ScanIsUsable(spcoaL3Data);
+    // The footer must not keep describing a radar from the previous map center
+    // when Auto Nearest has already switched to another station.
+    if(wantsSingle && !singleReady)spcoaRadarActiveLabel="";
     spcoaRadarSetValidText(p,radarSite,singleReady);
     // Metadata may not be available from the live WMS. Use the IEM archive
     // time if verifiable and recent; do not equate browser refresh with scan time.
@@ -21295,6 +21303,60 @@ function spcoaGetSatelliteExportTile(z, x, y) {
     return loaded;
 }
 
+/* V146: The MapLibre WebGL map is distinct from the 2D SPCOA county/weather
+ * overlay canvases. Taking the WebGL pixels after unrelated awaits can save
+ * an empty background although the visible map is rendering correctly.
+ * Wait for a fresh render, copy it immediately to an ordinary 2D canvas,
+ * and refuse a nearly blank satellite image rather than making a bad PNG. */
+function spcoaExportFramebufferHasImagery(canvas){
+    const sample=document.createElement("canvas");
+    sample.width=64;sample.height=40;
+    const ctx=sample.getContext("2d",{willReadFrequently:true});
+    if(!ctx)return true; // Never infer that a canvas is blank if unreadable.
+    ctx.drawImage(canvas,0,0,sample.width,sample.height);
+    let pixels;
+    try{pixels=ctx.getImageData(0,0,sample.width,sample.height).data;}
+    catch(error){throw new Error("Map imagery cannot be read for PNG export: "+error.message);}
+    let nonWhite=0;
+    for(let i=0;i<pixels.length;i+=4){
+        if(pixels[i+3]>100 && (pixels[i]<240 || pixels[i+1]<240 || pixels[i+2]<240))nonWhite++;
+    }
+    // Satellite products or satellite terrain should fill the geographic
+    // viewport with imagery. Individual radar echoes may correctly be absent.
+    return nonWhite>=Math.ceil(sample.width*sample.height*0.005);
+}
+async function spcoaCaptureLiveMapFramebufferForExport(){
+    const requireSatellite=spcoaGoesSelected() ||
+        spcoaReadMapBackground()===SPCOA_BASEMAP_SATELLITE;
+    let lastError="";
+    for(let attempt=0;attempt<3;attempt++){
+        // MapLibre's 'render' event is emitted after the frame has been drawn.
+        // Set up the listener before triggering the repaint to avoid a race.
+        await new Promise((resolve,reject)=>{
+            let finished=false;
+            const stop=(error)=>{
+                if(finished)return;finished=true;
+                clearTimeout(timer);map.off("render",onRender);
+                error?reject(error):resolve();
+            };
+            const onRender=()=>stop();
+            const timer=setTimeout(()=>stop(new Error("Timed out waiting for MapLibre to render the export frame")),8000);
+            map.on("render",onRender);
+            map.triggerRepaint();
+        });
+        const live=map.getCanvas();
+        const copy=document.createElement("canvas");
+        copy.width=live.width;copy.height=live.height;
+        if(copy.width<2 || copy.height<2)throw new Error("Map canvas has invalid dimensions for export");
+        const ctx=copy.getContext("2d",{alpha:false,willReadFrequently:requireSatellite});
+        ctx.drawImage(live,0,0);
+        if(!requireSatellite || spcoaExportFramebufferHasImagery(copy))return copy;
+        lastError="MapLibre rendered a blank satellite layer";
+        await new Promise(resolve=>setTimeout(resolve,180));
+    }
+    throw new Error(lastError+". PNG export was cancelled. Verify that the satellite imagery is visible on the map, then retry.");
+}
+
 async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
     // V133: GOES is a MapLibre raster layer. The custom Mapbox-only tile
     // compositor cannot see it. Capture the real map framebuffer instead.
@@ -21316,8 +21378,20 @@ async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
                 throw new Error("Base-reflectivity radar imagery is not available for export.");
             }
             await spcoaRadarWaitForMapTiles(12000);
+            const radarPrefs=spcoaReadRadarPrefs();
+            if(radarPrefs.mode==="auto" || radarPrefs.mode==="single"){
+                const expectedSite=spcoaL3DesiredSite(radarPrefs);
+                if(!expectedSite || !spcoaRadarActiveKey?.startsWith(`n0b|${expectedSite}|`)){
+                    throw new Error("The selected NEXRAD station is still switching or loading. " +
+                        "PNG export was cancelled to avoid saving an earlier radar scan.");
+                }
+            }
         }
-        const frame = map.getCanvas();
+        // Draw the *freshly rendered* MapLibre frame, not a framebuffer read
+        // after the compositor has already moved on to a later asynchronous step.
+        // A fully white raster is not valid when GOES or the satellite basemap
+        // was selected: fail clearly instead of saving a blank map with a footer.
+        const frame=await spcoaCaptureLiveMapFramebufferForExport();
         ctx.drawImage(frame,0,0,frame.width,frame.height,0,mapY,outW,mapH);
         return;
     }
