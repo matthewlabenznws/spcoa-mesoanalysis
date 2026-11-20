@@ -1,4 +1,5 @@
-/* V170: Original V161 radar raster presentation by default. Optional above-fill radar placement retains V163 feature. */
+/* V171: Preserve V170 native-radar default and optional above-fill radar placement;
+ * integrate the exact notebook contour palettes and same-row Contours controls from V169. */
 /* V155: Fix Auto Nearest's map.getCenter() failure (top-level helper was
  * resolving the DOM #map element rather than the MapLibre map inside the iframe).
  * Await each panel's own numeric N0B scan during combined PNG export when radar
@@ -270,7 +271,10 @@ function spcoaInstallHostVectorColors() {
         console.warn("SPCOA: couldn't locate wind overlay sidebar group for color controls");
         return;
     }
-    const container = anchor.parentElement;
+    // V169: vector rows with notebook contour toggles use an inline wrapper.
+    // New host vector controls must still be added to the sidebar category,
+    // never inside that single parameter's inline row.
+    const container = anchor.closest('.spcoa-v169-vector-row')?.parentElement || anchor.parentElement;
     const saved = spcoaReadVectorColors();
     for (const [field, toggleId, title] of SPCOA_VECTOR_CONTROL_ROWS) {
         let toggle = document.getElementById(toggleId);
@@ -309,7 +313,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V170"; // V161 native-MapLibre radar appearance by default; optional above-fill overlay, newer features preserved
+const SPCOA_VIEWER_BUILD = "V171"; // V170 radar and ECAPE improvements + V169 exact notebook contours on same row
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3314,8 +3318,11 @@ function spcoaV159InstallControls() {
         // Keep inline sliders OUTSIDE labels and field-choice buttons, so
         // dragging a slider never toggles a checkbox or selects another fill.
         const anchor=kind==='fill'?(target.closest('.level-row')||target)
-            :(target.closest('label')||target);
+            :(target.closest('.spcoa-v169-inline-contour-row') ||
+              target.closest('.level-row') || target.closest('label') || target);
         if(!anchor?.parentElement)return false;
+        // V169: contour thickness controls belong BELOW the complete
+        // parameter-and-Contours row, not between its two controls.
         anchor.insertAdjacentElement('afterend',row);
         return true;
     }
@@ -6762,6 +6769,18 @@ for (const [field, color] of Object.entries(spcoaReadVectorColors())) {
    CONTOUR DEFINITIONS
    ========================================================================================= */
 
+/* =========================================================================================
+   V168 — EXACT MAPPED CONTOUR LEVELS/COLORS FROM USER'S ORIGINAL MESOVIEWER
+
+   Directly extracted from the uploaded Website_Prototype_CWA_Based_MesoViewer_.ipynb
+   (Streamlit PARAMETERS). Each level has its own source color, linestyle,
+   and source line width. No adapted or inferred palettes are used.
+   New contour-only aliases read existing SPCOA scalar or vector numerical tiles.
+   The filled color scales, barbs, and winds are not changed.
+   ========================================================================================= */
+const SPCOA_NOTEBOOK_CONTOUR_PALETTES = Object.freeze({"sbcape_nb_contours":{"name":"SBCAPE","units":"J/kg","levels":[100,250,500,750,1000,1250,1500,1750,2000,2250,2500,2750,3000,3250,3500,3750,4000,4250,4500,4750,5000,5250,5500,5750,6000,6250,6500,6750,7000],"colors":["#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"Surface-Based CAPE & CIN"},"mlcape_nb_contours":{"name":"MLCAPE","units":"J/kg","levels":[100,250,500,750,1000,1250,1500,1750,2000,2250,2500,2750,3000,3250,3500,3750,4000,4250,4500,4750,5000,5250,5500,5750,6000,6250,6500,6750,7000],"colors":["#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"100mb Mixed-Layer CAPE & CIN"},"mlcape_0_3km_nb_contours":{"name":"0–3 km MLCAPE","units":"J/kg","levels":[25,40,55,70,85,100,115,130,145,160,175,190,205,220,235,250,265,280,295],"colors":["#ff6666","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6],"notebookSource":"Sfc Vorticity / Sfc - 3km MLCAPE"},"dcape":{"name":"DCAPE","units":"J/kg","levels":[200,400,600,800,1000,1200,1400,1600,1800,2000,2200,2400,2600,2800,3000,3200,3400,3600,3800],"colors":["#8b4513","#8b4513","#8b4513","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000","#ff0000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"Downdraft CAPE & DCIN"},"lcl_height":{"name":"LCL Height","units":"m AGL","levels":[500,750,1000,1250,1500,1750,2000,2500,3000,3500,4000],"colors":["#006400","#309230","#60c060","#90ee90","#000000","#000000","#000000","#000000","#000000","#000000","#000000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"100mb Mixed-Layer LCL Height (m)"},"lapse_rate_700_500hPa_nb_contours":{"name":"700–500 mb Lapse Rate","units":"°C/km","levels":[5.5,6.0,6.5,7.0,7.5,8.0,8.5,9.0,9.5,10.0,10.5,11.0,11.5],"colors":["#0000ff","#008000","#008000","#ffa500","#f29300","#e68100","#d86e00","#cc5c00","#be4900","#b23700","#a42400","#981200","#8b0000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"Mid-Level Lapse Rate (700-500mb)"},"lapse_rate_0_3km_nb_contours":{"name":"0–3 km Lapse Rate","units":"°C/km","levels":[5.5,6.0,6.5,7.0,7.5,8.0,8.5,9.0,9.5,10.0,10.5,11.0,11.5],"colors":["#0000ff","#008000","#008000","#ffa500","#f29300","#e68100","#d86e00","#cc5c00","#be4900","#b23700","#a42400","#981200","#8b0000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"Low-Level Lapse Rate (0-3km)"},"shear_0_1km_nb_contours":{"name":"0–1 km Bulk Shear","units":"kt","levels":[10,15,20,25,30,35,40,45,50],"colors":["#0099ff","#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 1km Shear (kt)"},"shear_0_3km_nb_contours":{"name":"0–3 km Bulk Shear","units":"kt","levels":[20,25,30,35,40,45,50,55,60,65,70],"colors":["#0099ff","#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 3km Shear (kt)"},"shear_0_6km_nb_contours":{"name":"0–6 km Bulk Shear","units":"kt","levels":[25,30,40,50,60,70,80,90],"colors":["#0099ff","#0077ee","#0077ee","#004488","#004488","#004488","#004488","#004488"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.2,1.2,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 6km Shear (kt)"},"shear_0_8km_nb_contours":{"name":"0–8 km Bulk Shear","units":"kt","levels":[40,50,60,70,80,90,100,110,120],"colors":["#0088ff","#0088ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.0,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 8km Shear (kt)"},"effective_shear_nb_contours":{"name":"Effective Bulk Shear","units":"kt","levels":[20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],"colors":["#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99"],"styles":["dotted","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.8,0.9,0.9,0.9,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Effective Bulk Shear (kt)"},"srwind_0_2km_nb_contours":{"name":"0–2 km SR Wind","units":"kt","levels":[15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],"colors":["#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"Surface - 2km SR Winds"},"srwind_4_6km_nb_contours":{"name":"4–6 km SR Wind","units":"kt","levels":[15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],"colors":["#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"4 - 6km SR Winds"},"srwind_9_11km_nb_contours":{"name":"9–11 km SR Wind","units":"kt","levels":[15,20,30,40,50,60,70,80,90,100,110,120,130,140],"colors":["#0099ff","#0077ee","#0077ee","#0077ee","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.3,1.3,1.3,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"9 - 11km SR Winds"},"srh_eff_nb_contours":{"name":"Effective SRH","units":"m²/s²","levels":[25,50,100,200,300,400,500,600,700,800,900,1000],"colors":["#0088ff","#0088ff","#0077ee","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["dotted","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.1,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Effective SRH & Inflow Base"},"srh_0_500m_contours":{"name":"0–500 m SRH","units":"m²/s²","levels":[25,50,100,200,300,400,500,600,700,800,900,1000],"colors":["#0088ff","#0088ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["dotted","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Sfc-500m SRH & Inflow Base"},"srh_0_1km_contours":{"name":"0–1 km SRH","units":"m²/s²","levels":[50,100,150,200,300,400,500,600,700,800,900,1000],"colors":["#0088ff","#0088ff","#0066dd","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.4,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Sfc-1km SRH & Inflow Base"},"srh_0_3km_contours":{"name":"0–3 km SRH","units":"m²/s²","levels":[100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200],"colors":["#0088ff","#0088ff","#0066dd","#0066dd","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.4,1.4,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Sfc-3km SRH"},"stp_eff_contours":{"name":"Effective-Layer STP","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,20,22,24,26,28,30],"colors":["#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Significant Tornado Parameter (Effective Layer)"},"stp_fix_contours":{"name":"Fixed-Layer STP","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,20,22,24,26,28,30],"colors":["#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Significant Tornado Parameter (Fixed Layer)"},"stp_500m_contours":{"name":"STP (0–500 m SRH)","units":"","levels":[0.25,0.5,1,2,3,4,5,6,7,8,9,10,11,12],"colors":["#ff8c00","#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Significant Tornado Parameter (0-500m SRH)"},"scp_right_contours":{"name":"Right-Moving SCP","units":"","levels":[0.5,1,2,4,6,8,10,12,14,16,18,20,25,30,35,40,45,50],"colors":["#0099ff","#0088ff","#0066dd","#0066dd","#0066dd","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.0,1.4,1.4,1.4,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Supercell Composite (Right-Moving)"},"scp_left_contours":{"name":"Left-Moving SCP","units":"","levels":[-50,-45,-40,-35,-30,-25,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,-1,-0.5],"colors":["#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#0066dd","#0066dd","#0066dd","#0088ff","#0099ff"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","dashed"],"widths":[1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.4,1.4,1.4,1.0,0.9],"notebookSource":"Supercell Composite (Left-Moving)","forceNegative":true},"dcp_contours":{"name":"Derecho Composite Parameter","units":"","levels":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],"colors":["#ff8c00","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Derecho Composite"},"lhp_contours":{"name":"Large Hail Parameter","units":"","levels":[2,4,6,8,10,12,14,16,18,20,22,24,26],"colors":["#b8860b","#cc7a00","#e69900","#ffcc00","#ffe600","#ffdd00","#ffbe00","#ff9e00","#ff7f00","#ff5e00","#ff3f00","#ff1f00","#ff0000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.1,1.2,1.3,1.4,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"Large Hail Parameter"},"shp_contours":{"name":"Significant Hail Parameter","units":"","levels":[0.5,1,1.5,2,3,4,5,6,7,8,9,10],"colors":["#8b4513","#e68a00","#e69900","#ff0000","#f5141b","#eb2736","#e23b52","#d84e6d","#ce6288","#c475a3","#ba89bf","#b19cd9"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.1,1.2,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6],"notebookSource":"Significant Hail Parameter"},"vtp_contours":{"name":"Violent Tornado Parameter","units":"","levels":[0.25,0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],"colors":["#ff8c00","#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Violent Tornado Parameter"},"microburst_composite":{"name":"Microburst Composite","units":"","levels":[1,2,3,4,5,6,7,8,9,10],"colors":["#8b5a2b","#e68a00","#e68a00","#e68a00","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.1,1.1,1.1,1.3,1.3,1.3,2.0,2.0,2.0],"notebookSource":"Microburst Composite"},"esp_contours":{"name":"Enhanced Stretching Potential","units":"","levels":[0.5,1,1.5,2,3,4,5,6,7,8,9,10,11,12,13,14,15],"colors":["#ff8c00","#ff8c00","#ff6600","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.1,1.2,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Enhanced Stretching Potential"},"ehi_0_1km_nb_contours":{"name":"0–1 km EHI","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10],"colors":["#008000","#00cc00","#22b204","#439807","#667d0b","#88630f","#a24b0f","#b3390b","#c42507","#d51304","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5],"notebookSource":"Sfc - 1km EHI"},"ehi_0_3km_nb_contours":{"name":"0–3 km EHI","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10],"colors":["#008000","#00cc00","#22b204","#439807","#667d0b","#88630f","#a24b0f","#b3390b","#c42507","#d51304","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5],"notebookSource":"Sfc - 3km EHI"}});
+const SPCOA_NOTEBOOK_CONTOUR_SOURCES = Object.freeze({"sbcape_nb_contours":{"kind":"scalar","field":"sbcape"},"mlcape_nb_contours":{"kind":"scalar","field":"mlcape"},"mlcape_0_3km_nb_contours":{"kind":"scalar","field":"mlcape_0_3km"},"lapse_rate_700_500hPa_nb_contours":{"kind":"scalar","field":"lapse_rate_700_500hPa"},"lapse_rate_0_3km_nb_contours":{"kind":"scalar","field":"lapse_rate_0_3km"},"shear_0_1km_nb_contours":{"kind":"vector","field":"shear_0_1km"},"shear_0_3km_nb_contours":{"kind":"vector","field":"shear_0_3km"},"shear_0_6km_nb_contours":{"kind":"vector","field":"shear_0_6km"},"shear_0_8km_nb_contours":{"kind":"vector","field":"shear_0_8km"},"effective_shear_nb_contours":{"kind":"vector","field":"effective_shear"},"srwind_0_2km_nb_contours":{"kind":"vector","field":"srwind_0_2km"},"srwind_4_6km_nb_contours":{"kind":"vector","field":"srwind_4_6km"},"srwind_9_11km_nb_contours":{"kind":"vector","field":"srwind_9_11km"},"srh_eff_nb_contours":{"kind":"scalar","field":"srh_eff"},"ehi_0_1km_nb_contours":{"kind":"scalar","field":"ehi_0_1km"},"ehi_0_3km_nb_contours":{"kind":"scalar","field":"ehi_0_3km"}});
+
 const CONTOUR_FIELDS = {
     sbcin_contours: { name: "Surface-Based CIN Contours", shortName: "SBCIN Contours", units: "J/kg", interval: 25, minimum: -1000, maximum: -25, anchor: -1000, colorScheme: "blues", smoothGeometry: false, smoothIterations: 4 },
     mlcin_contours: { name: "Mixed-Layer CIN Contours", shortName: "MLCIN Contours", units: "J/kg", interval: 25, minimum: -1000, maximum: -25, anchor: -1000, colorScheme: "blues", smoothGeometry: false, smoothIterations: 4 },
@@ -7023,6 +7042,21 @@ const CONTOUR_FIELDS = {
 };
 /* Change-contour variants share the scalar difference tiles; no new S3 products. */
 Object.assign(CONTOUR_FIELDS, SPCOA_CHANGE_CONTOUR_FIELDS);
+// V168: the notebook level/style sequence supersedes old SPCOA display config
+// only for explicitly matched parameters. All unlisted fields remain untouched.
+for (const [field,palette] of Object.entries(SPCOA_NOTEBOOK_CONTOUR_PALETTES)) {
+    const existing = CONTOUR_FIELDS[field] || {};
+    CONTOUR_FIELDS[field] = {
+        ...existing, name:palette.name, shortName:palette.name,
+        units:palette.units, levels:palette.levels,
+        interval:null, minimum:null, maximum:null,
+        colorScheme:'notebook_exact', notebookExact:true,
+        notebookColors:palette.colors, notebookStyles:palette.styles,
+        notebookWidths:palette.widths, notebookForceNegative:palette.forceNegative===true,
+        compositeContour:true
+    };
+}
+
 
 
 
@@ -8824,7 +8858,16 @@ const frontogenesisContourToggles = {};
 
 installSpcoaCompositeContourToggles();
 
+const SPCOA_NOTEBOOK_NEW_CONTOUR_TOGGLES = Object.entries(SPCOA_NOTEBOOK_CONTOUR_SOURCES)
+    .map(([field,source])=>({field,
+        stateKey:'notebook_'+field,
+        toggleId:'notebook-'+field.replace(/_/g,'-')+'-toggle',
+        label:SPCOA_NOTEBOOK_CONTOUR_PALETTES[field].name+' Contours',
+        sourceField:source.field, sourceKind:source.kind
+    }));
+
 const THERMODYNAMIC_CONTOUR_OVERLAYS = [
+    ...SPCOA_NOTEBOOK_NEW_CONTOUR_TOGGLES,
     ...SPC_EXTRA_COMPOSITE_TOGGLES,
     ...SPCOA_CHANGE_CONTOUR_CONTROLS,
     { field: "sbcin_contours", stateKey: "sbcinContours", toggleId: "sbcin-contours-toggle", label: "SBCIN Contours" },
@@ -8920,6 +8963,100 @@ const thermodynamicContourToggles = {};
     }
 }
 
+
+/* V169: display each newly matched notebook contour toggle on the SAME
+ * ROW as its corresponding scalar-filled field or vector checkbox. Match the
+ * existing SBCIN/MLCIN/MUCIN and STP/SCP `Contours` layout. Keep independent
+ * IDs, events, colors, numeric levels, settings and panel synchronization.
+ */
+function spcoaV169PlaceNotebookContourToggles() {
+    for (const config of SPCOA_NOTEBOOK_NEW_CONTOUR_TOGGLES) {
+        const source = SPCOA_NOTEBOOK_CONTOUR_SOURCES[config.field];
+        const toggle = document.getElementById(config.toggleId);
+        const contourLabel = toggle?.closest('label');
+        if (!source || !contourLabel) continue;
+
+        // Reuse the existing checkbox and ID; just replace its explanatory
+        // long label with the short, standard `Contours` caption.
+        for (const node of Array.from(contourLabel.childNodes)) {
+            if (node !== toggle) node.remove();
+        }
+        const caption = document.createElement('span');
+        caption.className = 'barb-text';
+        caption.textContent = 'Contours';
+        contourLabel.appendChild(caption);
+        contourLabel.classList.add('toggle-row', 'spcoa-v169-contours-inline');
+        contourLabel.style.cssText =
+            'display:inline-flex;align-items:center;justify-content:flex-end;'+
+            'gap:5px;flex:0 0 auto;width:auto;min-width:0;'+
+            'padding:0;margin:0 2px 0 auto;white-space:nowrap;'+
+            'font-size:11px;color:#b4d3e9;cursor:pointer;';
+        toggle.style.cssText = 'flex:0 0 auto;margin:0;width:14px;height:14px;cursor:pointer;';
+        contourLabel.title = 'Show '+SPCOA_NOTEBOOK_CONTOUR_PALETTES[config.field].name+
+            ' contour lines (original notebook levels, colors and line styles)';
+        toggle.setAttribute('aria-label', 'Contours for '+SPCOA_NOTEBOOK_CONTOUR_PALETTES[config.field].name);
+
+        if (source.kind === 'scalar') {
+            const button = Array.from(document.querySelectorAll(
+                '#sidebar .cat-content .field-choice[data-field]'
+            )).find(el=>el.dataset.field === source.field);
+            if (!button) continue;
+            let wrapper = button.closest('.level-row');
+            if (!wrapper) {
+                wrapper = document.createElement('div');
+                wrapper.className = 'level-row';
+                button.insertAdjacentElement('beforebegin', wrapper);
+                wrapper.appendChild(button);
+            }
+            wrapper.classList.add('spcoa-v169-inline-contour-row');
+            wrapper.style.display = 'flex';
+            wrapper.style.alignItems = 'center';
+            wrapper.style.gap = '5px';
+            button.style.flex = '1 1 auto';
+            button.style.minWidth = '0';
+            wrapper.appendChild(contourLabel);
+            continue;
+        }
+
+        if (source.kind === 'vector') {
+            const vectorConfig = VECTOR_OVERLAY_CONFIG.find(x=>x.field === source.field);
+            const vectorInput = document.getElementById(vectorConfig?.toggleId || '');
+            const vectorLabel = vectorInput?.closest('label');
+            if (!vectorLabel || !vectorLabel.parentElement) continue;
+            // IMPORTANT: retain the original vector label (including its
+            // checkbox and user-selectable vector color picker). Make a
+            // separate parent div for the adjacent independent contour label;
+            // never nest one label inside another.
+            let wrapper = vectorLabel.parentElement;
+            if (!wrapper.classList.contains('spcoa-v169-inline-contour-row')) {
+                wrapper = document.createElement('div');
+                wrapper.className = 'spcoa-v169-inline-contour-row spcoa-v169-vector-row';
+                wrapper.style.cssText =
+                    'display:flex;align-items:center;gap:4px;'+
+                    'width:100%;max-width:100%;min-width:0;'+
+                    'box-sizing:border-box;';
+                vectorLabel.insertAdjacentElement('beforebegin', wrapper);
+                wrapper.appendChild(vectorLabel);
+            }
+            vectorLabel.style.flex = '1 1 auto';
+            vectorLabel.style.minWidth = '0';
+            vectorLabel.style.margin = '0';
+            vectorLabel.style.gap = '4px';
+            vectorLabel.style.fontSize = '11px';
+            // Keep the vector swatch visible alongside the independent toggle.
+            const colorPicker = vectorLabel.querySelector('input[type="color"]');
+            if (colorPicker) {
+                colorPicker.style.width = '20px';
+                colorPicker.style.flex = '0 0 20px';
+            }
+            contourLabel.style.fontSize = '10px';
+            contourLabel.style.gap = '3px';
+            contourLabel.style.margin = '0';
+            wrapper.appendChild(contourLabel);
+        }
+    }
+}
+spcoaV169PlaceNotebookContourToggles();
 
 /* =========================================================================================
    RUN / STATUS
@@ -11227,6 +11364,17 @@ async function spcoaLoadProductMetadata(runId, bundle, kind, field) {
     if (!field || field === 'none') return null;
     const derived = spcoaDerivedMetadata(kind,field);
     if (derived) return derived;
+    const notebookSource = kind === 'contour' ? SPCOA_NOTEBOOK_CONTOUR_SOURCES[field] : null;
+    if (notebookSource) {
+        // The existing scalar/vector source already has a run-matched
+        // numerical tile and encoding; there is no new overlay S3 product.
+        const sourceMeta = await spcoaLoadProductMetadata(runId,bundle,notebookSource.kind,notebookSource.field);
+        if (!sourceMeta) return null;
+        const meta = {...sourceMeta, type:'scalar_contour', derived:true,
+            display:{type:'contour',labels:true}};
+        bundle.contours[field] = meta;
+        return meta;
+    }
     const store = kind === 'scalar' ? bundle.fields :
         kind === 'vector' ? bundle.vectors : bundle.contours;
     if (store[field]) return store[field];
@@ -12341,6 +12489,10 @@ async function loadVectorTile(field, z, x, y, run = currentRun, priority = 0) {
    ========================================================================================= */
 
 async function loadContourTile(field, z, x, y, run = currentRun, priority = 0) {
+    const notebookSource=SPCOA_NOTEBOOK_CONTOUR_SOURCES[field];
+    if (notebookSource) return notebookSource.kind==='scalar'
+        ? loadScalarTile(notebookSource.field,z,x,y,run,priority)
+        : loadVectorTile(notebookSource.field,z,x,y,run,priority);
     if (SPCOA_CHANGE_CONTOUR_FIELDS[field]) {
         return loadSpcoaChangeTile(SPCOA_CHANGE_CONTOUR_FIELDS[field].sourceField, z, x, y, run, priority);
     }
@@ -12420,6 +12572,10 @@ async function preloadVectorTiles(field, z, run = currentRun) {
    ========================================================================================= */
 
 async function preloadContourTiles(field, z, run = currentRun) {
+    const notebookSource=SPCOA_NOTEBOOK_CONTOUR_SOURCES[field];
+    if (notebookSource) return notebookSource.kind==='scalar'
+        ? preloadScalarTiles(notebookSource.field,z,run)
+        : preloadVectorTiles(notebookSource.field,z,run);
     const range = getVisibleTileRange(z, 1);
     const ordered = priorityOrderedTileCoordinates(z, range);
     await Promise.all(ordered.map(tile =>
@@ -12581,6 +12737,10 @@ function getCachedContourTile(
     x,
     y
 ) {
+    const notebookSource=SPCOA_NOTEBOOK_CONTOUR_SOURCES[field];
+    if (notebookSource) return notebookSource.kind==='scalar'
+        ? getCachedScalarTile(notebookSource.field,z,x,y)
+        : getCachedVectorTile(notebookSource.field,z,x,y);
 
     if (SPCOA_CHANGE_CONTOUR_FIELDS[field]) {
         return getCachedScalarTile(SPCOA_CHANGE_CONTOUR_FIELDS[field].sourceField, z, x, y);
@@ -16838,14 +16998,15 @@ async function renderContourField(
                     screenY
                 ]);
 
-            const value =
-                sampleScalar(
-                    field,
-                    lngLat.lng,
-                    lngLat.lat,
-                    z,
-                    true
-                );
+            const notebookSource=SPCOA_NOTEBOOK_CONTOUR_SOURCES[field];
+            const notebookVector=notebookSource?.kind==='vector'
+                ? sampleVector(notebookSource.field,lngLat.lng,lngLat.lat,z) : null;
+            let value = notebookSource?.kind==='vector'
+                ? (notebookVector ? Math.hypot(notebookVector.u,notebookVector.v) : null)
+                : sampleScalar(field,lngLat.lng,lngLat.lat,z,true);
+            // Original left-moving SCP notebook explicitly uses negative SCP.
+            if (definition.notebookForceNegative && Number.isFinite(value))
+                value=-Math.abs(value);
 
             if (
                 value === null ||
@@ -16902,8 +17063,9 @@ async function renderContourField(
     // Delay local smoothing until we know whether the worker is available.
     let contourValues = null;
 
-    // DCAPE is fixed at 250 J/kg even if cached backend metadata is older.
-    const interval = field === "dcape" ? 250 : (
+    // Source-matched notebook fields use their exact level arrays, including
+    // DCAPE's original 200-J/kg intervals (unrelated fields retain V167 logic).
+    const interval = field === "dcape" && !definition.notebookExact ? 250 : (
         Number(
             metadata.display &&
             metadata.display.interval
@@ -16913,7 +17075,8 @@ async function renderContourField(
     );
 
     const configuredMinimum =
-        field === "dcape"
+        definition.notebookExact ? null :
+        field === "dcape" && !definition.notebookExact
             ? 250
             : (
                 metadata.display &&
@@ -16929,7 +17092,7 @@ async function renderContourField(
             );
 
     const metadataAnchor = metadata.display?.anchor;
-    const contourAnchor = field === "dcape" ? 0 : (
+    const contourAnchor = field === "dcape" && !definition.notebookExact ? 0 : (
         metadataAnchor !== undefined && metadataAnchor !== null &&
         Number.isFinite(Number(metadataAnchor))
             ? Number(metadataAnchor)
@@ -16938,12 +17101,13 @@ async function renderContourField(
     );
 
     const explicitLevelsRaw =
+        (definition.notebookExact && Array.isArray(definition.levels)) ? definition.levels :
         (metadata.display && Array.isArray(metadata.display.levels) && metadata.display.levels.length)
             ? metadata.display.levels
             : (Array.isArray(definition.levels) ? definition.levels : null);
 
     // Old stored DCAPE level lists must not override the new 250-J/kg spacing.
-    const explicitLevels = field === "dcape" ? null : (explicitLevelsRaw
+    const explicitLevels = field === "dcape" && !definition.notebookExact ? null : (explicitLevelsRaw
         ? explicitLevelsRaw.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
         : null);
 
@@ -16967,6 +17131,7 @@ async function renderContourField(
     }
 
     const configuredMaximum =
+        definition.notebookExact ? null : (
         metadata.display &&
         metadata.display.maximum !== undefined &&
         metadata.display.maximum !== null
@@ -16976,7 +17141,7 @@ async function renderContourField(
                 definition.maximum !== null
                     ? Number(definition.maximum)
                     : null
-            );
+            ));
 
     let lastLevel =
         contourAnchor + Math.floor(
@@ -17028,6 +17193,7 @@ async function renderContourField(
             : null;
 
     const colorScheme =
+        definition.notebookExact ? 'notebook_exact' :
         field.startsWith("temperature_contours_")
             ? "pressure_temperature_isotherms"
             : field === "dcape"
@@ -17102,7 +17268,10 @@ async function renderContourField(
         const level=levelsToRender[levelIndex];
         if (definition.changeContour && Math.abs(level) < 0.00001) continue;
 
+        const notebookLevelIndex=definition.notebookExact
+            ? definition.levels.findIndex(x=>Math.abs(Number(x)-level)<0.00001) : -1;
         const contourColor =
+            notebookLevelIndex>=0 ? definition.notebookColors[notebookLevelIndex] :
             colorScheme === "spcoa_change" ? (level < 0 ? "#246bfa" : "#e33838") :
             colorScheme === "wcd_reverse" ? getReversedWcdColor(level) :
             colorScheme === "scp_spc" ? getScpContourColorMatchingSrh(level) :
@@ -17179,6 +17348,15 @@ async function renderContourField(
             contourCtx.setLineDash([]);
         } else {
             contourCtx.setLineDash([]);
+        }
+
+        // V168: exact notebook line styles/widths before the existing
+        // independent per-contour-field thickness slider multiplies the width.
+        if (notebookLevelIndex >= 0) {
+            const notebookStyle = definition.notebookStyles[notebookLevelIndex];
+            contourCtx.lineWidth = definition.notebookWidths[notebookLevelIndex];
+            contourCtx.setLineDash(notebookStyle==='dashed' ? [7,5] :
+                notebookStyle==='dotted' ? [2,4] : []);
         }
 
         // V159: preserve the per-level line hierarchy (0 °C, strong SHP,
