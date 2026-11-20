@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V151"; // Two radar modes: CONUS mosaic or right-click nearest NEXRAD
+const SPCOA_VIEWER_BUILD = "V153"; // Satellite product name without ABI band code in export footer; V152 preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -21763,6 +21763,57 @@ async function spcoaDrawExportMapLayers(ctx, outW, mapH, mapY = 0) {
     spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY);
 }
 
+/* V153 — Restore the selected satellite PRODUCT NAME in PNG/video footers,
+ * without the ABI band designation (e.g. B09). Preserve the observation time,
+ * the separately reported 0.5-degree N0B time and the SPCOA analysis time.
+ * This is export-only: the live product selector still lists all ABI band IDs.
+ * Actual imagery-source attribution remains unchanged in the bottom right.
+ */
+function spcoaExportSatelliteProductLabel(config) {
+    const name = String(config?.displayLabel || config?.label || "Satellite Imagery").trim();
+    // Remove only standalone ABI band tokens, not digits in wavelengths/resolution.
+    return name
+        .replace(/^B(?:0[1-9]|1[0-6])\s*[·:–—-]\s*/i, "")
+        .replace(/\s*[·:–—-]\s*B(?:0[1-9]|1[0-6])$/i, "")
+        .trim() || "Satellite Imagery";
+}
+function spcoaConciseObservationFooterItems() {
+    const result = [];
+    if (spcoaGoesSelected()) {
+        const satelliteTime = spcoaGoesValidTime && spcoaGoesActiveKey
+            ? spcoaObsFormat(spcoaGoesValidTime) : "time unavailable";
+        const satelliteProduct = SPCOA_GOES_LAYER_CONFIG[spcoaReadGoesPrefs().product];
+        result.push({
+            text: spcoaExportSatelliteProductLabel(satelliteProduct) +
+                  " · Satellite valid: " + satelliteTime,
+            color: null
+        });
+    }
+    if (spcoaRadarSelected()) {
+        const radarPrefs = spcoaReadRadarPrefs();
+        const singleMode = radarPrefs.mode === "auto" || radarPrefs.mode === "single";
+        if (singleMode) {
+            const site = spcoaL3Data?.site;
+            const activeMatch = spcoaRadarActiveKey?.match(/^n0b\|(K[A-Z0-9]{3})\|/);
+            const correctScan = spcoaRadarReady && site &&
+                activeMatch?.[1] === site && spcoaL3ScanIsUsable(spcoaL3Data);
+            result.push({
+                text: "0.5° Base Reflectivity Valid: " +
+                    (correctScan ? spcoaObsFormat(spcoaL3Data.scan.date) : "time unavailable"),
+                color: null
+            });
+        } else {
+            result.push({
+                text: "CONUS Base Reflectivity Valid: " +
+                    (spcoaRadarReady && spcoaRadarMosaicTime
+                        ? spcoaObsFormat(spcoaRadarMosaicTime) : "time unavailable"),
+                color: null
+            });
+        }
+    }
+    return result;
+}
+
 /* =========================================================================================
    V117 — COMPLETE, WRAPPED EXPORT PARAMETER FOOTER
    The original one-line footer clipped parameters when many contour/vector
@@ -21793,11 +21844,8 @@ function spcoaPlanExportFooter(outW, options = {}) {
             text: String(item.text || ""),
             color: item.color || null
         })),
-        ...(spcoaGoesSelected() && spcoaGoesActiveLabel ?
-            [{text:spcoaGoesActiveLabel,color:null}]:[]),
-        ...(spcoaRadarSelected() && spcoaRadarActiveLabel ?
-            [{text:spcoaRadarActiveLabel,color:null}]:[]),
-        { text: `Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
+        ...spcoaConciseObservationFooterItems(),
+        { text: `SPCOA Analysis Valid: ${formatAnalysisTime(currentAnalysisTime)}`, color: null }
     ].filter(item => item.text);
 
     const rows = [];
