@@ -1,3 +1,8 @@
+/* V155: Fix Auto Nearest's map.getCenter() failure (top-level helper was
+ * resolving the DOM #map element rather than the MapLibre map inside the iframe).
+ * Await each panel's own numeric N0B scan during combined PNG export when radar
+ * is enabled; preserve V154 per-panel GOES, attribution, and all other controls.
+ */
 /* V141: Browser-side BZip2 decoder for Unidata Level III N0B scans; IEM fallback preserved. */
 /* V138: Original 20-stop reflectivity color palette and interpolation function,
  * copied from user-supplied source. IEM WMS dBZ inference remains approximate. */
@@ -51,6 +56,138 @@ function installSpcoaRedoControl() {
     undo.insertAdjacentElement("afterend", redo);
 }
 installSpcoaRedoControl();
+
+
+/* V156: A user-editable text box is a geographic annotation, not a DOM-only
+ * overlay. Consequently it is included in panel PNG/MP4 captures, Undo/Redo,
+ * map navigation, and the existing shared-All-Panels annotation pipeline. */
+const SPCOA_TEXT_DEFAULTS = Object.freeze({
+    text:"Forecast Note", textColor:"#ffffff", backgroundColor:"#dc8623",
+    fontSize:18, boxWidth:240, opacity:90, bold:true
+});
+function spcoaTextValuesFromEditor() {
+    let root=document;
+    if (__MP_CHILD) {
+        try { if(window.parent!==window && window.parent.document.getElementById("spcoa-text-editor")) root=window.parent.document; }
+        catch(_) {}
+    }
+    const val=(id,defaultValue)=>root.getElementById(id)?.value ?? defaultValue;
+    const text=String(val("spcoa-text-content",SPCOA_TEXT_DEFAULTS.text)).slice(0,1000);
+    const color=(id,fallback)=>/^#[0-9a-f]{6}$/i.test(val(id,fallback))?val(id,fallback):fallback;
+    return {
+        text:text || "Forecast Note",
+        textColor:color("spcoa-text-color",SPCOA_TEXT_DEFAULTS.textColor),
+        backgroundColor:color("spcoa-text-background",SPCOA_TEXT_DEFAULTS.backgroundColor),
+        fontSize:Math.max(10,Math.min(44,Number(val("spcoa-text-size",SPCOA_TEXT_DEFAULTS.fontSize))||18)),
+        boxWidth:Math.max(100,Math.min(550,Number(val("spcoa-text-width",SPCOA_TEXT_DEFAULTS.boxWidth))||240)),
+        opacity:Math.max(0,Math.min(100,Number(val("spcoa-text-opacity",SPCOA_TEXT_DEFAULTS.opacity))||0)),
+        bold:!!root.getElementById("spcoa-text-bold")?.checked
+    };
+}
+function spcoaTextLayout(ctx, annotation, x, y) {
+    const a=annotation || {}, fs=Math.max(10,Math.min(44,Number(a.fontSize)||18));
+    const w=Math.max(100,Math.min(550,Number(a.boxWidth)||240));
+    const pad=Math.max(8,Math.round(fs*.55)), lh=Math.ceil(fs*1.26);
+    ctx.font=`${a.bold===false?400:700} ${fs}px Inter, "Segoe UI", Arial, sans-serif`;
+    const lines=[];
+    for(const paragraph of String(a.text||" ").split("\n")){
+        let line="";
+        for(const word of paragraph.split(/\s+/).filter(Boolean)){
+            const next=line?line+" "+word:word;
+            if(line && ctx.measureText(next).width>w-pad*2){lines.push(line);line=word;}
+            else line=next;
+        }
+        lines.push(line || " ");
+    }
+    return {x,y,w,h:Math.max(34,pad*2+lines.length*lh),pad,lh,fs,lines};
+}
+function spcoaTextBoxDraw(ctx,annotation,x,y) {
+    ctx.save();
+    const b=spcoaTextLayout(ctx,annotation,x,y);
+    ctx.beginPath();
+    const r=7;
+    ctx.moveTo(b.x+r,b.y);ctx.lineTo(b.x+b.w-r,b.y);
+    ctx.quadraticCurveTo(b.x+b.w,b.y,b.x+b.w,b.y+r);
+    ctx.lineTo(b.x+b.w,b.y+b.h-r);
+    ctx.quadraticCurveTo(b.x+b.w,b.y+b.h,b.x+b.w-r,b.y+b.h);
+    ctx.lineTo(b.x+r,b.y+b.h);
+    ctx.quadraticCurveTo(b.x,b.y+b.h,b.x,b.y+b.h-r);
+    ctx.lineTo(b.x,b.y+r);ctx.quadraticCurveTo(b.x,b.y,b.x+r,b.y);
+    ctx.closePath();
+    ctx.globalAlpha=Math.max(0,Math.min(1,Number(annotation.opacity??90)/100));
+    ctx.fillStyle=annotation.backgroundColor||"#dc8623";
+    ctx.fill();
+    ctx.globalAlpha=1;
+    ctx.fillStyle=annotation.textColor||"#ffffff";
+    ctx.textAlign="left";ctx.textBaseline="top";
+    b.lines.forEach((line,i)=>ctx.fillText(line,b.x+b.pad,b.y+b.pad+i*b.lh,b.w-b.pad*2));
+    ctx.restore();
+    return b;
+}
+function spcoaTextBoxHit(ctx,a,p,x,y){
+    if(a?.type!=="textbox"||!p)return false;
+    ctx.save(); const b=spcoaTextLayout(ctx,a,p.x,p.y);ctx.restore();
+    return x>=b.x-5&&x<=b.x+b.w+5&&y>=b.y-5&&y<=b.y+b.h+5;
+}
+function spcoaInstallTextBoxUI(){
+    const toolbar=document.getElementById("drawing-toolbar");
+    if(!toolbar||document.getElementById("spcoa-text-tool"))return;
+    const button=document.createElement("button");
+    button.type="button";button.id="spcoa-text-tool";
+    button.className="draw-tool";button.dataset.tool="textbox";
+    button.textContent="Text Box";button.title="Add, move, or edit map text boxes";
+    const pen=toolbar.querySelector('.draw-tool[data-tool="pen"]');
+    (pen||toolbar.lastElementChild)?.insertAdjacentElement("afterend",button);
+    if(!button.parentElement)toolbar.appendChild(button);
+    const editor=document.createElement("section");
+    editor.id="spcoa-text-editor";editor.hidden=true;
+    editor.setAttribute("aria-label","Map text box editor");
+    editor.style.cssText="position:fixed;top:66px;right:16px;z-index:999999;width:300px;max-width:calc(100vw - 32px);background:#122a3b;color:#eef7fc;padding:12px;border:1px solid #66879b;border-radius:9px;box-shadow:0 9px 22px #0009;font:12px Inter,Arial,sans-serif;box-sizing:border-box;";
+    editor.innerHTML=`
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px"><strong>Map Text Box</strong><button type="button" id="spcoa-text-close" aria-label="Close text editor">✕</button></div>
+      <textarea id="spcoa-text-content" rows="3" maxlength="1000" aria-label="Text box text" style="width:100%;box-sizing:border-box;background:#071b2a;color:#fff;border:1px solid #50758a;border-radius:4px;padding:8px;resize:vertical">Forecast Note</textarea>
+      <div style="display:flex;gap:8px;margin:9px 0;align-items:center">
+        <label style="flex:1">Text color <input id="spcoa-text-color" type="color" value="#ffffff" style="display:block;width:100%;height:28px"></label>
+        <label style="flex:1">Box color <input id="spcoa-text-background" type="color" value="#dc8623" style="display:block;width:100%;height:28px"></label>
+        <label style="flex:1">Size <input id="spcoa-text-size" type="number" min="10" max="44" value="18" style="display:block;width:100%;height:28px;box-sizing:border-box"></label>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:9px">
+        <label style="flex:1">Width (px) <input id="spcoa-text-width" type="number" min="100" max="550" value="240" style="display:block;width:100%;height:26px;box-sizing:border-box"></label>
+        <label style="flex:1">Box opacity % <input id="spcoa-text-opacity" type="number" min="0" max="100" value="90" style="display:block;width:100%;height:26px;box-sizing:border-box"></label>
+        <label style="white-space:nowrap"><input id="spcoa-text-bold" type="checkbox" checked> Bold</label>
+      </div>
+      <div style="display:flex;gap:6px"><button type="button" id="spcoa-text-apply" style="flex:1">Apply changes</button><button type="button" id="spcoa-text-new">New box</button></div>
+      <div id="spcoa-text-help" style="color:#b3ceda;margin-top:8px;line-height:1.4">Enter text, then click the map to place it. Click an existing box to edit or drag it.</div>`;
+    document.body.appendChild(editor);
+    const close=()=>{editor.hidden=true;window.__spcoaTextEditTarget=null;};
+    editor.querySelector("#spcoa-text-close").addEventListener("click",close);
+    editor.querySelector("#spcoa-text-new").addEventListener("click",()=>{
+        window.__spcoaTextEditTarget=null;
+        editor.querySelector("#spcoa-text-help").textContent="Click the map to place a new text box.";
+    });
+    editor.querySelector("#spcoa-text-apply").addEventListener("click",()=>{
+        const t=window.__spcoaTextEditTarget;
+        if(t && typeof window.__spcoaTextApplyEdit==="function"){
+            window.__spcoaTextApplyEdit(t,spcoaTextValuesFromEditor());
+            editor.querySelector("#spcoa-text-help").textContent="Updated. Drag the text box on the map to move it.";
+        }else editor.querySelector("#spcoa-text-help").textContent="Ready. Click the map to place the text box.";
+    });
+    window.__spcoaTextEditorOpen=(target=null,annotation=null)=>{
+        window.__spcoaTextEditTarget=target;
+        if(annotation){
+            for(const [key,id] of [["text","spcoa-text-content"],["textColor","spcoa-text-color"],["backgroundColor","spcoa-text-background"],["fontSize","spcoa-text-size"],["boxWidth","spcoa-text-width"],["opacity","spcoa-text-opacity"]]){
+                const el=editor.querySelector("#"+id);if(el&&annotation[key]!=null)el.value=String(annotation[key]);
+            }
+            editor.querySelector("#spcoa-text-bold").checked=annotation.bold!==false;
+        }
+        editor.hidden=false;
+        editor.querySelector("#spcoa-text-help").textContent=target?"Edit the selected box, then click Apply changes. Drag it on the map to move.":"Enter text, then click the map to place it.";
+    };
+    button.addEventListener("click",()=>{
+        if(!__MP_CHILD || window.parent===window)window.__spcoaTextEditorOpen?.();
+    });
+}
+spcoaInstallTextBoxUI();
 
 // SCP contour lines use the same blue-to-purple contour colors as SRH.
 // Map the ranked SCP contour levels onto the SRH contour color progression,
@@ -171,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V154"; // Per-panel GOES selections; V153 footer and radar preserved
+const SPCOA_VIEWER_BUILD = "V156"; // Map text boxes; clean export panels; radar and per-panel GOES preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1855,7 +1992,13 @@ function spcoaL3DesiredSite(p){
     // numerical N0B download/decoder path as selecting a station manually.
     if(spcoaL3RightClickSite && SPCOA_L3_CATALOG.has(spcoaL3RightClickSite))
         return spcoaL3RightClickSite;
-    const center=map.getCenter();
+    // V155: This helper is declared outside the mp-child lexical scope.
+    // Bare `map` resolves to the HTML element id="map", not the MapLibre map.
+    // Use the child's exported MapLibre camera getter; this also works before
+    // the first explicit right-click and in each independent map iframe.
+    const center = typeof window.__spcoaRadarMapCenter === "function"
+        ? window.__spcoaRadarMapCenter() : null;
+    if(!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng))return null;
     const stations=spcoaL3NearbyStations(center.lat,center.lng);
     const now=Date.now();
     for(const site of stations){
@@ -3315,6 +3458,10 @@ if (!__MP_CHILD) {
             sharedCtx.save();
             sharedCtx.beginPath(); sharedCtx.rect(g.x,g.y,g.width,g.height); sharedCtx.clip();
 
+            if (annotation.type === "textbox") {
+                spcoaTextBoxDraw(sharedCtx,annotation,pts[0].x,pts[0].y);
+                sharedCtx.restore();return;
+            }
             if (annotation.type === "high" || annotation.type === "low") {
                 const p=pts[0], letter=annotation.type==="high"?"H":"L";
                 sharedCtx.font='800 58px Inter, "Segoe UI", Arial, sans-serif';
@@ -3364,7 +3511,7 @@ if (!__MP_CHILD) {
             document.querySelectorAll("#drawing-toolbar .draw-tool[data-tool]").forEach(b=>b.classList.toggle("active",b.dataset.tool===sharedDrawingTool));
             sharedCanvas.classList.toggle("drawing-active",drawingScope.value==="all" && sharedDrawingTool!=="pan" && sharedDrawingTool!=="eraser");
             sharedCanvas.classList.toggle("erasing-active",drawingScope.value==="all" && sharedDrawingTool==="eraser");
-            const hints={pan:"Pan mode",pen:"Drag to draw",cold:"Drag a cold front",warm:"Drag a warm front",stationary:"Drag a stationary front",occluded:"Drag an occluded front",dryline:"Drag a dryline",trough:"Drag a surface trough",high:"Click to place H",low:"Click to place L",eraser:"Click an annotation to erase"};
+            const hints={pan:"Pan mode",pen:"Drag to draw",cold:"Drag a cold front",warm:"Drag a warm front",stationary:"Drag a stationary front",occluded:"Drag an occluded front",dryline:"Drag a dryline",trough:"Drag a surface trough",high:"Click to place H",low:"Click to place L",eraser:"Click an annotation to erase",textbox:"Click to place text, drag to move, click to edit"};
             const h=document.getElementById("draw-hint"); if(h) h.textContent=hints[sharedDrawingTool]||"";
         }
 
@@ -3379,7 +3526,8 @@ if (!__MP_CHILD) {
             sharedAnnotations.forEach((a,idx)=>{
                 const pts=(a.points||[]).map(ll=>projectShared(panelIndex,ll)).filter(Boolean);
                 let d=Infinity;
-                if(a.type==="high"||a.type==="low"){if(pts[0])d=Math.hypot(x-pts[0].x,y-pts[0].y);}
+                if(a.type==="textbox") {if(spcoaTextBoxHit(sharedCtx,a,pts[0],x,y))d=0;}
+                else if(a.type==="high"||a.type==="low"){if(pts[0])d=Math.hypot(x-pts[0].x,y-pts[0].y);}
                 else for(let j=1;j<pts.length;j++)d=Math.min(d,sharedPointSegmentDistance(x,y,pts[j-1].x,pts[j-1].y,pts[j].x,pts[j].y));
                 if(d<bestD){bestD=d;best=idx;}
             });
@@ -3391,12 +3539,37 @@ if (!__MP_CHILD) {
             return {x:event.clientX-r.left,y:event.clientY-r.top};
         }
 
+        let sharedTextDrag=null;
+        window.__spcoaTextApplyEdit=(target,opts)=>{
+            if(target.shared && sharedAnnotations[target.index]?.type==="textbox"){
+                sharedSaveUndo();Object.assign(sharedAnnotations[target.index],opts);renderSharedOverlay();
+            } else {
+                const child=panels[target.panel]?.frame?.contentWindow;
+                child?.__spcoaTextApplyChildEdit?.(target.index,opts);
+            }
+        };
         sharedCanvas.addEventListener("pointerdown",event=>{
             if(event.button!==0 || drawingScope.value!=="all" || sharedDrawingTool==="pan")return;
             event.preventDefault(); event.stopPropagation();
             const p=canvasXY(event),panel=panelAtCanvasPoint(p.x,p.y); if(panel<0)return;
             if(sharedDrawingTool==="eraser"){eraseSharedAt(panel,p.x,p.y);return;}
             const ll=unprojectShared(panel,p.x,p.y); if(!ll)return;
+            if(sharedDrawingTool==="textbox"){
+                let hit=-1;
+                for(let i=sharedAnnotations.length-1;i>=0;i--){
+                    const a=sharedAnnotations[i];const q=a.points?.[0]?projectShared(panel,a.points[0]):null;
+                    if(spcoaTextBoxHit(sharedCtx,a,q,p.x,p.y)){hit=i;break;}
+                }
+                if(hit>=0){
+                    window.__spcoaTextEditorOpen?.({shared:true,panel,index:hit},sharedAnnotations[hit]);
+                    sharedSaveUndo();sharedTextDrag={index:hit,panel,pointerId:event.pointerId};
+                    sharedCanvas.setPointerCapture(event.pointerId);
+                }else{
+                    sharedSaveUndo();sharedAnnotations.push({type:"textbox",points:[ll],...spcoaTextValuesFromEditor()});
+                    renderSharedOverlay();
+                }
+                return;
+            }
             if(sharedDrawingTool==="high"||sharedDrawingTool==="low"){
                 sharedSaveUndo();sharedAnnotations.push({type:sharedDrawingTool,points:[ll]});renderSharedOverlay();return;
             }
@@ -3406,6 +3579,13 @@ if (!__MP_CHILD) {
         });
 
         sharedCanvas.addEventListener("pointermove",event=>{
+            if(sharedTextDrag && event.pointerId===sharedTextDrag.pointerId){
+                const p=canvasXY(event),ll=unprojectShared(sharedTextDrag.panel,p.x,p.y);
+                if(ll && sharedAnnotations[sharedTextDrag.index]){
+                    sharedAnnotations[sharedTextDrag.index].points=[ll];renderSharedOverlay();
+                }
+                return;
+            }
             if(!sharedCurrentAnnotation||event.pointerId!==sharedPointerId)return;
             event.preventDefault();
             const p=canvasXY(event),ll=unprojectShared(sharedSourcePanel,p.x,p.y); if(!ll)return;
@@ -3415,6 +3595,10 @@ if (!__MP_CHILD) {
         });
 
         function finishSharedDrawing(event){
+            if(sharedTextDrag && event.pointerId===sharedTextDrag.pointerId){
+                try{sharedCanvas.releasePointerCapture(event.pointerId);}catch(_){}
+                sharedTextDrag=null;renderSharedOverlay();return;
+            }
             if(!sharedCurrentAnnotation||event.pointerId!==sharedPointerId)return;
             event.preventDefault();
             if(sharedCurrentAnnotation.points.length>=2){sharedSaveUndo();sharedAnnotations.push(sharedCurrentAnnotation);}
@@ -4012,9 +4196,7 @@ if (!__MP_CHILD) {
                 ctx.fillRect(x, y, panelW, cellH);
                 ctx.drawImage(c, 0, childHeaderH, c.width, c.height - childHeaderH,
                     x, y, panelW, c.height - childHeaderH);
-                ctx.strokeStyle = "#425766";
-                ctx.lineWidth = Math.max(2, Math.round(5 * s));
-                ctx.strokeRect(x + 2, y + 2, panelW - 4, cellH - 4);
+                // V156: Keep saved frames clean, without the decorative panel outline.
                 if (panelCount > 1) {
                     const badgeX=x+Math.round(14*s), badgeY=y+Math.round(14*s);
                     const badgeW=Math.round(122*s), badgeH=Math.round(42*s);
@@ -4198,9 +4380,8 @@ if (!__MP_CHILD) {
                 ctx.fillStyle = "#ffffff"; ctx.fillRect(x,y,panelW,panelH);
                 const h = Math.round(panelW * img.height / img.width);
                 ctx.drawImage(img,x,y,panelW,h);
-                ctx.strokeStyle = i === activePanel ? "#2f9be8" : "#425766";
-                ctx.lineWidth = 5*s;
-                ctx.strokeRect(x + 2.5*s,y + 2.5*s,panelW-5*s,panelH-5*s);
+                // V156: Do not bake the selected-panel blue focus border into PNG/video.
+                // The active panel is still highlighted in the interactive UI.
                 if (count > 1) {
                     ctx.fillStyle = "rgba(13,27,39,.9)";
                     ctx.fillRect(x+14*s,y+14*s,122*s,42*s);
@@ -4228,7 +4409,10 @@ if (!__MP_CHILD) {
                         restoreAnnotations[i] = w.__mpGetAnnotations();
                         w.__mpSetAnnotations(sharedAnnotations);
                     }
-                    captures.push(await w.__mpCapturePanel(1800));
+                    try { captures.push(await w.__mpCapturePanel(1800)); }
+                    catch (error) {
+                        throw new Error(`Panel ${i + 1}: ${error?.message || error}`);
+                    }
                 }
                 if (drawingScope.value === "all") {
                     for (let i=0;i<count;i++) {
@@ -21297,7 +21481,7 @@ function setDrawingTool(tool) {
         const labels = {
             pan: "Pan mode", pen: "Drag to draw", cold: "Drag a cold front", warm: "Drag a warm front",
             stationary: "Drag a stationary front", occluded: "Drag an occluded front", dryline: "Drag a dryline",
-            trough: "Drag a surface trough", high: "Click to place H", low: "Click to place L", eraser: "Click an annotation to erase"
+            trough: "Drag a surface trough", high: "Click to place H", low: "Click to place L", eraser: "Click an annotation to erase", textbox: "Click to place text, drag to move, click to edit"
         };
         drawHint.textContent = labels[tool] || "";
     }
@@ -21441,6 +21625,11 @@ function renderFront(annotation, points) {
 
 function renderAnnotation(annotation) {
     if (!annotationCtx) return;
+    if (annotation.type === "textbox") {
+        const p=map.project(annotation.points[0]);
+        spcoaTextBoxDraw(annotationCtx,annotation,p.x,p.y);
+        return;
+    }
     if (annotation.type === "high" || annotation.type === "low") {
         const p = map.project(annotation.points[0]);
         annotationCtx.save();
@@ -21502,6 +21691,7 @@ function pointSegmentDistance(px, py, ax, ay, bx, by) {
 function annotationDistance(annotation, x, y) {
     const pts = annotationScreenPoints(annotation);
     if (!pts.length) return Infinity;
+    if(annotation.type === "textbox")return spcoaTextBoxHit(annotationCtx,annotation,pts[0],x,y)?0:Infinity;
     if (annotation.type === "high" || annotation.type === "low") return Math.hypot(x - pts[0].x, y - pts[0].y);
     let best = Infinity;
     for (let i = 1; i < pts.length; i++) best = Math.min(best, pointSegmentDistance(x, y, pts[i-1].x, pts[i-1].y, pts[i].x, pts[i].y));
@@ -21672,17 +21862,57 @@ async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
             await spcoaGoesWaitForMapTiles(12000);
         }
         if (spcoaRadarSelected()) {
+            const radarPrefs=spcoaReadRadarPrefs();
+            if(radarPrefs.mode==="auto" || radarPrefs.mode==="single"){
+                // V155: Auto Nearest must not require a right-click before a
+                // two-/four-panel export. Load from THIS panel's MapLibre center
+                // using the same numeric N0B decoder as interactive right-click.
+                // Do not silently substitute a national mosaic or a prior site.
+                let expectedSite=spcoaL3DesiredSite(radarPrefs);
+                if(!expectedSite){
+                    throw new Error("No NEXRAD station is available for this panel's map center.");
+                }
+                if(spcoaL3Data?.site!==expectedSite || !spcoaL3ScanIsUsable(spcoaL3Data)){
+                    // Promise.race bounds network/decoder waits during export;
+                    // a pending request may still finish and draw on the live map.
+                    const awaitScan=async site=>{
+                        let timer;
+                        try {
+                            return await Promise.race([
+                                spcoaL3EnsureScan(site),
+                                new Promise((_,reject)=>{
+                                    timer=setTimeout(()=>reject(new Error(
+                                        `NEXRAD ${site} has not finished loading for export.`)),18000);
+                                })
+                            ]);
+                        }finally{clearTimeout(timer);}
+                    };
+                    let scan=await awaitScan(expectedSite);
+                    // In auto mode, a failed nearest station may cause the
+                    // existing availability logic to choose another nearby site.
+                    if(!scan && radarPrefs.mode==="auto" && !spcoaL3RightClickSite){
+                        const nextSite=spcoaL3DesiredSite(radarPrefs);
+                        if(nextSite && nextSite!==expectedSite){
+                            expectedSite=nextSite;
+                            scan=await awaitScan(expectedSite);
+                        }
+                    }
+                    if(!scan || scan.site!==expectedSite || !spcoaL3ScanIsUsable(scan)){
+                        throw new Error(`NEXRAD ${expectedSite} is unavailable for this panel's PNG. `+
+                            "Choose National Mosaic or try another radar location.");
+                    }
+                }
+            }
             spcoaRadarRefresh();
             if (!map.getLayer(SPCOA_RADAR_LAYER_ID)) {
-                throw new Error("Base-reflectivity radar imagery is not available for export.");
+                throw new Error("Radar is enabled but its imagery has not loaded in this panel.");
             }
             await spcoaRadarWaitForMapTiles(12000);
-            const radarPrefs=spcoaReadRadarPrefs();
             if(radarPrefs.mode==="auto" || radarPrefs.mode==="single"){
                 const expectedSite=spcoaL3DesiredSite(radarPrefs);
                 if(!expectedSite || !spcoaRadarActiveKey?.startsWith(`n0b|${expectedSite}|`) ||
                    !spcoaRadarReady || spcoaL3Data?.site!==expectedSite){
-                    throw new Error("The NEXRAD scan for this map center is not yet rendered. " +
+                    throw new Error("The selected NEXRAD scan is not yet rendered in this panel. " +
                         "PNG export was cancelled to avoid saving the wrong radar.");
                 }
             }
@@ -22472,6 +22702,21 @@ if (saveGifButton) {
     saveGifButton.addEventListener("click", saveTimelineGif);
 }
 
+let spcoaTextDrag=null;
+window.__spcoaTextApplyChildEdit=(index,opts)=>{
+    if(annotations[index]?.type!=="textbox")return;
+    saveAnnotationUndo();Object.assign(annotations[index],opts);
+    renderAnnotations();window.__mpSendAnnotationState?.();
+};
+function spcoaOpenTextEditForAnnotation(index){
+    const a=annotations[index];if(!a)return;
+    if(__MP_CHILD && window.parent!==window){
+        try{
+            const panelIdx=Number(__MP_PARAMS.get("panel")||1)-1;
+            window.parent.__spcoaTextEditorOpen?.({shared:false,panel:panelIdx,index},a);
+        }catch(_){}
+    } else window.__spcoaTextEditorOpen?.({shared:false,panel:0,index},a);
+}
 if (drawingToolbar && annotationCanvas) {
     drawingToolbar.querySelectorAll(".draw-tool[data-tool]").forEach(button => {
         button.addEventListener("click", () => setDrawingTool(button.dataset.tool));
@@ -22488,6 +22733,24 @@ if (drawingToolbar && annotationCanvas) {
             return;
         }
         const ll = eventLngLat(event);
+        if(activeDrawingTool === "textbox"){
+            const rect=annotationCanvas.getBoundingClientRect();
+            const x=event.clientX-rect.left,y=event.clientY-rect.top;
+            let hit=-1;
+            for(let i=annotations.length-1;i>=0;i--){
+                const a=annotations[i],p=a?.points?.[0]?map.project(a.points[0]):null;
+                if(spcoaTextBoxHit(annotationCtx,a,p,x,y)){hit=i;break;}
+            }
+            if(hit>=0){
+                spcoaOpenTextEditForAnnotation(hit);
+                saveAnnotationUndo();spcoaTextDrag={index:hit,pointerId:event.pointerId};
+                annotationCanvas.setPointerCapture(event.pointerId);
+            } else {
+                saveAnnotationUndo();annotations.push({type:"textbox",points:[ll],...spcoaTextValuesFromEditor()});
+                renderAnnotations();window.__mpSendAnnotationState?.();
+            }
+            return;
+        }
         if (activeDrawingTool === "high" || activeDrawingTool === "low") {
             saveAnnotationUndo();
             annotations.push({ type: activeDrawingTool, points: [ll] });
@@ -22509,6 +22772,10 @@ if (drawingToolbar && annotationCanvas) {
     });
 
     annotationCanvas.addEventListener("pointermove", event => {
+        if(spcoaTextDrag && event.pointerId===spcoaTextDrag.pointerId){
+            const a=annotations[spcoaTextDrag.index];if(a){a.points=[eventLngLat(event)];renderAnnotations();}
+            return;
+        }
         if (!currentAnnotation || event.pointerId !== annotationPointerId) return;
         event.preventDefault();
         const ll = eventLngLat(event);
@@ -22521,6 +22788,10 @@ if (drawingToolbar && annotationCanvas) {
     });
 
     const finishAnnotation = event => {
+        if(spcoaTextDrag && event.pointerId===spcoaTextDrag.pointerId){
+            try{annotationCanvas.releasePointerCapture(event.pointerId);}catch(_){}
+            spcoaTextDrag=null;renderAnnotations();window.__mpSendAnnotationState?.();return;
+        }
         if (!currentAnnotation || event.pointerId !== annotationPointerId) return;
         event.preventDefault();
         if (currentAnnotation.points.length >= 2) {
