@@ -1,3 +1,4 @@
+/* V170: Original V161 radar raster presentation by default. Optional above-fill radar placement retains V163 feature. */
 /* V155: Fix Auto Nearest's map.getCenter() failure (top-level helper was
  * resolving the DOM #map element rather than the MapLibre map inside the iframe).
  * Await each panel's own numeric N0B scan during combined PNG export when radar
@@ -308,7 +309,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V168"; // ECAPE responsiveness/per-pixel palette optimization; all V167 features preserved
+const SPCOA_VIEWER_BUILD = "V170"; // V161 native-MapLibre radar appearance by default; optional above-fill overlay, newer features preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2381,7 +2382,7 @@ function spcoaL3InstallProtocol(){
 if(__MP_CHILD)spcoaL3InstallProtocol();
 
 
-const SPCOA_RADAR_DEFAULTS = Object.freeze({enabled:false,opacity:85,mode:"mosaic",site:"KLNX"});
+const SPCOA_RADAR_DEFAULTS = Object.freeze({enabled:false,opacity:85,mode:"mosaic",site:"KLNX",aboveFills:false});
 let spcoaRadarOverride = null;
 function spcoaValidateRadarPrefs(value) {
     const v = value && typeof value === "object" ? value : {};
@@ -2391,7 +2392,9 @@ function spcoaValidateRadarPrefs(value) {
         mode: v.mode === "single" ? "auto" : (v.mode === "auto" ? "auto" : "mosaic"),
         site: typeof v.site === "string" && /^K[A-Z0-9]{3}$/.test(v.site) ? v.site : "KLNX",
         opacity: Number.isFinite(Number(v.opacity))
-            ? Math.max(0,Math.min(100,Math.round(Number(v.opacity)))) : 85
+            ? Math.max(0,Math.min(100,Math.round(Number(v.opacity)))) : 85,
+        // Off reproduces the V161 native-MapLibre radar rendering and layering.
+        aboveFills: v.aboveFills === true
     };
 }
 function spcoaReadRadarPrefs() {
@@ -2406,6 +2409,7 @@ function spcoaSyncRadarControls() {
     const toggle=document.getElementById("spcoa-radar-toggle");
     const opacity=document.getElementById("spcoa-radar-opacity");
     const pct=document.getElementById("spcoa-radar-opacity-pct");
+    const aboveFills=document.getElementById("spcoa-radar-above-fills-toggle");
     const mode=document.getElementById("spcoa-radar-mode");
     const site=document.getElementById("spcoa-radar-site");
     const siteCaption=document.getElementById("spcoa-radar-site-caption");
@@ -2433,6 +2437,7 @@ function spcoaSyncRadarControls() {
     if(opacity && opacity!==document.activeElement)opacity.value=p.opacity;
     if(opacity)opacity.disabled=!p.enabled;
     if(pct)pct.textContent=p.opacity+"%";
+    if(aboveFills){aboveFills.checked=p.aboveFills;aboveFills.disabled=!p.enabled;}
 }
 function spcoaSaveRadarPrefs(value,broadcast=true) {
     const previous=spcoaReadRadarPrefs();
@@ -2525,14 +2530,25 @@ function spcoaInstallRadarControls() {
     opacity.type="range";
     opacity.min="0";opacity.max="100";opacity.step="5";
     opacity.style.cssText="width:100%;accent-color:#69baf5;";
+    const placementLabel=document.createElement("label");
+    placementLabel.style.cssText="display:flex;gap:7px;align-items:flex-start;font-size:11px;line-height:1.35;cursor:pointer;";
+    const placementToggle=document.createElement("input");
+    placementToggle.type="checkbox";
+    placementToggle.id="spcoa-radar-above-fills-toggle";
+    placementToggle.style.cssText="accent-color:#69baf5;margin-top:2px;";
+    placementLabel.append(placementToggle,document.createTextNode("Draw radar above filled fields"));
+    const placementHint=document.createElement("div");
+    placementHint.textContent="Off: original V161 radar appearance (MapLibre raster). On: radar above SPCOA fills.";
+    placementHint.style.cssText="font-size:10px;line-height:1.4;color:#b5cee0;";
     const radarValid=document.createElement("div");
     radarValid.id="spcoa-radar-valid";
     radarValid.style.cssText="font-size:10px;color:#b5cee0;line-height:1.4;";
     radarValid.textContent="Radar valid: unavailable";
-    panel.append(heading,description,toggleLabel,modeLabel,modeHint,siteLabel,catalogStatus,opacityRow,opacity,radarValid);
-    const changed=()=>spcoaSaveRadarPrefs({enabled:toggle.checked,mode:mode.value,site:site.value,opacity:opacity.value});
+    panel.append(heading,description,toggleLabel,modeLabel,modeHint,siteLabel,catalogStatus,opacityRow,opacity,placementLabel,placementHint,radarValid);
+    const changed=()=>spcoaSaveRadarPrefs({enabled:toggle.checked,mode:mode.value,site:site.value,opacity:opacity.value,aboveFills:placementToggle.checked});
     toggle.addEventListener("change",changed);
     mode.addEventListener("change",changed);
+    placementToggle.addEventListener("change",changed);
     opacity.addEventListener("input",()=>{pct.textContent=opacity.value+"%";changed();});
     const goes=document.getElementById("spcoa-goes-controls");
     if(goes?.parentElement)goes.insertAdjacentElement("afterend",panel);
@@ -9845,6 +9861,13 @@ function spcoaRadarTopCameraKey(){
 }
 async function spcoaRadarTopDraw(){
     const prefs=spcoaReadRadarPrefs();
+    // Match V161 exactly when above-fill placement is not requested:
+    // let MapLibre render the original tiles; no secondary canvas/scaling.
+    if(!prefs.aboveFills){
+        spcoaRadarTopClear();
+        if(prefs.enabled)spcoaRadarTopRestoreBase();
+        return false;
+    }
     if(!prefs.enabled||!spcoaRadarActiveKey||!map.getLayer(SPCOA_RADAR_LAYER_ID)){
         spcoaRadarTopClear();return false;
     }
@@ -9887,8 +9910,6 @@ async function spcoaRadarTopDraw(){
         const frame=document.createElement("canvas");
         frame.width=Math.max(1,Math.round(w*dpr));frame.height=Math.max(1,Math.round(h*dpr));
         const ctx=frame.getContext("2d");if(!ctx)throw new Error("Radar overlay canvas unavailable");
-        // Preserve distinct dBZ pixels when projecting radar tiles onto the overlay.
-        ctx.imageSmoothingEnabled=false;
         ctx.setTransform(dpr,0,0,dpr,0,0);
         for(let i=0;i<coords.length;i++){
             const t=coords[i],image=results[i].value;
@@ -9902,8 +9923,6 @@ async function spcoaRadarTopDraw(){
             map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",0);
         spcoaRadarAboveFillCanvas.width=frame.width;
         spcoaRadarAboveFillCanvas.height=frame.height;
-        // Resetting canvas dimensions also resets the rendering state.
-        spcoaRadarTopCtx.imageSmoothingEnabled=false;
         spcoaRadarTopCtx.drawImage(frame,0,0);
         spcoaRadarAboveFillCanvas.style.transform="none";
         spcoaRadarAboveFillCanvas.style.opacity=String(spcoaReadRadarPrefs().opacity/100);
@@ -9928,11 +9947,16 @@ async function spcoaRadarTopDraw(){
 }
 function spcoaRadarTopSchedule(ms=70){
     clearTimeout(spcoaRadarTopTimer);
-    if(!spcoaReadRadarPrefs().enabled){spcoaRadarTopClear();return;}
+    const prefs=spcoaReadRadarPrefs();
+    if(!prefs.enabled || !prefs.aboveFills){
+        spcoaRadarTopClear();
+        if(prefs.enabled)spcoaRadarTopRestoreBase();
+        return;
+    }
     spcoaRadarTopTimer=setTimeout(()=>{void spcoaRadarTopDraw();},ms);
 }
 async function spcoaRadarTopEnsureExport(){
-    if(!spcoaRadarSelected())return;
+    if(!spcoaRadarSelected() || !spcoaReadRadarPrefs().aboveFills)return;
     clearTimeout(spcoaRadarTopTimer);
     const ready=await Promise.race([
         spcoaRadarTopDraw(),
@@ -10053,8 +10077,7 @@ function spcoaRadarRefresh(){
             });
             map.addLayer({
                 id:SPCOA_RADAR_LAYER_ID,type:"raster",source:SPCOA_RADAR_LAYER_ID,
-                paint:{"raster-opacity":p.opacity/100,"raster-fade-duration":0,
-                    "raster-resampling":"nearest"}
+                paint:{"raster-opacity":p.opacity/100,"raster-fade-duration":0}
             },spcoaRadarBeforeLayerId());
             spcoaRadarActiveKey=key;
         }else{
