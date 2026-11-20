@@ -1,6 +1,11 @@
+/* V184: Connect published SPCOA feedback form to V183 About/Help button; all else unchanged. */
 /* V182: Clear All now switches off GOES in the selected map panel(s) and
  * disables the global NEXRAD overlay / returns the map background to Plain.
  * Preserve V181 numerical contours, geography, annotations and all other tools. */
+/* V183: Add optional Google Forms feedback link to the existing host-only About/Help
+ * dialog. Feedback includes bugs, suggestions, parameter requests, and general comments.
+ * No network submission occurs inside the viewer; set SPCOA_FEEDBACK_FORM_URL below.
+ * Preserve V182 Clear All behavior, V181 contours, and all existing viewer features. */
 /* V181: Apply Gaussian sigma = 6.0 to all notebook-matched contour overlays only.
  * Keep existing CAPE/DCAPE strong smoothing, continuous stitching, no changes
  * to filled fields, legacy contours, vectors, radar or satellite. */
@@ -327,7 +332,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V182"; // V181 contours preserved; Clear All also resets GOES, radar and background
+const SPCOA_VIEWER_BUILD = "V184"; // V183 Feedback button connected to published Google Form; all prior features preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3112,6 +3117,23 @@ function spcoaV122InstallParameterExplorer() {
 }
 
 
+/* V183 FEEDBACK CONFIGURATION
+ * 1. Create a Google Form for Bugs, Suggestions, Feature/Parameter Requests, General Feedback.
+ * 2. Publish it, click Send / Copy responder link (not the editor link).
+ * 3. Paste that complete HTTPS link in the empty string below, then deploy app.js.
+ * The viewer never collects or submits personal information itself.
+ */
+const SPCOA_FEEDBACK_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSezJn6G42ZFNpvIZxrUHdioVmkDbUkNgPt6SzXkHKJRCjWRkA/viewform"; // Public responder URL
+
+function spcoaV183FeedbackUrl() {
+    try {
+        const u = new URL(String(SPCOA_FEEDBACK_FORM_URL || "").trim());
+        const isFormsHost = (u.hostname === "docs.google.com" && /^\/forms\/d\/(?:e\/)?[^/]+\/viewform\/?$/.test(u.pathname)) ||
+                            u.hostname === "forms.gle";
+        return u.protocol === "https:" && isFormsHost ? u.href : null;
+    } catch (_) { return null; }
+}
+
 /* =========================================================================================
    V158 — ABOUT / HELP (HOST-ONLY, VIEWER-ONLY)
    This is intentionally isolated from all map/radar/satellite initialization.
@@ -3170,6 +3192,19 @@ function spcoaV158InstallAboutHelp() {
       #spcoa-v158-overlay .spcoa-v158-detail p:last-child {margin-bottom:0;}
       #spcoa-v158-overlay ul {padding-left:21px;margin:5px 0 10px;}
       #spcoa-v158-overlay li {margin:5px 0;}
+      /* V183: Feedback entry stays visible beneath either About or Help. */
+      #spcoa-v183-feedback-footer {display:flex;gap:12px;align-items:center;
+        justify-content:space-between;padding:12px 17px;border-top:1px solid #355368;
+        background:#0d2232;flex-wrap:wrap;}
+      #spcoa-v183-feedback-footer .spcoa-v183-feedback-copy {flex:1 1 230px;line-height:1.35;}
+      #spcoa-v183-feedback-footer .spcoa-v183-feedback-copy strong {display:block;font-size:12px;color:#f0f8ff;}
+      #spcoa-v183-feedback-footer .spcoa-v183-feedback-copy small {display:block;font-size:11px;color:#b8d2e1;margin-top:3px;}
+      #spcoa-v183-open-feedback {min-height:34px;border-radius:6px;border:1px solid #76abcf;
+        background:#20516b;color:#fff;font:700 12px Inter,"Segoe UI",Arial,sans-serif;
+        padding:9px 12px;cursor:pointer;white-space:normal;}
+      #spcoa-v183-open-feedback:hover:not(:disabled) {background:#2f6582;}
+      #spcoa-v183-open-feedback:disabled {opacity:.55;cursor:not-allowed;}
+      #spcoa-v183-feedback-status {flex-basis:100%;font-size:11px;color:#c6d7e3;}
       @media(max-width:520px) {
         #spcoa-v158-overlay {padding:10px;align-items:center;}
         #spcoa-v158-dialog {max-height:90dvh;}
@@ -3231,10 +3266,43 @@ function spcoaV158InstallAboutHelp() {
               <summary>Data Information</summary>
               <div class="spcoa-v158-detail"><p>The viewer primarily uses SPCOA HRRR-based mesoscale analysis data, supplemented by radar and satellite imagery from external providers.</p><p>Availability and update frequency can vary by product. Some diagnostics may retain an earlier valid time while newer SPCOA analysis becomes available. Radar and satellite imagery may also have different observation times from the selected analysis.</p><p>Check the displayed valid-time labels when comparing different data sources.</p></div>
             </details>
+            <details>
+              <summary>Feedback, Suggestions &amp; Bug Reports</summary>
+              <div class="spcoa-v158-detail"><p>Use <strong>Feedback / Report an Issue</strong> below to report bugs, request parameters or features, suggest improvements, or send general comments.</p><p>For bug reports, it helps to include what happened, how to reproduce it, your browser/device, and an optional screenshot link. Contact information is optional.</p></div>
+            </details>
           </div>
         </div>
+        <footer id="spcoa-v183-feedback-footer">
+          <div class="spcoa-v183-feedback-copy">
+            <strong>Have feedback about the viewer?</strong>
+            <small>Report a bug, request a parameter or feature, suggest an improvement, or leave general feedback. Contact information is optional.</small>
+          </div>
+          <button type="button" id="spcoa-v183-open-feedback" aria-label="Open SPCOA Viewer feedback form in a new tab">Feedback / Report an Issue</button>
+          <div id="spcoa-v183-feedback-status" role="status" hidden></div>
+        </footer>
       </section>`;
     document.body.appendChild(overlay);
+
+    // Opening a Google Form is the only submission action. Without a real
+    // responder link, the button is disabled instead of falsely promising delivery.
+    const feedbackButton = overlay.querySelector("#spcoa-v183-open-feedback");
+    const feedbackStatus = overlay.querySelector("#spcoa-v183-feedback-status");
+    const feedbackUrl = spcoaV183FeedbackUrl();
+    if (feedbackButton) {
+        feedbackButton.disabled = !feedbackUrl;
+        if (feedbackUrl) {
+            feedbackButton.addEventListener("click", () => {
+                // New tab is opened synchronously in response to the click.
+                window.open(feedbackUrl, "_blank", "noopener,noreferrer");
+            });
+        } else {
+            feedbackButton.title = "Set SPCOA_FEEDBACK_FORM_URL in app.js to enable the feedback form.";
+            if (feedbackStatus) {
+                feedbackStatus.hidden = false;
+                feedbackStatus.textContent = "Feedback form coming soon (link not configured yet).";
+            }
+        }
+    }
 
     const aboutTab = overlay.querySelector("#spcoa-v158-tab-about");
     const helpTab = overlay.querySelector("#spcoa-v158-tab-help");
@@ -3269,7 +3337,7 @@ function spcoaV158InstallAboutHelp() {
         if (event.key === "Escape") { event.preventDefault(); closeDialog(); }
         // Keep keyboard focus inside the dialog until it is closed.
         if (event.key === "Tab") {
-            const focusable = Array.from(overlay.querySelectorAll('button,summary'))
+            const focusable = Array.from(overlay.querySelectorAll('button:not(:disabled),summary'))
                 .filter(el => !el.closest('[hidden]') && el.getClientRects().length);
             if (!focusable.length) return;
             const first = focusable[0], last = focusable[focusable.length - 1];
