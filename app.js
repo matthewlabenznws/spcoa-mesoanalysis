@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V156"; // Map text boxes; clean export panels; radar and per-panel GOES preserved
+const SPCOA_VIEWER_BUILD = "V158"; // About / Help window added to stable V156; no radar animation
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3035,6 +3035,177 @@ function spcoaV122InstallParameterExplorer() {
     window.__spcoaV122Explorer={rebuild,refresh:render,count:()=>catalog.length};
 }
 
+
+/* =========================================================================================
+   V158 — ABOUT / HELP (HOST-ONLY, VIEWER-ONLY)
+   This is intentionally isolated from all map/radar/satellite initialization.
+   A button is added to the host sidebar; the dialog lives outside the sidebar
+   so it is never relayed as a parameter change to map iframes.
+   ========================================================================================= */
+function spcoaV158InstallAboutHelp() {
+    if (__MP_CHILD || document.getElementById("spcoa-v158-open-help")) return;
+    const sidebar = document.getElementById("sidebar");
+    if (!sidebar) return;
+
+    const style = document.createElement("style");
+    style.id = "spcoa-v158-help-style";
+    style.textContent = `
+      #spcoa-v158-open-help { display:flex;align-items:center;justify-content:center;
+        gap:8px;width:calc(100% - 20px);margin:10px;padding:10px 12px;
+        box-sizing:border-box;border-radius:7px;border:1px solid #60849a;
+        background:#173448;color:#f0f8ff;cursor:pointer;
+        font:600 12px Inter,"Segoe UI",Arial,sans-serif; }
+      #spcoa-v158-open-help:hover {background:#244c64;border-color:#85b7d0;}
+      #spcoa-v158-open-help:focus-visible,#spcoa-v158-overlay button:focus-visible,
+      #spcoa-v158-overlay summary:focus-visible {outline:2px solid #90d7ff;outline-offset:2px;}
+      #spcoa-v158-overlay[hidden],#spcoa-v158-overlay [hidden] {display:none!important;}
+      #spcoa-v158-overlay {position:fixed;inset:0;z-index:2147483000;
+        box-sizing:border-box;display:flex;justify-content:center;align-items:center;
+        padding:18px;background:rgba(2,12,21,.78);font:13px/1.6 Inter,"Segoe UI",Arial,sans-serif;}
+      #spcoa-v158-overlay * {box-sizing:border-box;}
+      #spcoa-v158-dialog {width:min(640px,100%);max-height:min(84vh,850px);
+        display:flex;flex-direction:column;overflow:hidden;border-radius:11px;
+        border:1px solid #62839a;background:#10283a;color:#eaf4fc;
+        box-shadow:0 14px 50px rgba(0,0,0,.6);}
+      #spcoa-v158-overlay .spcoa-v158-head {display:flex;justify-content:space-between;
+        align-items:center;gap:12px;padding:13px 17px;border-bottom:1px solid #355368;}
+      #spcoa-v158-overlay .spcoa-v158-title {font-size:17px;font-weight:700;margin:0;}
+      #spcoa-v158-overlay .spcoa-v158-close {min-width:34px;min-height:34px;
+        cursor:pointer;border-radius:6px;border:1px solid #607d93;
+        background:#1c3d51;color:#fff;font-size:18px;}
+      #spcoa-v158-overlay .spcoa-v158-tabs {display:flex;gap:8px;padding:12px 17px 0;}
+      #spcoa-v158-overlay .spcoa-v158-tab {flex:1;cursor:pointer;border:1px solid #48697d;
+        border-radius:7px 7px 0 0;background:#1c3c51;color:#c9ddea;
+        padding:9px 12px;font:600 13px Inter,"Segoe UI",Arial,sans-serif;}
+      #spcoa-v158-overlay .spcoa-v158-tab[aria-selected="true"] {
+        background:#2b526a;color:#fff;border-bottom-color:#2b526a;}
+      #spcoa-v158-overlay .spcoa-v158-scroll {overflow:auto;overscroll-behavior:contain;
+        min-height:0;flex:1;padding:15px 19px 19px;}
+      #spcoa-v158-overlay h3 {font-size:15px;margin:0 0 11px;color:#f5fbff;}
+      #spcoa-v158-overlay p {margin:0 0 13px;}
+      #spcoa-v158-overlay .spcoa-v158-credit {margin-top:17px;padding-top:11px;
+        border-top:1px solid #355368;color:#c7deee;font-size:12px;}
+      #spcoa-v158-overlay details {margin-bottom:9px;border-radius:7px;
+        border:1px solid #405e73;background:#173448;}
+      #spcoa-v158-overlay summary {cursor:pointer;padding:11px 13px;
+        font-weight:700;color:#f3f9ff;}
+      #spcoa-v158-overlay details[open] summary {border-bottom:1px solid #405e73;}
+      #spcoa-v158-overlay .spcoa-v158-detail {padding:11px 14px;color:#dfedf6;}
+      #spcoa-v158-overlay .spcoa-v158-detail p:last-child {margin-bottom:0;}
+      #spcoa-v158-overlay ul {padding-left:21px;margin:5px 0 10px;}
+      #spcoa-v158-overlay li {margin:5px 0;}
+      @media(max-width:520px) {
+        #spcoa-v158-overlay {padding:10px;align-items:center;}
+        #spcoa-v158-dialog {max-height:90dvh;}
+        #spcoa-v158-overlay .spcoa-v158-scroll {padding:13px;}
+      }
+    `;
+    document.head.appendChild(style);
+
+    const opener = document.createElement("button");
+    opener.type = "button";
+    opener.id = "spcoa-v158-open-help";
+    opener.textContent = "ⓘ  About / Help";
+    opener.title = "Learn about this viewer and how to use its controls";
+    opener.setAttribute("aria-haspopup", "dialog");
+    opener.setAttribute("aria-controls", "spcoa-v158-overlay");
+    sidebar.prepend(opener);
+
+    const overlay = document.createElement("div");
+    overlay.id = "spcoa-v158-overlay";
+    overlay.hidden = true;
+    overlay.innerHTML = `
+      <section id="spcoa-v158-dialog" role="dialog" aria-modal="true" aria-labelledby="spcoa-v158-title">
+        <header class="spcoa-v158-head">
+          <h2 id="spcoa-v158-title" class="spcoa-v158-title">About / Help</h2>
+          <button type="button" class="spcoa-v158-close" aria-label="Close About / Help">×</button>
+        </header>
+        <div class="spcoa-v158-tabs" role="tablist" aria-label="About and Help sections">
+          <button type="button" class="spcoa-v158-tab" id="spcoa-v158-tab-about" role="tab" aria-selected="true" aria-controls="spcoa-v158-about">About</button>
+          <button type="button" class="spcoa-v158-tab" id="spcoa-v158-tab-help" role="tab" aria-selected="false" aria-controls="spcoa-v158-help">Help</button>
+        </div>
+        <div class="spcoa-v158-scroll">
+          <div id="spcoa-v158-about" role="tabpanel" aria-labelledby="spcoa-v158-tab-about">
+            <h3>About the SPCOA Mesoscale Analysis Viewer</h3>
+            <p>The SPCOA Mesoscale Analysis Viewer is an interactive weather analysis tool designed to visualize and examine a wide range of atmospheric parameters using SPCOA HRRR-based mesoscale analysis data.</p>
+            <p>The viewer allows users to overlay and compare a variety of meteorological fields, including synoptic-scale, thermodynamic, kinematic, severe weather, and winter weather parameters. These capabilities provide a more comprehensive view of the atmospheric environment and help users identify and analyze important meteorological features. Additional features include satellite imagery, NEXRAD base reflectivity, interactive soundings and hodographs, and multi-panel displays for comparing different parameters simultaneously.</p>
+            <p>Drawing and annotation tools are also available to highlight meteorological features, with options to export maps and animations.</p>
+            <p>The SPCOA Mesoscale Analysis Viewer is under continued development, with additional meteorological parameters, visualization tools, and features being added.</p>
+            <div class="spcoa-v158-credit"><strong>Developed by:</strong> Matthew Labenz<br><strong>National Weather Service — North Platte, Nebraska</strong></div>
+          </div>
+          <div id="spcoa-v158-help" role="tabpanel" aria-labelledby="spcoa-v158-tab-help" hidden>
+            <h3>Using the SPCOA Mesoscale Analysis Viewer</h3>
+            <details open>
+              <summary>Getting Started</summary>
+              <div class="spcoa-v158-detail"><p>Select a meteorological parameter from the available categories to display it on the map. Use the analysis hour controls to navigate between available SPCOA analysis times. Additional parameters and contours can be overlaid to examine relationships between atmospheric fields.</p></div>
+            </details>
+            <details>
+              <summary>Multi-Panel Views</summary>
+              <div class="spcoa-v158-detail"><p>Switch between single-panel and multi-panel layouts to compare meteorological parameters simultaneously.</p><ul><li><strong>Active Panel:</strong> Changes apply only to the selected panel.</li><li><strong>All Panels:</strong> Changes apply to every displayed panel.</li></ul><p>Click a panel to make it active before changing its parameters, contours, or imagery.</p></div>
+            </details>
+            <details>
+              <summary>Satellite and Radar</summary>
+              <div class="spcoa-v158-detail"><p>Satellite imagery and NEXRAD base reflectivity can be displayed alongside SPCOA analysis fields. Choose a satellite product or enable base reflectivity using the imagery controls.</p><p>To select an individual radar, enable <strong>Auto Nearest NEXRAD</strong>, switch to <strong>Pan</strong> mode, and right-click the map near your area of interest.</p><p>Satellite and radar observations have their own valid times, which may differ from the selected SPCOA analysis hour.</p></div>
+            </details>
+            <details>
+              <summary>Drawing and Exporting</summary>
+              <div class="spcoa-v158-detail"><p>Use the drawing tools to highlight fronts, boundaries, and other meteorological features. Add annotations and editable text boxes where needed.</p><p>Use the export controls to save maps as PNG images or create videos. Multi-panel layouts can be exported for side-by-side comparisons.</p></div>
+            </details>
+            <details>
+              <summary>Data Information</summary>
+              <div class="spcoa-v158-detail"><p>The viewer primarily uses SPCOA HRRR-based mesoscale analysis data, supplemented by radar and satellite imagery from external providers.</p><p>Availability and update frequency can vary by product. Some diagnostics may retain an earlier valid time while newer SPCOA analysis becomes available. Radar and satellite imagery may also have different observation times from the selected analysis.</p><p>Check the displayed valid-time labels when comparing different data sources.</p></div>
+            </details>
+          </div>
+        </div>
+      </section>`;
+    document.body.appendChild(overlay);
+
+    const aboutTab = overlay.querySelector("#spcoa-v158-tab-about");
+    const helpTab = overlay.querySelector("#spcoa-v158-tab-help");
+    const aboutBody = overlay.querySelector("#spcoa-v158-about");
+    const helpBody = overlay.querySelector("#spcoa-v158-help");
+    const closeButton = overlay.querySelector(".spcoa-v158-close");
+    function setTab(which) {
+        const showHelp = which === "help";
+        aboutTab.setAttribute("aria-selected", String(!showHelp));
+        helpTab.setAttribute("aria-selected", String(showHelp));
+        aboutBody.hidden = showHelp;
+        helpBody.hidden = !showHelp;
+        overlay.querySelector(".spcoa-v158-scroll").scrollTop = 0;
+    }
+    function openDialog() {
+        setTab("about");
+        overlay.hidden = false;
+        closeButton.focus();
+    }
+    function closeDialog() {
+        if (overlay.hidden) return;
+        overlay.hidden = true;
+        opener.focus();
+    }
+    opener.addEventListener("click", openDialog);
+    closeButton.addEventListener("click", closeDialog);
+    aboutTab.addEventListener("click", () => setTab("about"));
+    helpTab.addEventListener("click", () => setTab("help"));
+    overlay.addEventListener("click", event => { if (event.target === overlay) closeDialog(); });
+    document.addEventListener("keydown", event => {
+        if (overlay.hidden) return;
+        if (event.key === "Escape") { event.preventDefault(); closeDialog(); }
+        // Keep keyboard focus inside the dialog until it is closed.
+        if (event.key === "Tab") {
+            const focusable = Array.from(overlay.querySelectorAll('button,summary'))
+                .filter(el => !el.closest('[hidden]') && el.getClientRects().length);
+            if (!focusable.length) return;
+            const first = focusable[0], last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault(); last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault(); first.focus();
+            }
+        }
+    });
+}
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -3047,6 +3218,7 @@ if (!__MP_CHILD) {
         spcoaInstallHostVectorColors();
         installSpcoaCompositeContourToggles();
         spcoaV122InstallParameterExplorer();
+        spcoaV158InstallAboutHelp();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
 
