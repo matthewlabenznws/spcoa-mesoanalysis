@@ -1,3 +1,7 @@
+/* V189: 60-minute radar option; avoid blank transitions using frame staging and a rendered-frame handoff;
+ * encode radar MP4s at a steady 15 fps while preserving the full map between radar times.
+ * All V188 playback safeguards, above-fill radar, and existing site features remain. */
+/* V188: 2-hour radar history, faster playback speeds and separate H.264 radar-loop MP4 export. */
 /* V187: Double-buffered radar playback; full-resolution above-fill tile zoom (+1 for 256px sources), one-pass high-quality image interpolation. */
 /* V184: Connect published SPCOA feedback form to V183 About/Help button; all else unchanged. */
 /* V182: Clear All now switches off GOES in the selected map panel(s) and
@@ -334,7 +338,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V187"; // quality-matched radar above fills, including bounded radar playback
+const SPCOA_VIEWER_BUILD = "V189"; // 60 min radar loop, stable buffered playback and steady-cadence MP4
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2645,17 +2649,17 @@ function spcoaInstallRadarPlaybackControls(){
     const settings=document.createElement("div");
     settings.style.cssText="display:flex;gap:6px;align-items:center;flex-wrap:wrap";
     const duration=document.createElement("select");duration.id="spcoa-radar-playback-duration";
-    for(const [value,name] of [["30","30 min"],["50","50 min"]]){
+    for(const [value,name] of [["30","30 min"],["60","60 min"],["120","2 hours"]]){
         const option=document.createElement("option");option.value=value;option.textContent=name;duration.appendChild(option);
     }
     duration.value="30";
     duration.title="Radar history duration; 5-minute steps";
     duration.addEventListener("change",()=>spcoaRadarPlaybackUiCommand("duration",duration.value));
     const speed=document.createElement("select");speed.id="spcoa-radar-playback-speed";
-    for(const [value,name] of [["4000","Slow"],["2500","Normal"],["1500","Fast"]]){
+    for(const [value,name] of [["3000","Slow"],["1600","Normal"],["650","Fast"],["350","Very Fast"]]){
         const option=document.createElement("option");option.value=value;option.textContent=name;speed.appendChild(option);
     }
-    speed.value="2500";
+    speed.value="1600";
     speed.addEventListener("change",()=>spcoaRadarPlaybackUiCommand("speed",speed.value));
     settings.append(document.createTextNode("History"),duration,document.createTextNode("Speed"),speed);
     const slider=document.createElement("input");
@@ -2669,7 +2673,18 @@ function spcoaInstallRadarPlaybackControls(){
     status.style.cssText="min-height:27px;color:#b5cee0;line-height:1.45;font-size:10px";
     // V157 failed by appending `anim` before its `const` declaration. Every
     // control above now exists before the playback widget is attached.
-    anim.append(title,hint,row,settings,slider,status);
+    // Separate from the toolbar's analysis-hour Save Video: radar export uses
+    // actual radar observation frames, not the SPCOA hourly model timeline.
+    const exportRow=document.createElement("div");
+    exportRow.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap";
+    const exportButton=btn("spcoa-radar-playback-export","Save Radar MP4","export");
+    exportButton.title="Export the selected radar-history loop as an H.264 MP4 from the active map panel";
+    exportRow.appendChild(exportButton);
+    const exportHint=document.createElement("small");
+    exportHint.textContent="Active panel · Includes displayed map layers";
+    exportHint.style.cssText="color:#a7c9d9;font-size:10px";
+    exportRow.appendChild(exportHint);
+    anim.append(title,hint,row,settings,slider,status,exportRow);
     host.appendChild(anim);
     spcoaRadarPlaybackSyncUi();
 }
@@ -2699,15 +2714,20 @@ function spcoaRadarPlaybackSyncUi(){
     const status=root.querySelector("#spcoa-radar-playback-status");
     const duration=root.querySelector("#spcoa-radar-playback-duration");
     const speed=root.querySelector("#spcoa-radar-playback-speed");
-    if(play){play.disabled=!enabled||(!state?.active&&!!state?.loading);
+    const exportButton=root.querySelector("#spcoa-radar-playback-export");
+    if(play){play.disabled=!enabled||!!state?.exporting||(!state?.active&&!!state?.loading);
         play.textContent=state?.playing?"Ⅱ Pause":"▶ Play";}
-    if(prev)prev.disabled=!enabled||!state?.frames?.length||!!state?.loading;
-    if(next)next.disabled=!enabled||!state?.frames?.length||!!state?.loading;
-    if(live)live.disabled=!state?.active&&!state?.loading;
+    if(prev)prev.disabled=!enabled||!!state?.exporting||!state?.frames?.length||!!state?.loading;
+    if(next)next.disabled=!enabled||!!state?.exporting||!state?.frames?.length||!!state?.loading;
+    if(live)live.disabled=!!state?.exporting||(!state?.active&&!state?.loading);
     if(slider){slider.max=String(Math.max(0,(state?.frames?.length||1)-1));
-        slider.value=String(Math.max(0,state?.index||0));slider.disabled=!enabled||!state?.frames?.length||!!state?.loading;}
-    if(duration&&duration!==document.activeElement)duration.value=String(state?.duration||30);
-    if(speed&&speed!==document.activeElement)speed.value=String(state?.speed||2500);
+        slider.value=String(Math.max(0,state?.index||0));slider.disabled=!enabled||!!state?.exporting||!state?.frames?.length||!!state?.loading;}
+    if(duration){duration.disabled=!!state?.exporting;
+        if(duration!==document.activeElement)duration.value=String(state?.duration||30);}
+    if(speed){speed.disabled=!!state?.exporting;
+        if(speed!==document.activeElement)speed.value=String(state?.speed||1600);}
+    if(exportButton){exportButton.disabled=!enabled||!!state?.loading||!!state?.exporting;
+        exportButton.textContent=state?.exporting?"Exporting radar…":"Save Radar MP4";}
     if(status)status.textContent=!prefs.enabled?"Enable Base Reflectivity to play radar":
         !state?"Waiting for active map panel...":state.status;
 }
@@ -10198,20 +10218,21 @@ document.addEventListener("visibilitychange",()=>{
    The loop never modifies the SPCOA analysis clock or GOES times.
    ========================================================================================= */
 const SPCOA_RADAR_PLAYBACK_WMS="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi";
-const spcoaRadarPlayback={active:false,playing:false,loading:false,frames:[],index:0,
-    duration:30,speed:2500,mode:null,site:null,relative:false,
+const spcoaRadarPlayback={active:false,playing:false,loading:false,exporting:false,frames:[],index:0,
+    duration:30,speed:1600,mode:null,site:null,relative:false,
     token:0,timer:null,controller:null,queued:null,cache:new Map(),displayedAt:0,
     status:"Paused · Press Play to load recent frames"};
 function spcoaRadarPlaybackState(){
     const a=spcoaRadarPlayback;
-    return {active:a.active,playing:a.playing,loading:a.loading,index:a.index,
+    return {active:a.active,playing:a.playing,loading:a.loading,exporting:a.exporting,index:a.index,
         frames:a.frames.map(f=>f.time?.toISOString()||"offset "+f.offset+" min"),
         duration:a.duration,speed:a.speed,mode:a.mode,site:a.site,status:a.status};
 }
 window.__spcoaRadarPlaybackState=spcoaRadarPlaybackState;
 function spcoaRadarPlaybackFrameLabel(frame){
     if(!frame)return "Time unavailable";
-    if(frame.time)return spcoaObsFormat(frame.time);
+    if(frame.time)return (frame.approximate?"Requested ~":"")+spcoaObsFormat(frame.time)+
+        (frame.approximate?" (mosaic scan time unverified)":"");
     return frame.offset===0?"Latest mosaic (UTC time unverified)":
         "~"+frame.offset+" min before latest (UTC time unverified)";
 }
@@ -10306,6 +10327,14 @@ async function spcoaRadarPlaybackStage(frame,token){
     if(!a.active||!p.enabled||p.mode!==a.mode)return false;
     const source=spcoaRadarPlaybackSource(frame);
     const oldId=SPCOA_RADAR_LAYER_ID;
+    const oldKey=spcoaRadarActiveKey;
+    const oldReady=spcoaRadarReady;
+    const oldLabel=spcoaRadarActiveLabel;
+    if(source.key===spcoaRadarActiveKey && map.getLayer(oldId) && spcoaRadarReady){
+        // This observation is already displayed: do not tear down and
+        // redownload it merely because Play was pressed again.
+        return true;
+    }
     const nextId=oldId===SPCOA_RADAR_LAYER_BASE_ID?
         SPCOA_RADAR_LAYER_BUFFER_ID:SPCOA_RADAR_LAYER_BASE_ID;
     if(map.getLayer(nextId))map.removeLayer(nextId);
@@ -10341,16 +10370,26 @@ async function spcoaRadarPlaybackStage(frame,token){
             if(!composed){
                 spcoaRadarTopSerial++;
                 spcoaRadarTopPendingSignature="";
+                // Switch to the already-loaded native source BEFORE hiding
+                // the old top canvas; this avoids a one-frame blank handoff.
+                map.setPaintProperty(nextId,"raster-opacity",p.opacity/100);
+                await spcoaRadarPlaybackWaitForPaint(token,1800);
+                if(token!==a.token||!a.active)return false;
                 spcoaRadarTopReady=false;
                 spcoaRadarAboveFillCanvas.style.opacity="0";
-                spcoaRadarTopRestoreBase();
                 console.warn("Above-fill radar unavailable; showing full-quality MapLibre radar below fills.");
             }
         } else {
             map.setPaintProperty(nextId,"raster-opacity",p.opacity/100);
+            // Keep the old map layer present until at least one WebGL render
+            // has painted the new full-opacity source.  Loading the source by
+            // itself is NOT enough and caused momentary blank radar frames.
+            await spcoaRadarPlaybackWaitForPaint(token,1800);
+            if(token!==a.token||!a.active)return false;
             spcoaRadarTopClear();
         }
-        // Remove the previous MapLibre image only AFTER replacement is ready.
+        // Remove the previous MapLibre image only AFTER replacement is painted
+        // (or the above-fill canvas has finished its complete composition).
         if(map.getLayer(oldId))map.removeLayer(oldId);
         if(map.getSource(oldId))map.removeSource(oldId);
         promoted=true;
@@ -10361,12 +10400,41 @@ async function spcoaRadarPlaybackStage(frame,token){
         if(!promoted&&token===a.token){
             if(map.getLayer(nextId))map.removeLayer(nextId);
             if(map.getSource(nextId))map.removeSource(nextId);
-            // Restore the previously displayed radar if staging failed.
+            // Restore *all* identifiers for the previously displayed frame;
+            // leaving the failed frame key behind can incorrectly make the
+            // next playback attempt think an undrawn frame is already visible.
             SPCOA_RADAR_LAYER_ID=oldId;
+            spcoaRadarActiveKey=oldKey;
+            spcoaRadarReady=oldReady;
+            spcoaRadarActiveLabel=oldLabel;
             if(p.aboveFills&&spcoaRadarTopReady&&map.getLayer(oldId))
                 map.setPaintProperty(oldId,"raster-opacity",0);
         }
     }
+}
+// A loaded raster may not have been painted by MapLibre yet. Do not remove
+// the prior radar layer until a subsequent map render has completed.
+function spcoaRadarPlaybackWaitForPaint(token,timeout=1800){
+    if(token!==spcoaRadarPlayback.token)
+        return Promise.reject(new Error("Radar transition cancelled"));
+    return new Promise((resolve,reject)=>{
+        let finished=false;
+        let timer=null;
+        function done(error){
+            if(finished)return;
+            finished=true;
+            clearTimeout(timer);
+            map.off("render",painted);
+            if(error)reject(error);else resolve(true);
+        }
+        function painted(){
+            if(token!==spcoaRadarPlayback.token)done(new Error("Radar transition cancelled"));
+            else done();
+        }
+        map.on("render",painted);
+        timer=setTimeout(()=>done(new Error("Map did not repaint the new radar frame")),timeout);
+        try{map.triggerRepaint();}catch(error){done(error);}
+    });
 }
 function spcoaRadarPlaybackWaitForTiles(token,timeout=12000,sourceId=SPCOA_RADAR_LAYER_ID){
     if(map.isSourceLoaded(sourceId))return Promise.resolve(true);
@@ -10390,8 +10458,8 @@ function spcoaRadarPlaybackWaitForTiles(token,timeout=12000,sourceId=SPCOA_RADAR
     });
 }
 async function spcoaRadarPlaybackRecentN0B(site,minutes,signal){
-    // Public Unidata Level III archive. Fetch the minimal number of one-hour
-    // listings, and retain at most seven 5-minute sample frames for playback.
+    // Public Unidata Level III archive. Fetch only the hour listings needed;
+    // for 2h playback sample at ~10-minute cadence to limit scan downloads.
     const now=Date.now(),cutoff=now-(minutes+10)*60000;
     const keys=[];
     for(let h=0;h<=Math.ceil((minutes+15)/60);h++){
@@ -10418,8 +10486,14 @@ async function spcoaRadarPlaybackRecentN0B(site,minutes,signal){
     for(const f of keys)buckets.set(Math.floor(f.time.getTime()/300000),f);
     const frames=[...buckets.values()].filter(f=>f.time.getTime()>=now-minutes*60000-300000);
     if(frames.length<2)throw new Error("Not enough recent N0B frames for "+site);
-    // Decode no more than seven scans, even for a 50-minute selected duration.
-    return frames.length<=7?frames:frames.filter((_,i)=>i===0||i===frames.length-1||i%2===0).slice(-7);
+    // Limit decoded N0B scans, not the selected history span. National Mosaic
+    // uses the full five-minute cadence (13 frames for a 60-minute window).
+    // Individual NEXRAD stays capped at 7 frames for <=60 min and 13 for 2h.
+    const maxFrames=minutes>=120?13:7;
+    if(frames.length<=maxFrames)return frames;
+    const chosen=[];
+    for(let i=0;i<maxFrames;i++)chosen.push(frames[Math.round(i*(frames.length-1)/(maxFrames-1))]);
+    return [...new Map(chosen.map(f=>[f.key,f])).values()];
 }
 async function spcoaRadarPlaybackPrepare(){
     const a=spcoaRadarPlayback,p=spcoaReadRadarPrefs(),token=++a.token;
@@ -10436,12 +10510,19 @@ async function spcoaRadarPlaybackPrepare(){
                 const end=Math.floor(latest.getTime()/300000)*300000;
                 frames=Array.from({length:a.duration/5+1},(_,i)=>({
                     time:new Date(end-(a.duration/5-i)*300000)}));
-            }else{
-                // IEM explicitly publishes relative 5-minute offset mosaic tiles;
-                // never label these as exact UTC scan times.
+            }else if(a.duration<=50){
+                // The relative cached mosaic tile series only covers ~50 min.
+                // A 60-minute selection MUST use the time-enabled WMS fallback.
                 relative=true;
                 frames=Array.from({length:a.duration/5+1},(_,i)=>({
                     offset:a.duration-i*5}));
+            }else{
+                // 60-minute and two-hour histories must use IEM's time-enabled WMS. If the
+                // latest scan timestamp endpoint fails, label requested times
+                // as approximate rather than pretending they are verified.
+                const end=Math.floor((Date.now()-10*60000)/300000)*300000;
+                frames=Array.from({length:a.duration/5+1},(_,i)=>({
+                    time:new Date(end-(a.duration/5-i)*300000),approximate:true}));
             }
         }else{
             site=spcoaL3DesiredSite(p);
@@ -10518,14 +10599,28 @@ async function spcoaRadarPlaybackShow(index){
 }
 async function spcoaRadarPlaybackAction(action,value){
     const a=spcoaRadarPlayback;
+    if(action==="export")return spcoaRadarPlaybackExportMp4();
+    if(a.exporting)return;
     if(action==="live"){spcoaRadarPlaybackStop(true);return;}
     if(action==="speed"){
-        a.speed=[1500,2500,4000].includes(+value)?+value:2500;
+        a.speed=[350,650,1600,3000].includes(+value)?+value:1600;
         return;
     }
     if(action==="duration"){
-        a.duration=+value===50?50:30;
-        spcoaRadarPlaybackStop(true);
+        a.duration=[30,60,120].includes(+value)?+value:30;
+        // V189: Avoid clearing the current radar when the history window
+        // changes. Stage the new first frame while keeping the previous image
+        // visible, just as we do for ordinary animation steps.
+        if(a.active){
+            spcoaRadarPlaybackPause("Updating radar history · Current image stays visible");
+            try{
+                if(await spcoaRadarPlaybackPrepare())await spcoaRadarPlaybackShow(0);
+            }catch(error){
+                a.playing=false;
+                a.status="Could not update radar history: "+String(error?.message||error);
+                console.warn("Radar history update unavailable",error);
+            }finally{spcoaRadarPlaybackSyncUi();}
+        }
         return;
     }
     if(action==="toggle"&&a.playing){spcoaRadarPlaybackPause();return;}
@@ -10541,6 +10636,129 @@ async function spcoaRadarPlaybackAction(action,value){
     spcoaRadarPlaybackCancelTimer();
     await spcoaRadarPlaybackShow(index);
 }
+
+/* =========================================================================================
+   V188: RADAR-ONLY TIMELINE MP4 EXPORT (ACTIVE PANEL)
+   Save Video above exports SPCOA analysis hours. This separate action iterates
+   archived radar times and composites each radar observation using the same
+   panel PNG renderer as Save PNG. It never holds all PNGs in memory.
+   ========================================================================================= */
+// Repeat the same fully composed radar frame, like a conventional video.
+// This holds the geographic background, SPCOA fields, and labels constant
+// between observation timestamps, without requesting or clearing map tiles.
+async function spcoaRadarMp4AppendHold(video,observationIndex,fps=15,repeats=6){
+    for(let repeat=0;repeat<repeats;repeat++){
+        const frameIndex=observationIndex*repeats+repeat;
+        await video.add(frameIndex/fps,1/fps,{keyFrame:repeat===0});
+    }
+}
+let spcoaRadarMp4ExportPromise=null;
+async function spcoaRadarPlaybackExportMp4(){
+    const a=spcoaRadarPlayback;
+    if(spcoaRadarMp4ExportPromise)return spcoaRadarMp4ExportPromise;
+    const task=async()=>{
+        if(!spcoaReadRadarPrefs().enabled)throw new Error("Enable Base Reflectivity before saving radar MP4");
+        if(typeof window.__mpCapturePanel!=="function")throw new Error("Panel PNG capture is not available");
+        if(a.loading)throw new Error("Wait for the current radar frame to finish loading");
+        const wasActive=a.active,previousIndex=a.index;
+        let output=null,complete=false;
+        a.exporting=true;
+        a.playing=false;spcoaRadarPlaybackCancelTimer();
+        const show=message=>{a.status=message;spcoaRadarPlaybackSyncUi();};
+        try{
+            show("Preparing radar MP4…");
+            if(!a.active){
+                if(!await spcoaRadarPlaybackPrepare())throw new Error("Radar history could not be prepared");
+            }
+            if(!a.frames.length)throw new Error("No radar frames available");
+            const media=await import("https://cdn.jsdelivr.net/npm/mediabunny@1.65.0/+esm");
+            // The reference radar MP4 keeps the map/legend steady and holds
+            // each radar observation until its successor replaces it. Export
+            // real video frames at a consistent cadence, without black/white
+            // wipes between archived radar timestamps.
+            const videoFps=15;
+            const repeatsPerObservation=6;
+            const frameSeconds=repeatsPerObservation/videoFps; // 0.4 s / scan
+            const captureWidth=1440;
+            // Set the first observation before probing codec dimensions.
+            await spcoaRadarPlaybackShow(0);
+            if(!a.active||a.index!==0)throw new Error("First radar frame could not be loaded");
+            const firstSrc=await window.__mpCapturePanel(captureWidth);
+            const loadImage=src=>new Promise((resolve,reject)=>{
+                const img=new Image();
+                img.onload=()=>resolve(img);
+                img.onerror=()=>reject(new Error("Radar export PNG frame could not be decoded"));
+                img.src=src;
+            });
+            const first=await loadImage(firstSrc);
+            const w=first.naturalWidth+(first.naturalWidth%2),h=first.naturalHeight+(first.naturalHeight%2);
+            if(w>2048||h>2048)throw new Error("Radar video dimensions exceed safe single-panel limits");
+            const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
+            const ctx=canvas.getContext("2d",{alpha:false});
+            if(!ctx)throw new Error("Could not create radar MP4 composition canvas");
+            ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality="high";
+            const bitrate=18000000;
+            const quality=new media.Quality({bitrate});
+            const codec=await media.getFirstEncodableVideoCodec(["avc"],{
+                width:w,height:h,frameRate:videoFps,
+                bitrateMode:"variable",quality,hardwareAcceleration:"prefer-software"
+            });
+            if(!codec)throw new Error("H.264 MP4 encoding is not available; try current Chrome or Edge");
+            output=new media.Output({format:new media.Mp4OutputFormat(),target:new media.BufferTarget()});
+            const video=new media.CanvasSource(canvas,{
+                codec,quality,bitrateMode:"variable",keyFrameInterval:frameSeconds,
+                latencyMode:"quality",hardwareAcceleration:"prefer-software",
+                contentHint:"detail"
+            });
+            output.addVideoTrack(video);
+            await output.start();
+            const total=a.frames.length;
+            for(let i=0;i<total;i++){
+                if(!a.active||!spcoaReadRadarPrefs().enabled)throw new Error("Radar export interrupted");
+                let img=first;
+                if(i){
+                    show(`Radar MP4: loading ${i+1}/${total}…`);
+                    await spcoaRadarPlaybackShow(i);
+                    if(a.index!==i)throw new Error("Radar frame "+(i+1)+" did not load");
+                    img=await loadImage(await window.__mpCapturePanel(captureWidth));
+                }
+                show(`Radar MP4: encoding ${i+1}/${total}…`);
+                ctx.fillStyle="#ffffff";ctx.fillRect(0,0,w,h);
+                ctx.drawImage(img,0,0);
+                // Six encoded frames hold the SAME completed map composition.
+                // Do not capture/rerender during these repeats; the map never
+                // disappears while a new observation is being downloaded.
+                await spcoaRadarMp4AppendHold(video,i,videoFps,repeatsPerObservation);
+                img.src="";
+            }
+            show("Finalizing radar MP4…");
+            await output.finalize();complete=true;
+            const bytes=output.target.buffer;
+            if(!bytes||!bytes.byteLength)throw new Error("Radar MP4 encoder returned an empty file");
+            const stamp=frame=>frame.time?spcoaRadarPlaybackStamp(frame.time):"latest";
+            const name=`SPCOA_Radar_${a.mode==="mosaic"?"National_Mosaic":a.site||"NEXRAD"}_${stamp(a.frames[0])}_to_${stamp(a.frames[total-1])}.mp4`;
+            downloadBlob(new Blob([bytes],{type:"video/mp4"}),name);
+            show(`Saved radar MP4 · ${total} radar observations · ${videoFps} fps · ${(total*frameSeconds).toFixed(1)} seconds`);
+        }catch(error){
+            console.error("Radar MP4 export failed",error);
+            show("Radar MP4 failed: "+String(error?.message||error));
+        }finally{
+            if(output&&!complete)try{await output.cancel();}catch(_){}
+            a.playing=false;spcoaRadarPlaybackCancelTimer();
+            if(!wasActive && a.active){spcoaRadarPlaybackStop(true);}
+            else if(wasActive && a.active && previousIndex!==a.index){
+                try{await spcoaRadarPlaybackShow(previousIndex);}catch(error){
+                    console.warn("Could not restore pre-export radar frame",error);
+                }
+            }
+            a.exporting=false;
+            spcoaRadarPlaybackSyncUi();
+        }
+    };
+    spcoaRadarMp4ExportPromise=task().finally(()=>{spcoaRadarMp4ExportPromise=null;});
+    return spcoaRadarMp4ExportPromise;
+}
+
 window.__spcoaRadarPlaybackAction=spcoaRadarPlaybackAction;
 map.on("moveend",()=>{
     if(spcoaRadarPlayback.active&&!map.getLayer(SPCOA_RADAR_LAYER_ID)){
@@ -10856,9 +11074,16 @@ async function spcoaRadarTopDraw(){
     })().catch(error=>{
         if(serial===spcoaRadarTopSerial){
             console.warn("Radar above-fill overlay unavailable; retaining base raster:",error);
-            spcoaRadarTopReady=false;
-            spcoaRadarAboveFillCanvas.style.opacity="0";
-            spcoaRadarTopRestoreBase();
+            // During a radar loop the old above-fill image is a valid last
+            // frame. Keep it visible until the staged native fallback has
+            // actually painted. The playback handoff then hides this canvas.
+            const preserveLastFrame=spcoaRadarPlayback.active&&
+                spcoaRadarPlayback.loading&&spcoaRadarTopReady;
+            if(!preserveLastFrame){
+                spcoaRadarTopReady=false;
+                spcoaRadarAboveFillCanvas.style.opacity="0";
+                spcoaRadarTopRestoreBase();
+            }
         }
         return false;
     }).finally(()=>{
