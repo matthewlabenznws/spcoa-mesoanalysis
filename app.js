@@ -1,3 +1,4 @@
+/* V187: Double-buffered radar playback; full-resolution above-fill tile zoom (+1 for 256px sources), one-pass high-quality image interpolation. */
 /* V184: Connect published SPCOA feedback form to V183 About/Help button; all else unchanged. */
 /* V182: Clear All now switches off GOES in the selected map panel(s) and
  * disables the global NEXRAD overlay / returns the map background to Plain.
@@ -333,7 +334,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V186"; // quality-matched radar above fills, including bounded radar playback
+const SPCOA_VIEWER_BUILD = "V187"; // quality-matched radar above fills, including bounded radar playback
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2698,7 +2699,8 @@ function spcoaRadarPlaybackSyncUi(){
     const status=root.querySelector("#spcoa-radar-playback-status");
     const duration=root.querySelector("#spcoa-radar-playback-duration");
     const speed=root.querySelector("#spcoa-radar-playback-speed");
-    if(play){play.disabled=!enabled||!!state?.loading;play.textContent=state?.playing?"Ⅱ Pause":"▶ Play";}
+    if(play){play.disabled=!enabled||(!state?.active&&!!state?.loading);
+        play.textContent=state?.playing?"Ⅱ Pause":"▶ Play";}
     if(prev)prev.disabled=!enabled||!state?.frames?.length||!!state?.loading;
     if(next)next.disabled=!enabled||!state?.frames?.length||!!state?.loading;
     if(live)live.disabled=!state?.active&&!state?.loading;
@@ -10198,7 +10200,7 @@ document.addEventListener("visibilitychange",()=>{
 const SPCOA_RADAR_PLAYBACK_WMS="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi";
 const spcoaRadarPlayback={active:false,playing:false,loading:false,frames:[],index:0,
     duration:30,speed:2500,mode:null,site:null,relative:false,
-    token:0,timer:null,controller:null,queued:null,cache:new Map(),
+    token:0,timer:null,controller:null,queued:null,cache:new Map(),displayedAt:0,
     status:"Paused · Press Play to load recent frames"};
 function spcoaRadarPlaybackState(){
     const a=spcoaRadarPlayback;
@@ -10239,7 +10241,7 @@ function spcoaRadarPlaybackStop(goLive=true){
     a.token++;spcoaRadarPlaybackCancelTimer();
     a.controller?.abort();a.controller=null;
     a.active=false;a.playing=false;a.loading=false;a.queued=null;
-    a.frames=[];a.index=0;a.cache.clear();a.mode=null;a.site=null;
+    a.frames=[];a.index=0;a.cache.clear();a.mode=null;a.site=null;a.displayedAt=0;
     a.status=goLive?"Live radar · Playback stopped":"Paused";
     spcoaRadarTopClear();
     // Discard archived scan data and allow the normal up-to-date N0B poll.
@@ -10256,33 +10258,40 @@ function spcoaRadarPlaybackFail(error){
         " · Press Live to return to current radar.");
     console.warn("SPCOA radar playback frame unavailable",error);
 }
+// Create a source template once. Both the native map and the above-fill
+// compositor use this exact source (and therefore the same dBZ palette).
+function spcoaRadarPlaybackSource(frame){
+    const a=spcoaRadarPlayback;
+    const stamp=frame.time?spcoaRadarPlaybackStamp(frame.time):"m"+frame.offset;
+    const custom=a.mode==="mosaic"&&!a.relative&&spcoaRadarPaletteEnabled;
+    const key="playback|"+a.mode+"|"+(a.site||"CONUS")+"|"+stamp+"|"+(custom?"custom":"source");
+    const tiles=a.mode==="auto"
+        ? [`${SPCOA_L3_PROTOCOL}://tile/{z}/{x}/{y}/${spcoaL3Data.version}`]
+        : a.relative
+            ? ["https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/"+
+                (frame.offset===0?"nexrad-n0q-900913":"nexrad-n0q-900913-m"+
+                String(frame.offset).padStart(2,"0")+"m")+"/{z}/{x}/{y}.png"]
+            : [custom?`${SPCOA_RADAR_PALETTE_PROTOCOL}://tile/{z}/{x}/{y}/t${stamp}`:
+                spcoaRadarPlaybackWmsUrl(frame.time)];
+    const attribution=a.mode==="auto"?"Radar: NWS NEXRAD Level III / Unidata":
+        '<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Radar: IEM / NWS NEXRAD</a>';
+    return {key,tiles,attribution};
+}
+// Fallback when a saved camera moves while the displayed source was removed.
 function spcoaRadarPlaybackRender(frame){
     const a=spcoaRadarPlayback,p=spcoaReadRadarPrefs();
     if(!a.active||!p.enabled||p.mode!==a.mode)return false;
     if(!map.getStyle()?.layers?.length)throw new Error("Map has not finished loading");
-    const stamp=frame.time?spcoaRadarPlaybackStamp(frame.time):"m"+frame.offset;
-    const custom=a.mode==="mosaic"&&!a.relative&&spcoaRadarPaletteEnabled;
-    const key="playback|"+a.mode+"|"+(a.site||"CONUS")+"|"+stamp+"|"+(custom?"custom":"source");
-    if(key!==spcoaRadarActiveKey||!map.getLayer(SPCOA_RADAR_LAYER_ID)){
-        // Retain the previously composed top frame until the next archive
-        // frame is ready, preventing flicker while playback fetches tiles.
+    const source=spcoaRadarPlaybackSource(frame);
+    if(source.key!==spcoaRadarActiveKey||!map.getLayer(SPCOA_RADAR_LAYER_ID)){
         if(!p.aboveFills)spcoaRadarTopClear();
         spcoaRadarRemoveLayer();
-        const tiles=a.mode==="auto"
-            ? [`${SPCOA_L3_PROTOCOL}://tile/{z}/{x}/{y}/${spcoaL3Data.version}`]
-            : a.relative
-                ? ["https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/"+
-                    (frame.offset===0?"nexrad-n0q-900913":"nexrad-n0q-900913-m"+
-                    String(frame.offset).padStart(2,"0")+"m")+"/{z}/{x}/{y}.png"]
-                : [custom?`${SPCOA_RADAR_PALETTE_PROTOCOL}://tile/{z}/{x}/{y}/t${stamp}`:
-                    spcoaRadarPlaybackWmsUrl(frame.time)];
-        map.addSource(SPCOA_RADAR_LAYER_ID,{type:"raster",tiles,tileSize:256,scheme:"xyz",
-            attribution:a.mode==="auto"?"Radar: NWS NEXRAD Level III / Unidata":
-                '<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Radar: IEM / NWS NEXRAD</a>'});
+        map.addSource(SPCOA_RADAR_LAYER_ID,{type:"raster",tiles:source.tiles,tileSize:256,scheme:"xyz",
+            attribution:source.attribution});
         map.addLayer({id:SPCOA_RADAR_LAYER_ID,type:"raster",source:SPCOA_RADAR_LAYER_ID,
             paint:{"raster-opacity":p.aboveFills&&spcoaRadarTopReady?0:p.opacity/100,
                 "raster-fade-duration":0}},spcoaRadarBeforeLayerId());
-        spcoaRadarActiveKey=key;
+        spcoaRadarActiveKey=source.key;
     }else map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",
         p.aboveFills&&spcoaRadarTopReady?0:p.opacity/100);
     spcoaRadarActiveLabel="Radar playback · "+spcoaRadarPlaybackFrameLabel(frame);
@@ -10290,8 +10299,77 @@ function spcoaRadarPlaybackRender(frame){
     spcoaRadarStatus(spcoaRadarActiveLabel);
     return true;
 }
-function spcoaRadarPlaybackWaitForTiles(token,timeout=12000){
-    if(map.isSourceLoaded(SPCOA_RADAR_LAYER_ID))return Promise.resolve(true);
+// Load the next time in a second, nearly invisible MapLibre raster layer.
+// The current image is never removed while network/decoding is in progress.
+async function spcoaRadarPlaybackStage(frame,token){
+    const a=spcoaRadarPlayback,p=spcoaReadRadarPrefs();
+    if(!a.active||!p.enabled||p.mode!==a.mode)return false;
+    const source=spcoaRadarPlaybackSource(frame);
+    const oldId=SPCOA_RADAR_LAYER_ID;
+    const nextId=oldId===SPCOA_RADAR_LAYER_BASE_ID?
+        SPCOA_RADAR_LAYER_BUFFER_ID:SPCOA_RADAR_LAYER_BASE_ID;
+    if(map.getLayer(nextId))map.removeLayer(nextId);
+    if(map.getSource(nextId))map.removeSource(nextId);
+    let promoted=false;
+    try{
+        map.addSource(nextId,{type:"raster",tiles:source.tiles,tileSize:256,scheme:"xyz",
+            attribution:source.attribution});
+        // 0.001 forces MapLibre to retain active raster-tile work, while the
+        // virtually invisible staging layer stays beneath the existing frame.
+        map.addLayer({id:nextId,type:"raster",source:nextId,
+            paint:{"raster-opacity":0.001,"raster-fade-duration":0}},
+            spcoaRadarBeforeLayerId());
+        await spcoaRadarPlaybackWaitForTiles(token,12000,nextId);
+        if(token!==a.token||!a.active)return false;
+        // Start downloading the next frame during this frame's display hold.
+        // Duration is measured from visibility, not after each fetch finishes.
+        const hold=a.playing&&a.displayedAt?Math.max(0,a.speed-(Date.now()-a.displayedAt)):0;
+        if(hold>0)await new Promise(resolve=>setTimeout(resolve,hold));
+        if(token!==a.token||!a.active)return false;
+        SPCOA_RADAR_LAYER_ID=nextId;
+        spcoaRadarActiveKey=source.key;
+        spcoaRadarReady=true;
+        spcoaRadarActiveLabel="Radar playback · "+spcoaRadarPlaybackFrameLabel(frame);
+        if(p.aboveFills){
+            // Keep the prior above-fill canvas visible while compositing.
+            // The source raster is available as a fallback if this fails.
+            const composed=await Promise.race([
+                spcoaRadarTopDraw(),
+                new Promise(resolve=>setTimeout(()=>resolve(false),8000))
+            ]);
+            if(token!==a.token||!a.active)return false;
+            if(!composed){
+                spcoaRadarTopSerial++;
+                spcoaRadarTopPendingSignature="";
+                spcoaRadarTopReady=false;
+                spcoaRadarAboveFillCanvas.style.opacity="0";
+                spcoaRadarTopRestoreBase();
+                console.warn("Above-fill radar unavailable; showing full-quality MapLibre radar below fills.");
+            }
+        } else {
+            map.setPaintProperty(nextId,"raster-opacity",p.opacity/100);
+            spcoaRadarTopClear();
+        }
+        // Remove the previous MapLibre image only AFTER replacement is ready.
+        if(map.getLayer(oldId))map.removeLayer(oldId);
+        if(map.getSource(oldId))map.removeSource(oldId);
+        promoted=true;
+        spcoaRadarSetValidText(p,a.site,true);
+        spcoaRadarStatus(spcoaRadarActiveLabel);
+        return true;
+    }finally{
+        if(!promoted&&token===a.token){
+            if(map.getLayer(nextId))map.removeLayer(nextId);
+            if(map.getSource(nextId))map.removeSource(nextId);
+            // Restore the previously displayed radar if staging failed.
+            SPCOA_RADAR_LAYER_ID=oldId;
+            if(p.aboveFills&&spcoaRadarTopReady&&map.getLayer(oldId))
+                map.setPaintProperty(oldId,"raster-opacity",0);
+        }
+    }
+}
+function spcoaRadarPlaybackWaitForTiles(token,timeout=12000,sourceId=SPCOA_RADAR_LAYER_ID){
+    if(map.isSourceLoaded(sourceId))return Promise.resolve(true);
     return new Promise((resolve,reject)=>{
         let done=false;
         const finish=(error)=>{
@@ -10301,14 +10379,14 @@ function spcoaRadarPlaybackWaitForTiles(token,timeout=12000){
         };
         const loaded=e=>{
             if(token!==spcoaRadarPlayback.token){finish(new Error("Frame cancelled"));return;}
-            if(e.sourceId===SPCOA_RADAR_LAYER_ID&&e.isSourceLoaded)finish();
+            if(e.sourceId===sourceId&&e.isSourceLoaded)finish();
         };
         const errored=e=>{
-            if(e.sourceId===SPCOA_RADAR_LAYER_ID)finish(new Error("Radar frame tiles unavailable"));
+            if(e.sourceId===sourceId)finish(new Error("Radar frame tiles unavailable"));
         };
         const timer=setTimeout(()=>finish(new Error("Radar frame timed out after 12 seconds")),timeout);
         map.on("sourcedata",loaded);map.on("error",errored);
-        if(map.isSourceLoaded(SPCOA_RADAR_LAYER_ID))finish();
+        if(map.isSourceLoaded(sourceId))finish();
     });
 }
 async function spcoaRadarPlaybackRecentN0B(site,minutes,signal){
@@ -10386,10 +10464,10 @@ async function spcoaRadarPlaybackShow(index){
     if(a.loading){a.queued=index;return;}
     const token=++a.token;
     a.loading=true;a.queued=null;
-    a.index=Math.min(Math.max(0,index),a.frames.length-1);
-    const frame=a.frames[a.index];
+    const nextIndex=Math.min(Math.max(0,index),a.frames.length-1);
+    const frame=a.frames[nextIndex];
     a.status="Loading "+spcoaRadarPlaybackFrameLabel(frame)+
-        " ("+(a.index+1)+"/"+a.frames.length+")";
+        " ("+(nextIndex+1)+"/"+a.frames.length+") · Current image stays visible";
     spcoaRadarPlaybackSyncUi();
     try{
         if(a.mode==="auto"){
@@ -10412,27 +10490,10 @@ async function spcoaRadarPlaybackShow(index){
             frame.time=scan.date;
         }
         if(token!==a.token)return;
-        spcoaRadarPlaybackRender(frame);
-        await spcoaRadarPlaybackWaitForTiles(token);
-        if(token!==a.token)return;
-        if(spcoaReadRadarPrefs().aboveFills){
-            // MapLibre has finished the native frame; the overlay now reuses
-            // precisely its source tile template rather than live radar URLs.
-            // Set a time bound so a failing CORS request cannot stall playback.
-            const composed=await Promise.race([
-                spcoaRadarTopDraw(),
-                new Promise(resolve=>setTimeout(()=>resolve(false),8000))
-            ]);
-            if(token!==a.token)return;
-            if(!composed){
-                spcoaRadarTopSerial++;
-                spcoaRadarTopPendingSignature="";
-                spcoaRadarTopReady=false;
-                spcoaRadarAboveFillCanvas.style.opacity="0";
-                spcoaRadarTopRestoreBase();
-                console.warn("Radar above-fill frame unavailable; native raster remains visible.");
-            }
-        }
+        const ready=await spcoaRadarPlaybackStage(frame,token);
+        if(!ready||token!==a.token)return;
+        a.index=nextIndex;
+        a.displayedAt=Date.now();
         a.status=(a.playing?"Playing · ":"Paused · ")+
             spcoaRadarPlaybackFrameLabel(frame)+" · "+(a.index+1)+"/"+a.frames.length;
     }catch(e){
@@ -10445,10 +10506,12 @@ async function spcoaRadarPlaybackShow(index){
                 void spcoaRadarPlaybackShow(queued);
             }else if(a.active&&a.playing){
                 spcoaRadarPlaybackCancelTimer();
+                // Begin loading immediately; the staged layer waits for the
+                // selected frame duration before the visual swap.
                 a.timer=setTimeout(()=>{
                     if(a.active&&a.playing&&!a.loading)
                         void spcoaRadarPlaybackShow((a.index+1)%a.frames.length);
-                },a.mode==="auto"?Math.max(3000,a.speed):a.speed);
+                },40);
             }
         }
     }
@@ -10489,7 +10552,10 @@ document.addEventListener("visibilitychange",()=>{
     if(document.hidden&&spcoaRadarPlayback.playing)spcoaRadarPlaybackPause("Paused · Tab inactive");
 });
 
-const SPCOA_RADAR_LAYER_ID="spcoa-nexrad-base-reflectivity";
+// V187: two alternating MapLibre raster sources prevent blank frames during playback.
+const SPCOA_RADAR_LAYER_BASE_ID="spcoa-nexrad-base-reflectivity";
+const SPCOA_RADAR_LAYER_BUFFER_ID="spcoa-nexrad-base-reflectivity-buffer";
+let SPCOA_RADAR_LAYER_ID=SPCOA_RADAR_LAYER_BASE_ID;
 // V147: One authoritative state snapshot from the ACTIVE map iframe.
 // Host sidebar and debugging read this snapshot. No additional site selection
 // occurs in the host or another iframe, and the loaded radar is distinguished
@@ -10572,7 +10638,8 @@ function spcoaRadarStatus(message){
 function spcoaRadarBeforeLayerId(){
     // Keep Mapbox and GOES BELOW radar, all other weather/geography ABOVE it.
     return map.getStyle()?.layers?.find(layer=>layer.type!=="background" &&
-        !["spcoa-mapbox-satellite-basemap",SPCOA_GOES_SOURCE_ID,SPCOA_RADAR_LAYER_ID]
+        !["spcoa-mapbox-satellite-basemap",SPCOA_GOES_SOURCE_ID,
+            SPCOA_RADAR_LAYER_BASE_ID,SPCOA_RADAR_LAYER_BUFFER_ID]
             .includes(layer.id))?.id;
 }
 /* V163 — radar-above-fill compositor.
@@ -10700,10 +10767,18 @@ async function spcoaRadarTopDraw(){
     const work=(async()=>{
         const viewport=map.getCanvas(),w=viewport.clientWidth,h=viewport.clientHeight;
         if(w<2||h<2)return false;
-        // Do not overscale zoom-10 tiles over a higher-resolution view.
-        // This matches MapLibre's integer-zoom source selection (up to z16)
-        // while bounding the number of requests by visible tile coverage.
-        const z=Math.max(0,Math.min(16,Math.floor(map.getZoom()))),n=2**z;
+        // MapLibre's world tile is 512 CSS px, but this radar source has
+        // 256px tiles: at camera zoom Z it requests source tiles around Z+1.
+        // V186 used floor(Z), under-sampling by a factor of TWO on each axis
+        // and making the above-fill radar much grainier than native MapLibre.
+        const source=map.getSource(SPCOA_RADAR_LAYER_ID);
+        const sourceMeta=source?.serialize?.()||source;
+        const tileSize=Number(sourceMeta?.tileSize)||256;
+        const offset=Math.round(Math.log2(512/tileSize));
+        const maxSourceZoom=Number.isFinite(Number(sourceMeta?.maxzoom))?
+            Number(sourceMeta.maxzoom):16;
+        const z=Math.max(0,Math.min(16,maxSourceZoom,
+            Math.floor(map.getZoom())+offset)),n=2**z;
         const corners=[[0,0],[w,0],[0,h],[w,h]].map(pt=>map.unproject(pt));
         const mercY=lat=>(1-Math.asinh(Math.tan(Math.max(-85,Math.min(85,lat))*Math.PI/180))/Math.PI)/2*n;
         const xs=corners.map(c=>(c.lng+180)/360*n),ys=corners.map(c=>mercY(c.lat));
@@ -10711,7 +10786,7 @@ async function spcoaRadarTopDraw(){
         const y0=Math.max(0,Math.floor(Math.min(...ys))),y1=Math.min(n-1,Math.floor(Math.max(...ys)));
         const tiles=[];
         for(let ty=y0;ty<=y1;ty++)for(let tx=x0;tx<=x1;tx++)tiles.push({x:tx,y:ty});
-        if(tiles.length===0||tiles.length>64)throw new Error("Radar overlay tile range unsupported");
+        if(tiles.length===0||tiles.length>64)throw new Error("Radar overlay tile range exceeds safe full-resolution budget");
         const coords=tiles.map(t=>({
             ...t, bounds:spcoaRadarTopTileBounds(z,t.x,t.y)
         }));
@@ -10747,7 +10822,7 @@ async function spcoaRadarTopDraw(){
         // The original native MapLibre raster uses linear sampling; retain
         // smooth interpolation instead of V167's blocky nearest-neighbor.
         ctx.imageSmoothingEnabled=true;
-        ctx.imageSmoothingQuality="medium";
+        ctx.imageSmoothingQuality="high";
         for(let i=0;i<coords.length;i++){
             const t=coords[i],image=results[i].value;
             const nw=map.project(t.bounds[0]);
@@ -10768,7 +10843,8 @@ async function spcoaRadarTopDraw(){
             map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",0);
         spcoaRadarAboveFillCanvas.width=frame.width;
         spcoaRadarAboveFillCanvas.height=frame.height;
-        spcoaRadarTopCtx.imageSmoothingEnabled=true;
+        spcoaRadarTopCtx.setTransform(1,0,0,1,0,0);
+        spcoaRadarTopCtx.imageSmoothingEnabled=false; // 1:1 copy, no second interpolation pass
         spcoaRadarTopCtx.drawImage(frame,0,0);
         spcoaRadarAboveFillCanvas.style.transform="none";
         spcoaRadarAboveFillCanvas.style.opacity=String(spcoaReadRadarPrefs().opacity/100);
@@ -10828,8 +10904,13 @@ map.on("moveend",()=>spcoaRadarTopSchedule(60));
 map.on("resize",()=>spcoaRadarTopSchedule(80));
 
 function spcoaRadarRemoveLayer(){
-    if(map.getLayer(SPCOA_RADAR_LAYER_ID))map.removeLayer(SPCOA_RADAR_LAYER_ID);
-    if(map.getSource(SPCOA_RADAR_LAYER_ID))map.removeSource(SPCOA_RADAR_LAYER_ID);
+    // Remove BOTH frame buffers when stopping, changing radar modes, or
+    // returning to static radar, including an incomplete staged request.
+    for(const id of [SPCOA_RADAR_LAYER_BASE_ID,SPCOA_RADAR_LAYER_BUFFER_ID]){
+        if(map.getLayer(id))map.removeLayer(id);
+        if(map.getSource(id))map.removeSource(id);
+    }
+    SPCOA_RADAR_LAYER_ID=SPCOA_RADAR_LAYER_BASE_ID;
     // Clear the old station's footer immediately. A selection may be loading,
     // but the last scan must never be described as the new radar's scan.
     spcoaRadarActiveKey=null;
