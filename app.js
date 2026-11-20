@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V166"; // smaller city labels; V165 city data, toggle, and V163 radar ordering preserved
+const SPCOA_VIEWER_BUILD = "V167"; // sharper radar raster interpolation; V166 city labels and earlier features preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -9874,6 +9874,8 @@ async function spcoaRadarTopDraw(){
         const frame=document.createElement("canvas");
         frame.width=Math.max(1,Math.round(w*dpr));frame.height=Math.max(1,Math.round(h*dpr));
         const ctx=frame.getContext("2d");if(!ctx)throw new Error("Radar overlay canvas unavailable");
+        // Preserve distinct dBZ pixels when projecting radar tiles onto the overlay.
+        ctx.imageSmoothingEnabled=false;
         ctx.setTransform(dpr,0,0,dpr,0,0);
         for(let i=0;i<coords.length;i++){
             const t=coords[i],image=results[i].value;
@@ -9887,6 +9889,8 @@ async function spcoaRadarTopDraw(){
             map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",0);
         spcoaRadarAboveFillCanvas.width=frame.width;
         spcoaRadarAboveFillCanvas.height=frame.height;
+        // Resetting canvas dimensions also resets the rendering state.
+        spcoaRadarTopCtx.imageSmoothingEnabled=false;
         spcoaRadarTopCtx.drawImage(frame,0,0);
         spcoaRadarAboveFillCanvas.style.transform="none";
         spcoaRadarAboveFillCanvas.style.opacity=String(spcoaReadRadarPrefs().opacity/100);
@@ -10036,7 +10040,8 @@ function spcoaRadarRefresh(){
             });
             map.addLayer({
                 id:SPCOA_RADAR_LAYER_ID,type:"raster",source:SPCOA_RADAR_LAYER_ID,
-                paint:{"raster-opacity":p.opacity/100,"raster-fade-duration":0}
+                paint:{"raster-opacity":p.opacity/100,"raster-fade-duration":0,
+                    "raster-resampling":"nearest"}
             },spcoaRadarBeforeLayerId());
             spcoaRadarActiveKey=key;
         }else{
