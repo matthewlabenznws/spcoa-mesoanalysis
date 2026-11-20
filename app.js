@@ -1,5 +1,5 @@
-/* V171: Preserve V170 native-radar default and optional above-fill radar placement;
- * integrate the exact notebook contour palettes and same-row Contours controls from V169. */
+/* V172: Show notebook contour checkboxes in the visible multi-panel host sidebar.
+ * Preserve V171 notebook palettes/same-row controls and V170 radar placement behavior. */
 /* V155: Fix Auto Nearest's map.getCenter() failure (top-level helper was
  * resolving the DOM #map element rather than the MapLibre map inside the iframe).
  * Await each panel's own numeric N0B scan during combined PNG export when radar
@@ -313,7 +313,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V171"; // V170 radar and ECAPE improvements + V169 exact notebook contours on same row
+const SPCOA_VIEWER_BUILD = "V172"; // V171 notebook contours, V172 visible host sidebar rows
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3428,6 +3428,108 @@ function spcoaV159InstallControls() {
     }
 }
 
+/* V172: The visible multi-panel sidebar is the HOST, not the map iframe.
+ * V171 built the 16 notebook contour rows only in the child branch, so users
+ * could not see the controls in the real sidebar. Build matching controls in
+ * the host BEFORE its return to the map-child branch. IDs are deliberately
+ * identical so the existing host click relay synchronizes the controls to
+ * the selected panel(s) without any changes to the numerical renderer.
+ */
+const SPCOA_V172_HOST_NOTEBOOK_INLINE_ROWS = [
+    ["sbcape", "scalar", "SBCAPE"],
+    ["mlcape", "scalar", "MLCAPE"],
+    ["mlcape_0_3km", "scalar", "0–3 km MLCAPE"],
+    ["lapse_rate_700_500hPa", "scalar", "700–500 mb Lapse Rate"],
+    ["lapse_rate_0_3km", "scalar", "0–3 km Lapse Rate"],
+    ["shear_0_1km", "vector", "0–1 km Bulk Shear"],
+    ["shear_0_3km", "vector", "0–3 km Bulk Shear"],
+    ["shear_0_6km", "vector", "0–6 km Bulk Shear"],
+    ["shear_0_8km", "vector", "0–8 km Bulk Shear"],
+    ["effective_shear", "vector", "Effective Bulk Shear"],
+    ["srwind_0_2km", "vector", "0–2 km SR Wind"],
+    ["srwind_4_6km", "vector", "4–6 km SR Wind"],
+    ["srwind_9_11km", "vector", "9–11 km SR Wind"],
+    ["srh_eff", "scalar", "Effective SRH"],
+    ["ehi_0_1km", "scalar", "0–1 km EHI"],
+    ["ehi_0_3km", "scalar", "0–3 km EHI"]
+];
+function spcoaV172InstallHostNotebookContourRows() {
+    const sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+    for (const [field,kind,title] of SPCOA_V172_HOST_NOTEBOOK_INLINE_ROWS) {
+        const contourField = field + '_nb_contours';
+        const toggleId = 'notebook-' + contourField.replace(/_/g,'-') + '-toggle';
+        if (document.getElementById(toggleId)) continue;
+        let row = null;
+        if (kind === 'scalar') {
+            const choice = Array.from(sidebar.querySelectorAll('.cat-content .field-choice[data-field]'))
+                .find(button => button.dataset.field === field);
+            if (!choice) {
+                console.warn('SPCOA V172: scalar parameter row not found:', field);
+                continue;
+            }
+            row = choice.closest('.level-row');
+            if (!row) {
+                row = document.createElement('div');
+                row.className = 'level-row';
+                choice.insertAdjacentElement('beforebegin',row);
+                row.appendChild(choice);
+            }
+            row.classList.add('spcoa-v169-inline-contour-row');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '5px';
+            row.style.width = '100%';
+            row.style.minWidth = '0';
+            choice.style.flex = '1 1 auto';
+            choice.style.minWidth = '0';
+        } else {
+            const vectorToggleId = SPCOA_VECTOR_CONTROL_ROWS.find(([key]) => key === field)?.[1];
+            const vectorToggle = vectorToggleId && document.getElementById(vectorToggleId);
+            const vectorLabel = vectorToggle?.closest('label');
+            if (!vectorLabel || !vectorLabel.parentElement) {
+                console.warn('SPCOA V172: vector parameter row not found:',field);
+                continue;
+            }
+            row = vectorLabel.parentElement;
+            if (!row.classList.contains('spcoa-v169-inline-contour-row')) {
+                row = document.createElement('div');
+                row.className = 'spcoa-v169-inline-contour-row spcoa-v169-vector-row';
+                row.style.cssText = 'display:flex;align-items:center;gap:4px;width:100%;max-width:100%;min-width:0;box-sizing:border-box;';
+                vectorLabel.insertAdjacentElement('beforebegin',row);
+                row.appendChild(vectorLabel);
+            }
+            vectorLabel.style.flex = '1 1 auto';
+            vectorLabel.style.minWidth = '0';
+            vectorLabel.style.margin = '0';
+            vectorLabel.style.gap = '4px';
+            vectorLabel.style.fontSize = '11px';
+            const swatch = vectorLabel.querySelector('input[type="color"]');
+            if (swatch) {
+                swatch.style.width = '20px';
+                swatch.style.flex = '0 0 20px';
+            }
+        }
+        const label = document.createElement('label');
+        label.className = 'toggle-row spcoa-v169-contours-inline';
+        label.style.cssText = 'display:inline-flex;align-items:center;justify-content:flex-end;gap:5px;flex:0 0 auto;'+
+            'width:auto;min-width:0;padding:0;margin:0 2px 0 auto;white-space:nowrap;font-size:11px;'+
+            'color:#b4d3e9;cursor:pointer;';
+        label.title = 'Show '+title+' contour lines (notebook levels and colors)';
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.id = toggleId;
+        toggle.checked = false;
+        toggle.setAttribute('aria-label','Contours for '+title);
+        toggle.style.cssText = 'flex:0 0 auto;margin:0;width:14px;height:14px;cursor:pointer;';
+        const caption = document.createElement('span');
+        caption.className = 'barb-text';
+        caption.textContent = 'Contours';
+        label.append(toggle,caption);
+        row.appendChild(label);
+    }
+}
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -3439,6 +3541,8 @@ if (!__MP_CHILD) {
         installSpcoaCityControls();
         spcoaInstallHostVectorColors();
         installSpcoaCompositeContourToggles();
+        // V172: host must create the same notebook checkboxes as the child.
+        spcoaV172InstallHostNotebookContourRows();
         spcoaV122InstallParameterExplorer();
         spcoaV158InstallAboutHelp();
         spcoaV159InstallControls();
