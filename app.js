@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V165"; // opt-in city labels + zoom/density controls; V163 radar ordering preserved
+const SPCOA_VIEWER_BUILD = "V166"; // smaller city labels; V165 city data, toggle, and V163 radar ordering preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -18216,7 +18216,11 @@ function spcoaCityFontSize(feature, zoom) {
     return spcoaCityInterpolate(p,50000,24,200000,29);
 }
 function getCityFont(feature, zoom) {
-    return `700 ${spcoaCityFontSize(feature,zoom).toFixed(2)}px "Noto Sans", "Segoe UI", Arial, sans-serif`;
+    // V166: Keep the reference site's population-based hierarchy and zoom
+    // thresholds, but reduce displayed labels by 40% for SPCOA map readability.
+    const referencePixels = spcoaCityFontSize(feature, zoom);
+    const compactPixels = Math.max(9, Math.min(18, referencePixels * 0.60));
+    return `700 ${compactPixels.toFixed(2)}px "Noto Sans", "Segoe UI", Arial, sans-serif`;
 }
 
 /* =========================================================================================
@@ -18340,8 +18344,8 @@ function renderCities() {
         const box={left:position.x-w/2-4,right:position.x+w/2+4,
                    top:position.y-fontSize/2-4,bottom:position.y+fontSize/2+4};
         if(box.left<5||box.right>width-5||box.top<8||box.bottom>height-8||overlaps(box))continue;
-        // Reference text-halo-width=2.5 MapLibre pixels ~= 5 px canvas stroke.
-        cityLabelCtx.lineWidth=5.0;
+        // V166: A slimmer ~1.5 px dark halo suits the smaller city labels.
+        cityLabelCtx.lineWidth=3.0;
         cityLabelCtx.strokeStyle="rgba(15,23,42,1)";
         cityLabelCtx.fillStyle="rgba(250,250,250,1)";
         cityLabelCtx.strokeText(name,position.x,position.y);
