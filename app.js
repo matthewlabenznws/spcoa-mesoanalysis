@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V149"; // Explicit iframe-to-host auto radar state synchronization
+const SPCOA_VIEWER_BUILD = "V150"; // Right-click map to load nearest NEXRAD with explicit site lock
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1670,6 +1670,11 @@ for(const [id,label] of Object.entries(SPCOA_L3_SITES)){
 let spcoaL3CatalogLoadPromise=null,spcoaL3CatalogStatus="Loading the CONUS radar station list...";
 // This is the radar nearest the *current map center*, not the last manually chosen station.
 let spcoaRadarResolvedSite=null;
+// V150: In Auto Nearest, a right-click pins the requested station to the
+// clicked location. Panning must not silently switch away from that station.
+// This state lives inside each map iframe and is never treated as a loaded scan.
+let spcoaL3RightClickSite=null;
+let spcoaL3RightClickPoint=null;
 function spcoaL3NormalizeStation(rawId,name,lat,lon,radarType){
     let id=String(rawId||"").trim().toUpperCase();
     if(/^[A-Z0-9]{3}$/.test(id))id="K"+id;
@@ -1834,6 +1839,11 @@ function spcoaL3NearbyStations(centerLat,centerLon){
 }
 function spcoaL3DesiredSite(p){
     if(p.mode!=="auto" || !__MP_CHILD)return p.site;
+    // A user-selected right-click station takes priority over camera-centered
+    // auto selection and over failed-station cooldowns. It takes the same
+    // numerical N0B download/decoder path as selecting a station manually.
+    if(spcoaL3RightClickSite && SPCOA_L3_CATALOG.has(spcoaL3RightClickSite))
+        return spcoaL3RightClickSite;
     const center=map.getCenter();
     const stations=spcoaL3NearbyStations(center.lat,center.lng);
     const now=Date.now();
@@ -2225,6 +2235,10 @@ function spcoaSaveRadarPrefs(value,broadcast=true) {
     // shown by the prior mode. In multi-panel mode the child will publish its
     // actual auto station after computing the active map's camera center.
     if(previous.mode!==next.mode || !next.enabled)spcoaRadarResolvedSite=null;
+    if(__MP_CHILD && (previous.mode!==next.mode || !next.enabled)){
+        spcoaL3RightClickSite=null;
+        spcoaL3RightClickPoint=null;
+    }
     if(__MP_CHILD && (previous.mode!==next.mode ||
         (next.mode==="single" && previous.site!==next.site))){
         spcoaL3LastPoll=0;
@@ -2252,7 +2266,7 @@ function spcoaInstallRadarControls() {
     const heading=document.createElement("strong");
     heading.textContent="Weather Radar Observations";
     const description=document.createElement("div");
-    description.textContent="CONUS mosaic or numerical N0B from any CONUS WSR-88D, with automatic nearest-radar selection.";
+    description.textContent="CONUS mosaic or numerical N0B from any CONUS WSR-88D. In Auto Nearest, right-click the map to load the closest radar.";
     description.style.cssText="font-size:10px;color:#b5cee0;line-height:1.5;";
     const toggleLabel=document.createElement("label");
     toggleLabel.style.cssText="display:flex;align-items:center;gap:7px;cursor:pointer;";
@@ -8757,13 +8771,16 @@ window.__spcoaRadarAutoState=()=>{
     // station catalog are present, even if the nearest N0B feed is down.
     // `desired` is the radar actually being attempted after availability
     // fallbacks; NEVER conflate `nearest` with a scan that has loaded.
-    const nearest=spcoaL3NearestAt(center.lat,center.lng);
+    const nearest=spcoaL3RightClickSite && prefs.mode==="auto"
+        ? spcoaL3RightClickSite : spcoaL3NearestAt(center.lat,center.lng);
     const desired=prefs.enabled && prefs.mode==="auto" ? spcoaL3DesiredSite(prefs) : null;
     const loadedMatch=spcoaRadarActiveKey?.match(/^n0b\|(K[A-Z0-9]{3})\|/);
     const loaded=loadedMatch ? loadedMatch[1] : null;
     const current=!!desired && desired===loaded && !!spcoaRadarReady &&
         spcoaL3Data?.site===desired && spcoaL3ScanIsUsable(spcoaL3Data);
     return {enabled:prefs.enabled,mode:prefs.mode,nearest,desired,loaded,ready:current,
+        selection:spcoaL3RightClickSite && prefs.mode==="auto" ? "right-click" : "map-center",
+        clickPoint:spcoaL3RightClickPoint,
         center:{lat:center.lat,lng:center.lng},
         scanTime:current ? spcoaL3Data.scan.date.toISOString():null};
 };
@@ -8970,6 +8987,54 @@ async function spcoaRadarWaitForMapTiles(timeoutMs=12000){
         if(map.isSourceLoaded(SPCOA_RADAR_LAYER_ID))finish();
     });
 }
+// V150: Right-click the map (while in Pan + Auto Nearest mode) to request
+// the N0B scan closest to the CLICKED geography, not the viewport center.
+// In particular, the click uses the very same spcoaL3EnsureScan() path as
+// manual station selection, rather than waiting for the host sidebar to sync.
+function spcoaRadarLoadNearestAt(lat,lng){
+    const prefs=spcoaReadRadarPrefs();
+    if(!__MP_CHILD || !prefs.enabled || prefs.mode!=="auto")return null;
+    if(!Number.isFinite(lat) || !Number.isFinite(lng))return null;
+    const site=spcoaL3NearestAt(lat,lng);
+    if(!site){
+        console.warn("SPCOA nearest NEXRAD: no station for right-click",lat,lng);
+        return null;
+    }
+    spcoaL3RightClickSite=site;
+    spcoaL3RightClickPoint={lat,lng};
+    spcoaRadarResolvedSite=site;
+    spcoaL3AutoFailedUntil.delete(site);
+    // A click represents a deliberate new request; retry even after a failed
+    // availability poll, but never display the previous site's scan as current.
+    spcoaL3LastPoll=0;
+    spcoaL3Error="";
+    spcoaRadarRemoveLayer();
+    spcoaSyncRadarControls();
+    spcoaRadarSetValidText(prefs,site,false);
+    spcoaRadarPublishAutoState();
+    spcoaRadarStatus("Right-click selected " + site + "; loading N0B scan...");
+    spcoaRadarSchedule(0);
+    void spcoaL3EnsureScan(site).then(data=>{
+        if(spcoaL3RightClickSite!==site || spcoaReadRadarPrefs().mode!=="auto")return;
+        if(!data){
+            console.warn("SPCOA right-click radar scan unavailable:",site,spcoaL3Error);
+            spcoaRadarSetValidText(spcoaReadRadarPrefs(),site,false);
+        }
+        spcoaRadarPublishAutoState();
+        spcoaRadarSchedule(0);
+    });
+    return site;
+}
+// Exposed only on the map iframe for transparent troubleshooting.
+window.__spcoaRadarLoadNearestAt=spcoaRadarLoadNearestAt;
+map.on("contextmenu",event=>{
+    const prefs=spcoaReadRadarPrefs();
+    if(!prefs.enabled || prefs.mode!=="auto" || activeDrawingTool!=="pan")return;
+    event.preventDefault();
+    event.originalEvent?.preventDefault?.();
+    const point=event.lngLat;
+    if(point)spcoaRadarLoadNearestAt(point.lat,point.lng);
+});
 window.addEventListener("spcoa-radar-settings-changed",()=>{
     spcoaSyncRadarControls();spcoaRadarSchedule(50);
     spcoaRadarPublishAutoState();
@@ -8991,8 +9056,9 @@ map.on("moveend",()=>{
     spcoaRadarPublishAutoState();
     const prefs=spcoaReadRadarPrefs();
     if(prefs.enabled && prefs.mode==="auto"){
-        // Camera changed: choose a new radar before another old-site tile is
-        // described as current. Async downloads are guarded by desired-site.
+        // In camera-centered mode, moving selects a new radar. After a
+        // right-click, the pinned station stays active until the next click.
+        // Async downloads are guarded by desired-site.
         spcoaRadarSchedule(0);
     }
 });
