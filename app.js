@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V162"; // list-based fills (max 3), inline styling, contour width fix
+const SPCOA_VIEWER_BUILD = "V165"; // opt-in city labels + zoom/density controls; V163 radar ordering preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -464,18 +464,60 @@ function updateSpcoaDensityUi(root = document) {
     if (slider && label) label.textContent = `${spcoaCityDensityDescription(slider.value)} (${slider.value}%)`;
 }
 /* Add controls to both host sidebar and child sidebar: index.html stays unchanged. */
-/* V114: Remove the cities overlay from the viewer entirely.
-   Keep the hidden Cities row in the DOM because the Roads/Counties control
-   installers use it as an insertion anchor. No city controls are created. */
+/* V164: Restore opt-in city display. Controls are installed in both host
+ * sidebar and map iframes; no index.html edit is needed. The existing road
+ * and geographic controls still use the #cities-toggle row as an anchor. */
+const SPCOA_CITY_VISIBLE_KEY = "spcoa_cities_enabled_v164";
+function spcoaReadCitiesEnabled() {
+    try { return localStorage.getItem(SPCOA_CITY_VISIBLE_KEY) === "1"; }
+    catch (_) { return false; }
+}
+function spcoaSaveCitiesEnabled(enabled) {
+    try { localStorage.setItem(SPCOA_CITY_VISIBLE_KEY, enabled ? "1" : "0"); }
+    catch (_) {}
+}
 function installSpcoaCityControls() {
     const toggle = document.getElementById("cities-toggle");
-    if (toggle) {
-        toggle.checked = false;
-        toggle.disabled = true;
-        toggle.closest("label")?.style.setProperty("display", "none", "important");
+    if (!toggle) return;
+    const row = toggle.closest("label");
+    toggle.disabled = false;
+    toggle.checked = spcoaReadCitiesEnabled();
+    toggle.setAttribute("aria-label", "Show city and town names");
+    if (row) {
+        row.style.setProperty("display", "flex", "important");
+        row.style.alignItems = "center";
+        row.style.gap = "6px";
+        row.title = "Show or hide population-prioritized city and town labels";
     }
-    const panel = document.getElementById("spcoa-city-options");
-    if (panel) panel.remove();
+    if (document.getElementById("spcoa-city-options")) return;
+    const options = document.createElement("div");
+    options.id = "spcoa-city-options";
+    options.style.cssText = "margin:5px 0 10px 12px;padding:8px;border:1px solid #355269;border-radius:5px;background:#102638;color:#d1e5f0;font:11px Inter,Arial,sans-serif;";
+    const line = document.createElement("label");
+    line.htmlFor = "city-density";
+    line.style.cssText = "display:flex;justify-content:space-between;gap:6px;";
+    line.append(document.createTextNode("City label density"));
+    const detail = document.createElement("span");
+    detail.id = "city-density-label";
+    detail.style.fontWeight = "700";
+    line.appendChild(detail);
+    const density = document.createElement("input");
+    density.type = "range";
+    density.id = "city-density";
+    density.min = "0"; density.max = "100"; density.step = "10";
+    density.value = String(readSpcoaCityDensity());
+    density.style.cssText = "display:block;width:100%;margin:8px 0 2px;accent-color:#69baf5;";
+    density.setAttribute("aria-label", "City label density from sparse to dense");
+    const ends = document.createElement("div");
+    ends.style.cssText = "display:flex;justify-content:space-between;color:#97b9ca;font-size:10px;";
+    ends.innerHTML = "<span>Sparse</span><span>Normal</span><span>Dense</span>";
+    const status = document.createElement("div");
+    status.id = "city-count-label";
+    status.style.cssText = "font-size:10px;color:#a7c4d4;margin-top:7px;";
+    status.textContent = "Cities off";
+    options.append(line,density,ends,status);
+    (row || toggle).insertAdjacentElement("afterend", options);
+    updateSpcoaDensityUi();
 }
 
 function readSpcoaCwaBorderColor() {
@@ -3145,7 +3187,7 @@ function spcoaV158InstallAboutHelp() {
             </details>
             <details>
               <summary>Satellite and Radar</summary>
-              <div class="spcoa-v158-detail"><p>Satellite imagery and NEXRAD base reflectivity can be displayed alongside SPCOA analysis fields. Choose a satellite product or enable base reflectivity using the imagery controls.</p><p>To select an individual radar, enable <strong>Auto Nearest NEXRAD</strong>, switch to <strong>Pan</strong> mode, and right-click the map near your area of interest.</p><p>Satellite and radar observations have their own valid times, which may differ from the selected SPCOA analysis hour.</p></div>
+              <div class="spcoa-v158-detail"><p>Satellite imagery and NEXRAD base reflectivity can be displayed alongside SPCOA analysis fields. Reflectivity displays above filled fields but below contours, outlines and annotations. Choose a satellite product or enable base reflectivity using the imagery controls.</p><p>To select an individual radar, enable <strong>Auto Nearest NEXRAD</strong>, switch to <strong>Pan</strong> mode, and right-click the map near your area of interest.</p><p>Satellite and radar observations have their own valid times, which may differ from the selected SPCOA analysis hour.</p></div>
             </details>
             <details>
               <summary>Drawing and Exporting</summary>
@@ -7770,6 +7812,20 @@ weatherCanvas.style.zIndex =
 // raster even when every neutral pixel has zero alpha.
 weatherCanvas.style.background = "transparent";
 
+/* V163: Reflectivity stays ABOVE every filled SPCOA field, but BELOW
+ * contours, county/state boundaries, vectors, labels and annotations.
+ * The original MapLibre radar is retained as a safe fallback when a raster
+ * provider cannot be composed into an exportable 2D canvas. */
+const spcoaRadarAboveFillCanvas = document.createElement("canvas");
+spcoaRadarAboveFillCanvas.id = "spcoa-radar-above-fills";
+spcoaRadarAboveFillCanvas.setAttribute("aria-hidden", "true");
+Object.assign(spcoaRadarAboveFillCanvas.style, {
+    position: "absolute", inset: "0", width: "100%", height: "100%",
+    pointerEvents: "none", zIndex: "3", opacity: "0", background: "transparent"
+});
+mapWrapper.appendChild(spcoaRadarAboveFillCanvas);
+
+
 vectorCanvas.style.zIndex =
     "7";
 
@@ -9682,6 +9738,203 @@ function spcoaRadarBeforeLayerId(){
         !["spcoa-mapbox-satellite-basemap",SPCOA_GOES_SOURCE_ID,SPCOA_RADAR_LAYER_ID]
             .includes(layer.id))?.id;
 }
+/* V163 — radar-above-fill compositor.
+ * MapLibre's radar raster is part of the bottom WebGL basemap, whereas the
+ * SPCOA filled fields use independent HTML canvases. Reordering MapLibre
+ * layers alone cannot put reflectivity above those filled fields. Draw the
+ * very same source tiles in a transparent overlay canvas (z=3), keeping
+ * weather z=2, contours z=4, geography z=5, vectors z=7 and labels z=9.
+ * This canvas is included in PNG, GIF and MP4 captures.
+ */
+const spcoaRadarTopCtx=spcoaRadarAboveFillCanvas.getContext("2d");
+const spcoaRadarTopTileCache=new Map();
+let spcoaRadarTopTimer=null,spcoaRadarTopSerial=0;
+let spcoaRadarTopSignature="",spcoaRadarTopPendingSignature="";
+let spcoaRadarTopPromise=Promise.resolve(false);
+let spcoaRadarTopReady=false,spcoaRadarTopCamera=null;
+function spcoaRadarTopClear(){
+    clearTimeout(spcoaRadarTopTimer);
+    spcoaRadarTopSerial++;
+    spcoaRadarTopSignature="";spcoaRadarTopPendingSignature="";
+    spcoaRadarTopReady=false;spcoaRadarTopCamera=null;
+    spcoaRadarAboveFillCanvas.style.transform="none";
+    spcoaRadarAboveFillCanvas.style.opacity="0";
+    spcoaRadarTopCtx?.clearRect(0,0,spcoaRadarAboveFillCanvas.width,spcoaRadarAboveFillCanvas.height);
+}
+function spcoaRadarTopRestoreBase(){
+    if(map.getLayer(SPCOA_RADAR_LAYER_ID)){
+        try{map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",spcoaReadRadarPrefs().opacity/100);}
+        catch(error){console.warn("Radar fallback paint unavailable",error);}
+    }
+}
+function spcoaRadarTopMove(){
+    const snap=spcoaRadarTopCamera;
+    if(!snap||!spcoaRadarTopReady)return;
+    const nw=map.project(snap.nw),se=map.project(snap.se);
+    if(![nw.x,nw.y,se.x,se.y].every(Number.isFinite))return;
+    const sx=(se.x-nw.x)/snap.width,sy=(se.y-nw.y)/snap.height;
+    spcoaRadarAboveFillCanvas.style.transformOrigin="0 0";
+    spcoaRadarAboveFillCanvas.style.transform=`translate(${nw.x}px,${nw.y}px) scale(${sx},${sy})`;
+}
+function spcoaRadarTopTileBounds(z,x,y){
+    const n=2**z;
+    return [
+        [x/n*360-180,Math.atan(Math.sinh(Math.PI*(1-2*y/n)))*180/Math.PI],
+        [(x+1)/n*360-180,Math.atan(Math.sinh(Math.PI*(1-2*(y+1)/n)))*180/Math.PI]
+    ];
+}
+async function spcoaRadarTopFetchTile(z,x,y,key){
+    const n=2**z,tx=((x%n)+n)%n;
+    const mode=spcoaReadRadarPrefs().mode;
+    let buffer;
+    if(mode==="auto"||mode==="single"){
+        const v=spcoaL3Data?.version;
+        if(!v||!spcoaRadarActiveKey?.startsWith("n0b|"))throw new Error("N0B scan not yet ready");
+        buffer=await spcoaL3TileBytes(`${SPCOA_L3_PROTOCOL}://tile/${z}/${tx}/${y}/${v}`);
+    }else if(spcoaRadarActiveKey?.includes("|custom|")){
+        const bucket=Number(spcoaRadarActiveKey?.split("|").pop())||Math.floor(Date.now()/SPCOA_RADAR_REFRESH_MS);
+        buffer=await spcoaRadarRecolorTileRequest(`${SPCOA_RADAR_PALETTE_PROTOCOL}://tile/${z}/${tx}/${y}/${bucket}`);
+    }else{
+        const bucket=Number(spcoaRadarActiveKey?.split("|").pop())||Math.floor(Date.now()/SPCOA_RADAR_REFRESH_MS);
+        const tms=spcoaRadarActiveKey?.includes("|tms|");
+        const url=tms?`${SPCOA_RADAR_TMS_BASE}/${z}/${tx}/${y}.png?v=${bucket}`:
+            spcoaRadarWmsTileCoordinates(z,tx,y,bucket);
+        // A successful CORS fetch is essential: the PNG/video compositor
+        // must never consume a canvas tainted by cross-origin tiles.
+        const response=await fetch(url,{mode:"cors",credentials:"omit"});
+        if(!response.ok)throw new Error(`Radar overlay HTTP ${response.status}`);
+        if(!String(response.headers.get("content-type")||"").includes("image/"))
+            throw new Error("Radar overlay response was not an image");
+        buffer=await response.blob();
+    }
+    const blob=buffer instanceof Blob?buffer:new Blob([buffer],{type:"image/png"});
+    return createImageBitmap(blob);
+}
+function spcoaRadarTopCachedTile(z,x,y,key){
+    const id=`${key}|${z}|${x}|${y}`;
+    if(spcoaRadarTopTileCache.has(id))return spcoaRadarTopTileCache.get(id);
+    const value=spcoaRadarTopFetchTile(z,x,y,key).catch(error=>{
+        spcoaRadarTopTileCache.delete(id);throw error;
+    });
+    spcoaRadarTopTileCache.set(id,value);
+    // Discard stale tile generations. The map retains active image bitmaps
+    // for the current frame; don't close them while compositing is in flight.
+    if(spcoaRadarTopTileCache.size>90){
+        const oldest=spcoaRadarTopTileCache.keys().next().value;
+        if(oldest!==id)spcoaRadarTopTileCache.delete(oldest);
+    }
+    return value;
+}
+function spcoaRadarTopCameraKey(){
+    const center=map.getCenter(),view=map.getCanvas();
+    return [spcoaRadarActiveKey,map.getZoom().toFixed(5),center.lng.toFixed(5),
+        center.lat.toFixed(5),view.clientWidth,view.clientHeight].join("|");
+}
+async function spcoaRadarTopDraw(){
+    const prefs=spcoaReadRadarPrefs();
+    if(!prefs.enabled||!spcoaRadarActiveKey||!map.getLayer(SPCOA_RADAR_LAYER_ID)){
+        spcoaRadarTopClear();return false;
+    }
+    spcoaRadarAboveFillCanvas.style.opacity=String(prefs.opacity/100);
+    const signature=spcoaRadarTopCameraKey();
+    if(spcoaRadarTopReady&&signature===spcoaRadarTopSignature){
+        // The opacity preference is applied to the overlay; do not reload tiles.
+        if(map.getLayer(SPCOA_RADAR_LAYER_ID))
+            map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",0);
+        return true;
+    }
+    if(signature===spcoaRadarTopPendingSignature)return spcoaRadarTopPromise;
+    const serial=++spcoaRadarTopSerial;
+    spcoaRadarTopPendingSignature=signature;
+    const work=(async()=>{
+        const viewport=map.getCanvas(),w=viewport.clientWidth,h=viewport.clientHeight;
+        if(w<2||h<2)return false;
+        const z=Math.max(0,Math.min(10,Math.floor(map.getZoom()))),n=2**z;
+        const corners=[[0,0],[w,0],[0,h],[w,h]].map(pt=>map.unproject(pt));
+        const mercY=lat=>(1-Math.asinh(Math.tan(Math.max(-85,Math.min(85,lat))*Math.PI/180))/Math.PI)/2*n;
+        const xs=corners.map(c=>(c.lng+180)/360*n),ys=corners.map(c=>mercY(c.lat));
+        const x0=Math.floor(Math.min(...xs)),x1=Math.floor(Math.max(...xs));
+        const y0=Math.max(0,Math.floor(Math.min(...ys))),y1=Math.min(n-1,Math.floor(Math.max(...ys)));
+        const tiles=[];
+        for(let ty=y0;ty<=y1;ty++)for(let tx=x0;tx<=x1;tx++)tiles.push({x:tx,y:ty});
+        if(tiles.length===0||tiles.length>64)throw new Error("Radar overlay tile range unsupported");
+        const coords=tiles.map(t=>({
+            ...t, bounds:spcoaRadarTopTileBounds(z,t.x,t.y)
+        }));
+        const results=await Promise.allSettled(coords.map(t=>spcoaRadarTopCachedTile(z,t.x,t.y,spcoaRadarActiveKey)));
+        if(serial!==spcoaRadarTopSerial||!spcoaReadRadarPrefs().enabled||
+            signature!==spcoaRadarTopCameraKey())return false;
+        const successful=results.filter(r=>r.status==="fulfilled");
+        // Falling back entirely avoids a patchy overlay if an imagery server
+        // refuses cross-origin image reads in the current browser.
+        if(successful.length!==results.length){
+            throw results.find(r=>r.status==="rejected")?.reason || new Error("Incomplete radar overlay tiles");
+        }
+        const dpr=Math.min(window.devicePixelRatio||1,2);
+        const frame=document.createElement("canvas");
+        frame.width=Math.max(1,Math.round(w*dpr));frame.height=Math.max(1,Math.round(h*dpr));
+        const ctx=frame.getContext("2d");if(!ctx)throw new Error("Radar overlay canvas unavailable");
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        for(let i=0;i<coords.length;i++){
+            const t=coords[i],image=results[i].value;
+            const nw=map.project(t.bounds[0]),se=map.project(t.bounds[1]);
+            ctx.drawImage(image,nw.x,nw.y,se.x-nw.x,se.y-nw.y);
+        }
+        if(serial!==spcoaRadarTopSerial||signature!==spcoaRadarTopCameraKey())return false;
+        // Make the original map raster transparent ONLY after the top overlay
+        // has rendered. Source loading, metadata and scan verification stay live.
+        if(map.getLayer(SPCOA_RADAR_LAYER_ID))
+            map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",0);
+        spcoaRadarAboveFillCanvas.width=frame.width;
+        spcoaRadarAboveFillCanvas.height=frame.height;
+        spcoaRadarTopCtx.drawImage(frame,0,0);
+        spcoaRadarAboveFillCanvas.style.transform="none";
+        spcoaRadarAboveFillCanvas.style.opacity=String(spcoaReadRadarPrefs().opacity/100);
+        spcoaRadarTopCamera={
+            nw:map.unproject([0,0]),se:map.unproject([w,h]),width:w,height:h
+        };
+        spcoaRadarTopReady=true;spcoaRadarTopSignature=signature;
+        return true;
+    })().catch(error=>{
+        if(serial===spcoaRadarTopSerial){
+            console.warn("Radar above-fill overlay unavailable; retaining base raster:",error);
+            spcoaRadarTopReady=false;
+            spcoaRadarAboveFillCanvas.style.opacity="0";
+            spcoaRadarTopRestoreBase();
+        }
+        return false;
+    }).finally(()=>{
+        if(serial===spcoaRadarTopSerial)spcoaRadarTopPendingSignature="";
+    });
+    spcoaRadarTopPromise=work;
+    return work;
+}
+function spcoaRadarTopSchedule(ms=70){
+    clearTimeout(spcoaRadarTopTimer);
+    if(!spcoaReadRadarPrefs().enabled){spcoaRadarTopClear();return;}
+    spcoaRadarTopTimer=setTimeout(()=>{void spcoaRadarTopDraw();},ms);
+}
+async function spcoaRadarTopEnsureExport(){
+    if(!spcoaRadarSelected())return;
+    clearTimeout(spcoaRadarTopTimer);
+    const ready=await Promise.race([
+        spcoaRadarTopDraw(),
+        new Promise(resolve=>setTimeout(()=>resolve(false),12000))
+    ]);
+    // A timed-out overlay must not blank the exported radar: invalidate its
+    // unfinished compositor before returning to the MapLibre fallback.
+    if(!ready){
+        spcoaRadarTopSerial++;
+        spcoaRadarTopPendingSignature="";
+        spcoaRadarTopReady=false;
+        spcoaRadarAboveFillCanvas.style.opacity="0";
+        spcoaRadarTopRestoreBase();
+    }
+}
+map.on("move",spcoaRadarTopMove);
+map.on("moveend",()=>spcoaRadarTopSchedule(60));
+map.on("resize",()=>spcoaRadarTopSchedule(80));
+
 function spcoaRadarRemoveLayer(){
     if(map.getLayer(SPCOA_RADAR_LAYER_ID))map.removeLayer(SPCOA_RADAR_LAYER_ID);
     if(map.getSource(SPCOA_RADAR_LAYER_ID))map.removeSource(SPCOA_RADAR_LAYER_ID);
@@ -9696,7 +9949,7 @@ function spcoaRadarRefresh(){
     if(!p.enabled){
         if(spcoaRadarResolvedSite!==null){spcoaRadarResolvedSite=null;spcoaSyncRadarControls();}
         spcoaRadarSetValidText(p,p.site,false);
-        spcoaRadarRemoveLayer();spcoaRadarStatus("Off");
+        spcoaRadarTopClear();spcoaRadarRemoveLayer();spcoaRadarStatus("Off");
         spcoaRadarFailure="";spcoaRadarFailureCount=0;
         return;
     }
@@ -9713,7 +9966,7 @@ function spcoaRadarRefresh(){
         spcoaRadarResolvedSite = p.mode === "auto"
             ? spcoaL3NearestAt(center.lat, center.lng) : null;
         spcoaSyncRadarControls();
-        spcoaRadarRemoveLayer();
+        spcoaRadarTopClear();spcoaRadarRemoveLayer();
         spcoaRadarSetValidText(p,null,false);
         spcoaRadarPublishAutoState();
         spcoaRadarStatus("No current N0B scan from nearby radars; will retry.");
@@ -9754,7 +10007,7 @@ function spcoaRadarRefresh(){
     // while an individual numerical scan is loading or unavailable.
     // This avoids visually implying that the selected N0B radar loaded.
     if(wantsSingle && !singleReady){
-        spcoaRadarRemoveLayer();
+        spcoaRadarTopClear();spcoaRadarRemoveLayer();
         spcoaRadarSetValidText(p,radarSite,false);
         spcoaRadarStatus(spcoaL3Error
             ? radarSite+" N0B unavailable: "+spcoaL3Error
@@ -9769,6 +10022,7 @@ function spcoaRadarRefresh(){
             spcoaRadarStatus(wantsSingle ? "Rendering "+radarSite+" numerical N0B reflectivity..." :
                 usePalette ? "Loading custom-colored CONUS reflectivity..." :
                 "Requesting CONUS mosaic via "+spcoaRadarMode.toUpperCase()+"...");
+            spcoaRadarTopClear();
             spcoaRadarRemoveLayer();
             const url=wantsSingle
                 ? `${SPCOA_L3_PROTOCOL}://tile/{z}/{x}/{y}/${spcoaL3Data.version}`
@@ -9786,10 +10040,11 @@ function spcoaRadarRefresh(){
             },spcoaRadarBeforeLayerId());
             spcoaRadarActiveKey=key;
         }else{
-            map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",p.opacity/100);
+            map.setPaintProperty(SPCOA_RADAR_LAYER_ID,"raster-opacity",spcoaRadarTopReady?0:p.opacity/100);
             const before=spcoaRadarBeforeLayerId();
             if(before)map.moveLayer(SPCOA_RADAR_LAYER_ID,before);
         }
+        spcoaRadarTopSchedule(30);
         spcoaRadarActiveLabel=wantsSingle
             ? `${radarSite} N0B · ${spcoaL3Data.scan.tilt.toFixed(1)}° tilt · `+
                 spcoaL3Data.scan.date.toISOString().replace("T"," ").slice(0,16)+" UTC · numerical dBZ · "+p.opacity+"% opacity"
@@ -9906,6 +10161,7 @@ map.on("sourcedata",event=>{
     if(event.sourceId===SPCOA_RADAR_LAYER_ID && event.isSourceLoaded){
         spcoaRadarReady=true;
         spcoaRadarFailure="";
+        spcoaRadarTopSchedule(50);
         const prefs=spcoaReadRadarPrefs();
         const site=["auto","single"].includes(prefs.mode)?spcoaL3DesiredSite(prefs):null;
         const ready=!!site && spcoaL3Data?.site===site && spcoaL3ScanIsUsable(spcoaL3Data);
@@ -10296,6 +10552,157 @@ function cityFeaturesNearView(west, east, south, north) {
 }
 
 
+
+/* V165: Match the provided major.js city DATA and population-driven labels.
+ * The reference places feed is controlled by a third party and may be removed,
+ * changed, blocked by CORS, or subject to reuse restrictions. Prefer a local
+ * self-hosted copy (with permission) if installed; otherwise try the original
+ * public reference feed. As a fallback, preserve previous local cities/NE.
+ * SPCOA keeps its existing top-level canvas for compositing and exports;
+ * city placement therefore emulates MapLibre's symbol styling/collision rules
+ * rather than creating a competing MapLibre map behind the weather canvases. */
+let spcoaCityDataPromise = null;
+const SPCOA_REFERENCE_PLACES_URL =
+    "https://r2assets.jhwxtools.com/assets/desi_places_wfolg.geojson";
+const SPCOA_REFERENCE_HAMLETS_URL =
+    "https://r2assets.jhwxtools.com/assets/hamlets_fl.geojson";
+const SPCOA_NATURAL_EARTH_PLACES =
+    "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places.geojson";
+const SPCOA_STATE_NAME_TO_FIPS = Object.freeze({
+    Alabama:"01",Alaska:"02",Arizona:"04",Arkansas:"05",California:"06",
+    Colorado:"08",Connecticut:"09",Delaware:"10",Florida:"12",Georgia:"13",
+    Hawaii:"15",Idaho:"16",Illinois:"17",Indiana:"18",Iowa:"19",Kansas:"20",
+    Kentucky:"21",Louisiana:"22",Maine:"23",Maryland:"24",Massachusetts:"25",
+    Michigan:"26",Minnesota:"27",Mississippi:"28",Missouri:"29",Montana:"30",
+    Nebraska:"31",Nevada:"32","New Hampshire":"33","New Jersey":"34",
+    "New Mexico":"35","New York":"36","North Carolina":"37","North Dakota":"38",
+    Ohio:"39",Oklahoma:"40",Oregon:"41",Pennsylvania:"42","Rhode Island":"44",
+    "South Carolina":"45","South Dakota":"46",Tennessee:"47",Texas:"48",
+    Utah:"49",Vermont:"50",Virginia:"51",Washington:"53","West Virginia":"54",
+    Wisconsin:"55",Wyoming:"56","District of Columbia":"11"
+});
+const SPCOA_CITY_STATE_ABBREVIATION_FIPS = Object.freeze({
+    AL:"01",AK:"02",AZ:"04",AR:"05",CA:"06",CO:"08",CT:"09",DE:"10",
+    DC:"11",FL:"12",GA:"13",HI:"15",ID:"16",IL:"17",IN:"18",IA:"19",
+    KS:"20",KY:"21",LA:"22",ME:"23",MD:"24",MA:"25",MI:"26",MN:"27",
+    MS:"28",MO:"29",MT:"30",NE:"31",NV:"32",NH:"33",NJ:"34",NM:"35",
+    NY:"36",NC:"37",ND:"38",OH:"39",OK:"40",OR:"41",PA:"42",RI:"44",
+    SC:"45",SD:"46",TN:"47",TX:"48",UT:"49",VT:"50",VA:"51",WA:"53",
+    WV:"54",WI:"55",WY:"56"
+});
+function spcoaReferenceCityPopulation(feature) {
+    const p=feature?.properties||{};
+    // Preserve real observed population when available; use old city_class as
+    // an approximate rank ONLY for the old local dataset without population.
+    for(const k of ["population","priority","POP_MAX","POP_MIN","pop"]){
+        if(p[k]!==undefined && p[k]!==null && p[k]!==""){
+            const n=Number(p[k]);
+            if(Number.isFinite(n))return Math.max(0,n);
+        }
+    }
+    const cls=Number(p.city_class??p.class);
+    return Number.isFinite(cls) ? [500000,200000,100000,50000,25000,10000,5000,0]
+        [Math.max(0,Math.min(7,Math.round(cls)))] : 0;
+}
+function spcoaCityClassFromPopulation(population) {
+    const p = Number(population) || 0;
+    return p >= 1000000 ? 0 : p >= 250000 ? 1 : p >= 100000 ? 2 :
+        p >= 50000 ? 3 : p >= 20000 ? 4 : p >= 5000 ? 5 :
+        p >= 1000 ? 6 : 7;
+}
+function spcoaNormalizeCityFeatures(collection, fallback=false) {
+    const features=Array.isArray(collection?.features) ? collection.features : [];
+    const seen=new Set(), result=[];
+    for(const f of features){
+        if(f?.geometry?.type!=="Point" || !Array.isArray(f.geometry.coordinates))continue;
+        const [lon,lat]=f.geometry.coordinates.map(Number);
+        if(!Number.isFinite(lon)||!Number.isFinite(lat) || lon < -180 || lon > -60 || lat < 17 || lat > 73)continue;
+        const p=f.properties||{};
+        if(fallback){
+            const country=String(p.SOV0NAME||p.ADM0NAME||p.SOVEREIGNT||p.COUNTRY||"").toLowerCase();
+            if(country && !country.includes("united states") && country!=="usa")continue;
+        }
+        const name=String(p.name||p.NAME||p.NAMEASCII||p.city||"").replace(/[*]|\s*\(.*?\)/g,"").trim();
+        if(!name)continue;
+        const state=String(p.ADM1NAME||p.state||p.STATE||"").trim();
+        const stateFP=String(p.STATEFP||p.statefp||p.state_fips||
+            SPCOA_CITY_STATE_ABBREVIATION_FIPS[state.toUpperCase()]||
+            SPCOA_STATE_NAME_TO_FIPS[state]||"").padStart(2,"0");
+        const population=spcoaReferenceCityPopulation(f);
+        const existingClass=Number(p.city_class??p.class);
+        const cityClass=!fallback&&Number.isFinite(existingClass)
+            ? existingClass : spcoaCityClassFromPopulation(population);
+        const geoid=String(p.geoid||p.GEOID||"").trim();
+        const key=`${name.toLowerCase()}|${stateFP}|${geoid||`${Math.round(lon*10000)}:${Math.round(lat*10000)}`}`;
+        if(seen.has(key))continue;
+        seen.add(key);
+        result.push({type:"Feature",geometry:{type:"Point",coordinates:[lon,lat]},
+            properties:{...p,name,STATEFP:stateFP,city_class:Math.max(0,Math.min(7,cityClass)),
+                population,priority:population,largestOf:p.largestOf||null}});
+    }
+    return result;
+}
+async function spcoaCityFetch(url,timeout=12000){
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),timeout);
+    try{
+        const response=await fetch(url,{signal:ctrl.signal});
+        if(!response.ok)throw new Error(`${response.status} ${response.statusText}`);
+        const data=await response.json();
+        if(!Array.isArray(data?.features))throw new Error("Not a GeoJSON FeatureCollection");
+        return data;
+    }finally{clearTimeout(timer);}
+}
+function spcoaLoadCities(){
+    if(spcoaCityDataPromise)return spcoaCityDataPromise;
+    spcoaCityDataPromise=(async()=>{
+        // Try the provided reference feed, preferably self-hosted. The separate
+        // Florida hamlets are optional: one failure must not erase all cities.
+        const sources=[
+            ["data/desi_places_wfolg.geojson",false,"reference-local"],
+            [SPCOA_REFERENCE_PLACES_URL,false,"reference-remote"],
+            ["data/cities.geojson",false,"original-local"],
+            [SPCOA_NATURAL_EARTH_PLACES,true,"natural-earth"]
+        ];
+        let lastError=null;
+        for(const [url,fallback,kind] of sources){
+            try{
+                const data=await spcoaCityFetch(url,15000);
+                let places=spcoaNormalizeCityFeatures(data,fallback);
+                if(!places.length)throw new Error("No usable U.S. city points in " + url);
+                if(kind.startsWith("reference")){
+                    const hamletSources=["data/hamlets_fl.geojson",SPCOA_REFERENCE_HAMLETS_URL];
+                    for(const extraUrl of hamletSources){
+                        try{
+                            const extra=spcoaNormalizeCityFeatures(await spcoaCityFetch(extraUrl,10000),false);
+                            const names=new Set(places.map(f=>`${f.properties.name.toLowerCase()}|${f.properties.STATEFP}|${f.properties.geoid||""}`));
+                            for(const f of extra){
+                                const key=`${f.properties.name.toLowerCase()}|${f.properties.STATEFP}|${f.properties.geoid||""}`;
+                                if(!names.has(key)){places.push(f);names.add(key);}
+                            }
+                            break;
+                        }catch(error){console.info("[SPCOA cities] Optional hamlets feed unavailable:",extraUrl);}
+                    }
+                }
+                cityFeatures=places;
+                rebuildCitySpatialGrid();
+                rebuildCityClassificationCache();
+                console.info(`[SPCOA V165] Loaded ${cityFeatures.length} city locations from ${url}`);
+                renderCities();
+                return cityFeatures.length;
+            }catch(error){
+                lastError=error;
+                console.warn("[SPCOA cities] Could not load " + url + ":",error.message||error);
+            }
+        }
+        const status=document.getElementById("city-count-label");
+        if(status)status.textContent="City data unavailable (see browser Console)";
+        console.warn("[SPCOA cities] All city data sources unavailable",lastError);
+        spcoaCityDataPromise=null; // a subsequent toggle may retry failed feeds
+        return 0;
+    })();
+    return spcoaCityDataPromise;
+}
 
 /* =========================================================================================
    CANVAS SIZE
@@ -17354,9 +17761,9 @@ async function loadGeography() {
     }
 
 
-    // V114: City labels are removed; do not fetch cities.geojson.
-    cityFeatures = [];
-    citySpatialGrid.clear();
+    // City data is optional and loaded ONLY when labels are enabled. Weather
+    // analysis and normal map startup never wait on external city services.
+    if (citiesEnabled) void spcoaLoadCities();
 
     // Road data loads asynchronously; it must never delay the weather analysis.
     spcoaEnsureRoads();
@@ -17751,53 +18158,65 @@ function getEffectiveCityClass(feature) {
    CITY VISIBILITY / PRIORITY
    ========================================================================================= */
 
+/* V165: Follow the provided major.js zoom thresholds, expressed using the
+ * SPCOA canvas rather than a MapLibre symbol layer. By default, only cities
+ * >=150k appear below zoom 5, >50k at zoom 5+, >25k at 7+, >5k at 8+,
+ * and all places at zoom 9+. Density delays/advances the thresholds. */
+function spcoaCityActiveOffice(feature) {
+    // WFO anchor city for LBF priority. Other WFOs use source largestOf.
+    const code=String(feature?.properties?.largestOf||"").toUpperCase();
+    if(!code)return false;
+    const active=String(selectedCityCwa||"").toUpperCase();
+    if(active!=="ALL" && active!==SPCOA_CITY_FOLLOW_BORDER && active===code)return true;
+    return active==="ALL" && sectorSelect?.value==="lbf" && code==="LBF";
+}
 function cityVisibleAtZoom(feature, zoom) {
-    const key = getCityKey(feature);
-    if (HIDDEN_CITY_KEYS.has(key)) return false;
-
-    // Density adjusts the zoom threshold, not the underlying city data.
-    // At 50%, preserve the established AguaceroWX-inspired visibility.
-    const cityClass = getEffectiveCityClass(feature);
-    const thresholds = [3.0, 3.0, 3.45, 4.2, 4.8, 5.1, 5.55, 6.3];
-    const normal = thresholds[Math.max(0, Math.min(7, Math.round(cityClass)))];
-    // At Sparse, delay smaller towns by as much as 2 zoom levels;
-    // at Maximum, show smaller towns up to 1.35 levels earlier.
-    const delta = cityDensity <= 50
-        ? (50 - cityDensity) / 50 * 2.0
-        : -(cityDensity - 50) / 50 * 1.35;
-    return zoom >= Math.max(3, normal + delta * (cityClass <= 2 ? 0.2 : 1));
+    if(HIDDEN_CITY_KEYS.has(getCityKey(feature)))return false;
+    const pop=spcoaReferenceCityPopulation(feature);
+    const anchor=spcoaCityActiveOffice(feature);
+    const effectivePop=anchor?Math.max(pop,150000):pop;
+    // 50% = reference density. Shift the breakpoints by at most one zoom.
+    const shift=(50-cityDensity)/50*0.95;
+    const z=zoom-shift;
+    if(z<5)return effectivePop>=150000;
+    if(z<7)return effectivePop>50000;
+    if(z<8)return effectivePop>25000;
+    if(z<9)return effectivePop>5000;
+    return true;
 }
-
 function getCityPriority(feature) {
-    const cityClass = getEffectiveCityClass(feature);
-    const key = getCityKey(feature);
-
-    let priority = 1000 - (cityClass * 100);
-
-    if (PRIMARY_SAME_NAME_CITY_KEYS.has(key)) {
-        priority += 50;
-    }
-
-    if (LBF_CITY_PRIORITY_OVERRIDES.has(key)) {
-        priority += 75;
-    }
-    if (spcoaCanonicalCityMetro(feature)) priority += 125;
-
-    return priority;
+    // Higher-population places win collisions. Match major.js priority order.
+    const p=spcoaReferenceCityPopulation(feature);
+    if(spcoaCityActiveOffice(feature))return 1e9;
+    return p + (LBF_CITY_PRIORITY_OVERRIDES.has(getCityKey(feature)) ? 1500 : 0);
 }
-
-
-/* =========================================================================================
-   CITY LABEL SIZE
-   ========================================================================================= */
-
+function spcoaCityInterpolate(v,x0,y0,x1,y1) {
+    return y0+(Math.min(1,Math.max(0,(v-x0)/(x1-x0))))*(y1-y0);
+}
+function spcoaCityFontSize(feature, zoom) {
+    const p=spcoaCityActiveOffice(feature)
+        ?Math.max(150000,spcoaReferenceCityPopulation(feature))
+        :spcoaReferenceCityPopulation(feature);
+    // Literal sizing from the provided major.js layout expressions.
+    if(zoom<5)return 29;
+    if(zoom<7)return spcoaCityInterpolate(p,50000,24,150000,29);
+    if(zoom<8){
+        return p>50000?spcoaCityInterpolate(p,50000,24,150000,29):21;
+    }
+    if(zoom<9){
+        if(p>50000)return spcoaCityInterpolate(p,50000,24,150000,29);
+        if(p>25000)return 21;
+        if(p>10000)return 18;
+        return 15;
+    }
+    if(p<=5000)return spcoaCityInterpolate(p,0,14,5000,15);
+    if(p<=10000)return spcoaCityInterpolate(p,5000,15,10000,18);
+    if(p<=25000)return spcoaCityInterpolate(p,10000,18,25000,21);
+    if(p<=50000)return spcoaCityInterpolate(p,25000,21,50000,24);
+    return spcoaCityInterpolate(p,50000,24,200000,29);
+}
 function getCityFont(feature, zoom) {
-    const cityClass = getEffectiveCityClass(feature);
-    const sizes = [12.1, 12.1, 11.8, 11.3, 10.9, 10.5, 10.1];
-    const baseSize = sizes[Math.max(0, Math.min(6, cityClass))];
-    const zoomBump = zoom >= 7.5 ? 0.45 : zoom < 4.5 ? -0.25 : 0;
-    const size = (baseSize + zoomBump).toFixed(2);
-    return `650 ${size}px "Segoe UI", Arial, Helvetica, sans-serif`;
+    return `700 ${spcoaCityFontSize(feature,zoom).toFixed(2)}px "Noto Sans", "Segoe UI", Arial, sans-serif`;
 }
 
 /* =========================================================================================
@@ -17848,10 +18267,90 @@ function getCityLabelBox(ctx, name, point) {
    ========================================================================================= */
 
 function renderCities() {
-    // V114: City labels have been removed from all map views. Keep the
-    // dedicated canvas blank so previously saved labels cannot reappear.
     spcoaVisibleCityLabelBoxes = [];
     prepareContext(cityLabelCanvas, cityLabelCtx);
+    const status = document.getElementById("city-count-label");
+    if (!citiesEnabled) {
+        if(status)status.textContent="Cities off";
+        return;
+    }
+    if (!cityFeatures.length) {
+        if(status && !status.textContent.startsWith("City data unavailable"))status.textContent="Loading city names…";
+        return;
+    }
+    const bounds=map.getBounds();
+    const zoom=map.getZoom();
+    const viewport=mapWrapper.getBoundingClientRect();
+    const width=viewport.width, height=viewport.height;
+    if(width<1||height<1)return;
+    // SPCOA renders its weather data in canvases above the base MapLibre canvas.
+    // Draw city text in a dedicated top canvas so it remains visible over fills
+    // and is preserved in combined PNG and video exports.
+    const nearby=cityFeaturesNearView(bounds.getWest()-.6,bounds.getEast()+.6,
+                                      bounds.getSouth()-.6,bounds.getNorth()+.6);
+    const cwa=effectiveCityCwaFilter();
+    const candidates=nearby.filter(f=>{
+        if(!cityVisibleAtZoom(f,zoom))return false;
+        if(cwa==="ALL")return true;
+        const pt=f.geometry.coordinates;
+        return !cityCwaGeometryIndex.size || spcoaCityInsideCwa(f,pt[0],pt[1],cwa);
+    });
+    candidates.sort((a,b)=>getCityPriority(b)-getCityPriority(a) ||
+        getCityDisplayName(a).localeCompare(getCityDisplayName(b)));
+    // MapLibre uses collision tests, not a fixed quota. Limit only extreme
+    // clutter or costly exports; ordinary views are collision-limited.
+    const maxLabels=Math.min(600,Math.max(60,Math.round((width*height)/1800)));
+    const boxes=[];
+    cityLabelCtx.save();
+    cityLabelCtx.textAlign="center";
+    cityLabelCtx.textBaseline="middle";
+    cityLabelCtx.lineJoin="round";
+    const occupied=new Map();
+    const cellSize=90;
+    const overlaps=box=>{
+        const x0=Math.floor(box.left/cellSize),x1=Math.floor(box.right/cellSize);
+        const y0=Math.floor(box.top/cellSize),y1=Math.floor(box.bottom/cellSize);
+        for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+            for(const prev of (occupied.get(`${x}:${y}`)||[])){
+                if(cityBoxesOverlap(box,prev,11))return true;
+            }
+        }
+        return false;
+    };
+    const reserve=box=>{
+        const x0=Math.floor(box.left/cellSize),x1=Math.floor(box.right/cellSize);
+        const y0=Math.floor(box.top/cellSize),y1=Math.floor(box.bottom/cellSize);
+        for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+            const key=`${x}:${y}`;
+            let group=occupied.get(key);
+            if(!group){group=[];occupied.set(key,group);}
+            group.push(box);
+        }
+        boxes.push(box);
+    };
+    for(const f of candidates){
+        if(boxes.length>=maxLabels)break;
+        const name=getCityDisplayName(f);
+        if(!name)continue;
+        const position=map.project(f.geometry.coordinates);
+        if(!Number.isFinite(position.x)||!Number.isFinite(position.y))continue;
+        cityLabelCtx.font=getCityFont(f,zoom);
+        const fontSize=Number(/([\d.]+)px/.exec(cityLabelCtx.font)?.[1])||11;
+        const w=cityLabelCtx.measureText(name).width;
+        const box={left:position.x-w/2-4,right:position.x+w/2+4,
+                   top:position.y-fontSize/2-4,bottom:position.y+fontSize/2+4};
+        if(box.left<5||box.right>width-5||box.top<8||box.bottom>height-8||overlaps(box))continue;
+        // Reference text-halo-width=2.5 MapLibre pixels ~= 5 px canvas stroke.
+        cityLabelCtx.lineWidth=5.0;
+        cityLabelCtx.strokeStyle="rgba(15,23,42,1)";
+        cityLabelCtx.fillStyle="rgba(250,250,250,1)";
+        cityLabelCtx.strokeText(name,position.x,position.y);
+        cityLabelCtx.fillText(name,position.x,position.y);
+        reserve(box);
+    }
+    cityLabelCtx.restore();
+    spcoaVisibleCityLabelBoxes=boxes;
+    if(status)status.textContent=`${boxes.length} city labels displayed · ${cityFeatures.length.toLocaleString()} places loaded`;
 }
 
 /* =========================================================================================
@@ -18293,7 +18792,7 @@ function renderGeography() {
 
     geographyCtx.restore();
 
-    // City labels have been removed; clear the dedicated label canvas.
+    // Draw city labels after boundaries; labels have their own higher canvas.
     renderCities();
 }
 
@@ -21250,12 +21749,13 @@ if (countiesToggle) {
    ========================================================================================= */
 
 if (citiesToggle) {
-    citiesToggle.checked = false;
-    citiesToggle.disabled = true;
+    citiesEnabled = !!citiesToggle.checked;
+    citiesToggle.disabled = false;
     citiesToggle.addEventListener("change", () => {
-        citiesEnabled = false;
-        citiesToggle.checked = false;
+        citiesEnabled = !!citiesToggle.checked;
+        spcoaSaveCitiesEnabled(citiesEnabled);
         renderCities();
+        if(citiesEnabled && !cityFeatures.length)void spcoaLoadCities();
     });
 }
 
@@ -21751,10 +22251,7 @@ async function initialize() {
 
 
         if (citiesToggle) {
-
-            citiesEnabled = false;
-            citiesToggle.checked = false;
-
+            citiesEnabled = !!citiesToggle.checked;
         }
 
 
@@ -22511,6 +23008,10 @@ async function spcoaDrawExportMapBase(ctx, outW, mapH, mapY = 0) {
                 }
             }
         }
+        // Radar is drawn on its own transparent canvas above the filled
+        // fields. Complete its tiles BEFORE capturing the bottom WebGL map
+        // so exported PNG/GIF/MP4 frames use the same visible layer order.
+        await spcoaRadarTopEnsureExport();
         // Draw the *freshly rendered* MapLibre frame, not a framebuffer read
         // after the compositor has already moved on to a later asynchronous step.
         // A fully white raster is not valid when GOES or the satellite basemap
@@ -22640,13 +23141,18 @@ async function spcoaRefreshVectorColorsForExport() {
 async function spcoaDrawExportMapLayers(ctx, outW, mapH, mapY = 0) {
     await spcoaDrawExportMapBase(ctx, outW, mapH, mapY);
     const layers = [
-        weatherCanvas, contourCanvas, geographyCanvas, vectorCanvas,
-        hodographCanvas, stationObsCanvas,
+        weatherCanvas, ...(spcoaRadarTopReady ? [spcoaRadarAboveFillCanvas] : []),
+        contourCanvas, geographyCanvas, vectorCanvas,
+        cityLabelCanvas, hodographCanvas, stationObsCanvas,
         annotationCanvas, contourLabelCanvas
     ].filter(Boolean);
     for (const layer of layers) {
+        if(layer===spcoaRadarAboveFillCanvas){
+            ctx.save();ctx.globalAlpha=spcoaReadRadarPrefs().opacity/100;
+        }
         ctx.drawImage(layer, 0, 0, layer.width, layer.height,
             0, mapY, outW, mapH);
+        if(layer===spcoaRadarAboveFillCanvas)ctx.restore();
     }
     spcoaDrawSatelliteExportAttribution(ctx, outW, mapH, mapY);
 }
@@ -23669,8 +24175,8 @@ window.setInterval(()=>{if (!document.hidden) spcoaV120UpdateStatus();},60000);
                     vectorColors[field] = color;
                 }
             }
-            citiesEnabled = false;
-            if (citiesToggle) citiesToggle.checked = false;
+            citiesEnabled = !!citiesToggle?.checked;
+            spcoaSaveCitiesEnabled(citiesEnabled);
             countiesEnabled = !!countiesToggle?.checked;
             cwaBordersEnabled = !!cwaBordersToggle?.checked;
             selectedCwa = cwaSelector?.value || "ALL";
