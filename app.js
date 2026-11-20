@@ -1,3 +1,6 @@
+/* V182: Clear All now switches off GOES in the selected map panel(s) and
+ * disables the global NEXRAD overlay / returns the map background to Plain.
+ * Preserve V181 numerical contours, geography, annotations and all other tools. */
 /* V181: Apply Gaussian sigma = 6.0 to all notebook-matched contour overlays only.
  * Keep existing CAPE/DCAPE strong smoothing, continuous stitching, no changes
  * to filled fields, legacy contours, vectors, radar or satellite. */
@@ -324,7 +327,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V181"; // All notebook-matched contours use Gaussian sigma 6; DCAPE 100-J/kg levels retained
+const SPCOA_VIEWER_BUILD = "V182"; // V181 contours preserved; Clear All also resets GOES, radar and background
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -4422,7 +4425,37 @@ if (!__MP_CHILD) {
             const clearButton = event.target.closest("button#clear-fill, button#clear-contours, button#clear-vectors, button#clear-all");
             if (clearButton) {
                 event.preventDefault();
-                for (const i of parameterTargets()) clickChildById(clearButton.id, i);
+                const targets = parameterTargets();
+                if (clearButton.id === "clear-all") {
+                    // V182: GOES is independently stored for each map panel.
+                    // Follow the same Active Panel / All Panels scope as numerical
+                    // fields; retain each panel's opacity preference.
+                    for (const i of targets) {
+                        spcoaHostApplyGoesToPanel(i, {
+                            ...spcoaHostGoesPrefsFor(i), product: "off"
+                        });
+                    }
+                    spcoaHostSyncGoesFromPanel(activePanel);
+                    try {
+                        localStorage.setItem(SPCOA_GOES_PREFS_KEY,
+                            JSON.stringify(spcoaHostGoesPrefsFor(activePanel)));
+                    } catch (_) {}
+
+                    // Radar and the map background are viewer-wide choices,
+                    // rather than independent per-panel analysis parameters.
+                    const radarPrefs = spcoaReadRadarPrefs();
+                    if (radarPrefs.enabled) {
+                        spcoaSaveRadarPrefs({ ...radarPrefs, enabled: false });
+                    }
+                    const background = document.getElementById("spcoa-map-background-select");
+                    if (background && background.value !== SPCOA_BASEMAP_PLAIN) {
+                        // The existing selector handles persistence, applying the
+                        // map style, and notifying every child iframe.
+                        background.value = SPCOA_BASEMAP_PLAIN;
+                        background.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                }
+                for (const i of targets) clickChildById(clearButton.id, i);
                 setTimeout(syncHostFromActiveChild, 80);
                 return;
             }
@@ -21997,6 +22030,14 @@ if (clearAllButton) {
         // Stop previous asynchronous numerical renders from restoring old layers.
         invalidateNumericalRenders();
         removeNumericalFrameHoldovers();
+
+        // V182: remove the independent GOES overlay from this child panel.
+        // The host clears viewer-global radar and the background separately;
+        // do not switch those off in only one child iframe.
+        const goesPrefs = spcoaReadGoesPrefs();
+        if (goesPrefs.product !== "off") {
+            spcoaSaveGoesPrefs({ ...goesPrefs, product: "off" }, false);
+        }
 
         // Clear scalar shading and its selection in the sidebar.
         activeField = "none";
