@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V150"; // Right-click map to load nearest NEXRAD with explicit site lock
+const SPCOA_VIEWER_BUILD = "V151"; // Two radar modes: CONUS mosaic or right-click nearest NEXRAD
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2191,7 +2191,8 @@ function spcoaValidateRadarPrefs(value) {
     const v = value && typeof value === "object" ? value : {};
     return {
         enabled: v.enabled === true,
-        mode: ["single","auto"].includes(v.mode) ? v.mode : "mosaic",
+        // Migrate older saved manual-NEXRAD selection to the remaining nearest-radar mode.
+        mode: v.mode === "single" ? "auto" : (v.mode === "auto" ? "auto" : "mosaic"),
         site: typeof v.site === "string" && /^K[A-Z0-9]{3}$/.test(v.site) ? v.site : "KLNX",
         opacity: Number.isFinite(Number(v.opacity))
             ? Math.max(0,Math.min(100,Math.round(Number(v.opacity)))) : 85
@@ -2212,6 +2213,9 @@ function spcoaSyncRadarControls() {
     const mode=document.getElementById("spcoa-radar-mode");
     const site=document.getElementById("spcoa-radar-site");
     const siteCaption=document.getElementById("spcoa-radar-site-caption");
+    const siteRow=document.getElementById("spcoa-radar-site-row");
+    const catalogStatus=document.getElementById("spcoa-radar-catalog-status");
+    const modeHint=document.getElementById("spcoa-radar-right-click-hint");
     if(mode && mode!==document.activeElement)mode.value=p.mode;
     if(site && site!==document.activeElement){
         const shownSite=p.mode==="auto"
@@ -2220,9 +2224,15 @@ function spcoaSyncRadarControls() {
             : p.site;
         if(Array.from(site.options).some(option=>option.value===shownSite))site.value=shownSite;
     }
-    if(siteCaption)siteCaption.textContent=p.mode==="auto" ? "Nearest radar" : "Radar station";
+    if(siteCaption)siteCaption.textContent="Nearest radar";
     if(mode)mode.disabled=!p.enabled;
-    if(site)site.disabled=!p.enabled || p.mode!=="single";
+    // Station is informative only: choosing an individual site is done by
+    // right-clicking the map, not by changing this dropdown.
+    if(site)site.disabled=true;
+    const showNearest=p.enabled && p.mode==="auto";
+    if(siteRow)siteRow.style.display=showNearest?"flex":"none";
+    if(catalogStatus)catalogStatus.style.display=showNearest?"block":"none";
+    if(modeHint)modeHint.style.display=showNearest?"block":"none";
     if(toggle && toggle!==document.activeElement)toggle.checked=p.enabled;
     if(opacity && opacity!==document.activeElement)opacity.value=p.opacity;
     if(opacity)opacity.disabled=!p.enabled;
@@ -2266,7 +2276,7 @@ function spcoaInstallRadarControls() {
     const heading=document.createElement("strong");
     heading.textContent="Weather Radar Observations";
     const description=document.createElement("div");
-    description.textContent="CONUS mosaic or numerical N0B from any CONUS WSR-88D. In Auto Nearest, right-click the map to load the closest radar.";
+    description.textContent="Choose a national reflectivity mosaic or the nearest individual NEXRAD radar.";
     description.style.cssText="font-size:10px;color:#b5cee0;line-height:1.5;";
     const toggleLabel=document.createElement("label");
     toggleLabel.style.cssText="display:flex;align-items:center;gap:7px;cursor:pointer;";
@@ -2281,11 +2291,16 @@ function spcoaInstallRadarControls() {
     const mode=document.createElement("select");
     mode.id="spcoa-radar-mode";
     mode.style.cssText="min-width:145px;max-width:60%;font-size:11px;";
-    for(const [value,title] of [["mosaic","CONUS Mosaic"],["single","Any NEXRAD (N0B)"],["auto","Auto Nearest NEXRAD"]]){
+    for(const [value,title] of [["mosaic","National Mosaic"],["auto","Auto Nearest NEXRAD"]]){
         const opt=document.createElement("option");opt.value=value;opt.textContent=title;mode.appendChild(opt);
     }
     modeLabel.appendChild(mode);
+    const modeHint=document.createElement("div");
+    modeHint.id="spcoa-radar-right-click-hint";
+    modeHint.style.cssText="font-size:11px;line-height:1.5;color:#c5e2f2;";
+    modeHint.textContent="To load an individual NEXRAD scan, switch to Pan mode and right-click the map near the area you want. Right-click elsewhere to change radars.";
     const siteLabel=document.createElement("label");
+    siteLabel.id="spcoa-radar-site-row";
     siteLabel.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:8px;";
     const siteCaption=document.createElement("span");
     siteCaption.id="spcoa-radar-site-caption";
@@ -2318,11 +2333,10 @@ function spcoaInstallRadarControls() {
     radarValid.id="spcoa-radar-valid";
     radarValid.style.cssText="font-size:10px;color:#b5cee0;line-height:1.4;";
     radarValid.textContent="Radar valid: unavailable";
-    panel.append(heading,description,toggleLabel,modeLabel,siteLabel,catalogStatus,opacityRow,opacity,radarValid);
+    panel.append(heading,description,toggleLabel,modeLabel,modeHint,siteLabel,catalogStatus,opacityRow,opacity,radarValid);
     const changed=()=>spcoaSaveRadarPrefs({enabled:toggle.checked,mode:mode.value,site:site.value,opacity:opacity.value});
     toggle.addEventListener("change",changed);
     mode.addEventListener("change",changed);
-    site.addEventListener("change",changed);
     opacity.addEventListener("input",()=>{pct.textContent=opacity.value+"%";changed();});
     const goes=document.getElementById("spcoa-goes-controls");
     if(goes?.parentElement)goes.insertAdjacentElement("afterend",panel);
