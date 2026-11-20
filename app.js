@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V160"; // defer V159 styling initialization until contour constants exist
+const SPCOA_VIEWER_BUILD = "V161"; // per-parameter styling and safe per-level contour thickness
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3215,35 +3215,37 @@ function spcoaV158InstallAboutHelp() {
 function spcoaV159InstallControls() {
     const sidebar=document.getElementById('sidebar');
     if(!sidebar || document.getElementById('spcoa-v159-controls'))return;
+    // V161: Keep the overlay selector, but put every opacity / thickness
+    // control immediately underneath the relevant parameter in its own category.
     const root=document.createElement('section');
     root.id='spcoa-v159-controls';
-    root.style.cssText='background:#152d3e;color:#e3edf6;border:1px solid #41586b;border-radius:8px;padding:11px;margin:12px 4px;font:12px Arial,sans-serif;';
+    root.style.cssText='background:#152d3e;color:#e3edf6;border:1px solid #41586b;border-radius:6px;padding:8px;margin:5px 0 9px;font:11px Arial,sans-serif;';
     const head=document.createElement('div');
-    head.style.cssText='font-weight:700;font-size:14px;margin-bottom:6px;';
-    head.textContent='Filled Layers & Contour Styling';
+    head.style.cssText='font-weight:700;font-size:12px;margin-bottom:4px;';
+    head.textContent='Add Filled Overlay';
     const explanation=document.createElement('p');
-    explanation.style.cssText='margin:2px 0 9px;color:#bbcedf;line-height:1.5;';
-    explanation.textContent='Up to three filled fields per panel. Each field has its own opacity, and each selected contour has its own thickness. Vectors are unchanged. The map color bar describes the primary filled field.';
+    explanation.style.cssText='margin:2px 0 7px;color:#bbcedf;line-height:1.4;';
+    explanation.textContent='Choose another filled field to overlay. Adjust each field\'s opacity underneath its own parameter.';
     const addRow=document.createElement('div');
     addRow.style.cssText='display:flex;gap:5px;align-items:center;';
     const pick=document.createElement('select');
     pick.id='spcoa-v159-pick';
     pick.setAttribute('aria-label','Choose filled field overlay');
-    pick.style.cssText='min-width:0;flex:1;background:#0d2434;color:#fff;border:1px solid #516e82;padding:6px;border-radius:4px;';
+    pick.style.cssText='min-width:0;flex:1;background:#0d2434;color:#fff;border:1px solid #516e82;padding:5px;border-radius:4px;';
     const add=document.createElement('button');
     add.type='button';add.dataset.action='add';add.textContent='Add';add.disabled=true;pick.disabled=true;
-    add.title='Add a second or third filled field above the currently selected field';
-    add.style.cssText='padding:6px 9px;background:#235578;color:#fff;border:1px solid #5682a0;border-radius:4px;cursor:pointer;';
+    add.title='Overlay a second or third filled field above this primary field';
+    add.style.cssText='padding:5px 9px;background:#235578;color:#fff;border:1px solid #5682a0;border-radius:4px;cursor:pointer;';
     addRow.append(pick,add);
     const hint=document.createElement('div');
-    hint.id='spcoa-v159-hint';hint.style.cssText='color:#a8c2d8;font-size:11px;margin-top:5px;';
-    const fills=document.createElement('div');fills.id='spcoa-v159-fill-list';fills.style.cssText='margin-top:9px;';
-    const subtitle=document.createElement('div');subtitle.textContent='Selected contour thickness';subtitle.style.cssText='font-weight:700;border-top:1px solid #40576b;padding-top:10px;margin-top:10px;';
-    const contours=document.createElement('div');contours.id='spcoa-v159-contour-list';contours.style.cssText='margin-top:5px;';
-    root.append(head,explanation,addRow,hint,fills,subtitle,contours);
+    hint.id='spcoa-v159-hint';hint.style.cssText='color:#a8c2d8;font-size:10px;margin-top:5px;';
+    root.append(head,explanation,addRow,hint);
     const explorer=document.getElementById('spcoa-v122-parameter-explorer');
-    if(explorer && explorer.parentElement===sidebar)explorer.insertAdjacentElement('afterend',root);
-    else sidebar.prepend(root);
+    function parkOverlaySelector(){
+        if(explorer?.parentElement===sidebar) explorer.insertAdjacentElement('afterend',root);
+        else sidebar.prepend(root);
+    }
+    parkOverlaySelector();
     const button=(action,field,title,text)=>{
         const b=document.createElement('button');b.type='button';b.dataset.action=action;
         b.dataset.field=field;b.title=title;b.textContent=text;
@@ -3253,17 +3255,50 @@ function spcoaV159InstallControls() {
     function slider(field,kind,value,min,max,step){
         const el=document.createElement('input');el.type='range';el.min=min;el.max=max;el.step=step;
         el.value=String(value);el.dataset.field=field;el.dataset.kind=kind;
-        el.style.cssText='width:100%;accent-color:#72b6e1;';
+        // No ID: avoid the host's generic input relay. Each change is handled
+        // by V159/V161's panel-scoped dispatch instead.
+        el.style.cssText='display:block;width:100%;accent-color:#72b6e1;margin-top:3px;';
         el.setAttribute('aria-label',kind==='opacity'?'Opacity of '+field:'Line width of '+field);
         return el;
     }
     const safeName=(catalog,field)=>catalog.find(i=>i.id===field)?.name||field;
+    function inlineRow(field,kind){
+        const row=document.createElement('div');
+        row.className='spcoa-v161-inline';
+        row.dataset.field=field;
+        row.dataset.kind=kind;
+        row.style.cssText='background:#122f42;border-left:2px solid #5485a4;color:#cbdde9;border-radius:3px;margin:3px 0 8px 10px;padding:6px 7px;font:11px/1.35 Arial,sans-serif;';
+        return row;
+    }
+    function findFieldButton(field){
+        return Array.from(sidebar.querySelectorAll('.cat-content .field-choice[data-field]'))
+            .find(node=>node.dataset.field===field)||null;
+    }
+    function findContourCheckbox(field,contourCatalog){
+        const config=contourCatalog.find(x=>x.field===field);
+        return config?.toggleId?document.getElementById(config.toggleId):null;
+    }
+    function placeUnderParameter(row,target,kind){
+        if(!target)return false;
+        // Keep inline sliders OUTSIDE labels and field-choice buttons, so
+        // dragging a slider never toggles a checkbox or selects another fill.
+        const anchor=kind==='fill'?(target.closest('.level-row')||target)
+            :(target.closest('label')||target);
+        if(!anchor?.parentElement)return false;
+        anchor.insertAdjacentElement('afterend',row);
+        return true;
+    }
     function paint(state){
         if(!state)return;
-        const fullSig=JSON.stringify([state.primary,state.extras,state.opacity,state.thickness,state.contours]);
+        const fields=state.primary&&state.primary!=='none'
+            ?[state.primary,...(state.extras||[])]:[];
+        const contourIds=(state.contours||[]).map(x=>x.id);
+        const stateSig=JSON.stringify([fields,contourIds]);
+        const fullSig=JSON.stringify([fields,state.opacity,state.thickness,contourIds]);
         if(root.dataset.renderSignature===fullSig)return;
-        const stateSig=JSON.stringify([state.primary,state.extras,(state.contours||[]).map(x=>x.id)]);
-        if(root.contains(document.activeElement) && document.activeElement?.type==='range' &&
+        // The host synchronizes the active child regularly. Do not remove a
+        // slider being dragged while its new value is still being applied.
+        if(document.activeElement?.closest?.('.spcoa-v161-inline') &&
            root.dataset.panelSignature===stateSig)return;
         root.dataset.panelSignature=stateSig;
         root.dataset.renderSignature=fullSig;
@@ -3272,53 +3307,61 @@ function spcoaV159InstallControls() {
         const sig=catalog.map(x=>x.id).join('|');
         if(pick.dataset.signature!==sig){
             pick.replaceChildren();
-            for(const item of catalog){const opt=new Option(item.name,item.id);pick.appendChild(opt);}
+            for(const item of catalog){pick.appendChild(new Option(item.name,item.id));}
             pick.dataset.signature=sig;
         }
         if(catalog.some(x=>x.id===oldPick))pick.value=oldPick;
-        const primary=state.primary||'none';
-        const extras=state.extras||[];
-        add.disabled=primary==='none'||extras.length>=2;
+        else if(catalog.length)pick.value=catalog.find(x=>!fields.includes(x.id))?.id||catalog[0].id;
+        add.disabled=!fields.length||fields.length>=3;
         pick.disabled=add.disabled;
-        hint.textContent=primary==='none'?'Select a primary filled field first.':
-            `${1+extras.length} of 3 filled fields · top layer is drawn last`;
-        fills.replaceChildren();
-        const fields=primary==='none'?[]:[primary,...extras];
-        fields.forEach((field,i)=>{
-            const row=document.createElement('div');
-            row.style.cssText='border-top:1px solid #344f63;padding:6px 0;';
+        hint.textContent=!fields.length?'Select a primary filled field first.':
+            `${fields.length} of 3 filled fields · later layers are drawn on top`;
+        // Only active layers receive a slider; everything stays directly below
+        // its actual control in Surface / Thermodynamics / Upper Air / etc.
+        sidebar.querySelectorAll('.spcoa-v161-inline').forEach(node=>node.remove());
+        for(let i=0;i<fields.length;i++){
+            const field=fields[i],target=findFieldButton(field);
+            const row=inlineRow(field,'fill');
             const top=document.createElement('div');
-            top.style.cssText='display:flex;align-items:center;gap:4px;margin-bottom:4px;';
-            const name=document.createElement('span');name.textContent=(i===0?'Base: ':'Overlay '+i+': ')+safeName(catalog,field);
-            name.style.cssText='flex:1;min-width:0;overflow-wrap:anywhere;';
+            top.style.cssText='display:flex;align-items:center;gap:4px;margin-bottom:3px;';
+            const name=document.createElement('span');
+            name.textContent=i===0?'Primary fill':'Filled overlay '+i;
+            name.style.cssText='flex:1;min-width:0;';
             top.appendChild(name);
             if(i>0){
-                if(i>1)top.appendChild(button('up',field,'Move this overlay below the previous overlay','↓'));
-                if(i<extras.length)top.appendChild(button('down',field,'Move this overlay above the next overlay','↑'));
+                if(i>1)top.appendChild(button('up',field,'Move this overlay down one layer','↓'));
+                if(i<fields.length-1)top.appendChild(button('down',field,'Move this overlay up one layer','↑'));
                 top.appendChild(button('remove',field,'Remove this filled overlay','×'));
             }
             const pct=document.createElement('span');pct.textContent=(state.opacity?.[field]??100)+'%';
             const control=slider(field,'opacity',state.opacity?.[field]??100,0,100,5);
-            control.addEventListener('input',()=>{pct.textContent=control.value+'%';});
-            const sub=document.createElement('div');sub.style.cssText='display:flex;justify-content:space-between;';
+            const sub=document.createElement('div');sub.style.cssText='display:flex;justify-content:space-between;gap:5px;';
             sub.append(document.createTextNode('Opacity'),pct);
-            row.append(top,sub,control);fills.appendChild(row);
-        });
-        contours.replaceChildren();
-        if(!state.contours?.length){
-            const empty=document.createElement('div');empty.style.cssText='color:#a8c2d8;';
-            empty.textContent='Turn on a contour overlay to adjust its line width.';
-            contours.appendChild(empty);
+            control.addEventListener('input',()=>{pct.textContent=control.value+'%';});
+            row.append(top,sub,control);
+            if(!placeUnderParameter(row,target,'fill')){
+                console.warn('SPCOA V161: no sidebar fill button for',safeName(catalog,field));
+            }
+            if(i===0 && row.parentElement){
+                // The extra-field selector also sits under the primary fill.
+                row.insertAdjacentElement('afterend',root);
+            }
         }
+        if(!fields.length)parkOverlaySelector();
         for(const item of (state.contours||[])){
-            const row=document.createElement('div');row.style.cssText='padding:5px 0;';
-            const top=document.createElement('div');top.style.cssText='display:flex;justify-content:space-between;gap:5px;';
-            const name=document.createElement('span');name.textContent=item.name;
-            const amount=document.createElement('span');amount.textContent=(state.thickness?.[item.id]??1).toFixed(2)+'×';
-            top.append(name,amount);
-            const input=slider(item.id,'thickness',state.thickness?.[item.id]??1,.5,4,.25);
+            const target=findContourCheckbox(item.id,state.contourCatalog||[]);
+            if(!target)continue;
+            const row=inlineRow(item.id,'contour');
+            const top=document.createElement('div');
+            top.style.cssText='display:flex;justify-content:space-between;gap:5px;';
+            const title=document.createElement('span');title.textContent='Contour thickness';
+            const value=Number(state.thickness?.[item.id]??1);
+            const amount=document.createElement('span');amount.textContent=value.toFixed(2)+'×';
+            top.append(title,amount);
+            const input=slider(item.id,'thickness',value,.5,4,.25);
             input.addEventListener('input',()=>{amount.textContent=Number(input.value).toFixed(2)+'×';});
-            row.append(top,input);contours.appendChild(row);
+            row.append(top,input);
+            placeUnderParameter(row,target,'contour');
         }
     }
     window.__spcoaV159RefreshControls=paint;
@@ -3329,19 +3372,25 @@ function spcoaV159InstallControls() {
         else if(__MP_CHILD && typeof window.__spcoaV159ApplyAction==='function')
             window.__spcoaV159ApplyAction(action);
     }
-    root.addEventListener('click',e=>{
-        const b=e.target.closest('button[data-action]');if(!b)return;
-        e.stopPropagation();
+    // The add selector is now nested below the primary field, while all
+    // sliders and layer buttons are distributed through the normal sidebar.
+    sidebar.addEventListener('click',e=>{
+        const b=e.target.closest('#spcoa-v159-controls button[data-action],.spcoa-v161-inline button[data-action]');
+        if(!b)return;
+        e.stopImmediatePropagation();
         submit({type:b.dataset.action,field:b.dataset.action==='add'?pick.value:b.dataset.field});
     });
-    root.addEventListener('change',e=>{
-        const input=e.target.closest('input[type="range"][data-kind]');if(!input)return;
-        e.stopPropagation();
+    sidebar.addEventListener('change',e=>{
+        const input=e.target.closest('.spcoa-v161-inline input[type="range"][data-kind]');
+        if(!input)return;
+        e.stopImmediatePropagation();
         submit({type:input.dataset.kind,field:input.dataset.field,value:Number(input.value)});
     });
-    root.addEventListener('input',e=>e.stopPropagation());
-    if(__MP_CHILD && typeof window.__spcoaV159GetState==='function')paint(window.__spcoaV159GetState());
-    else hint.textContent='Waiting for selected map panel…';
+    if(__MP_CHILD && typeof window.__spcoaV159GetState==='function'){
+        // V160 startup guard remains: the child invokes this only after the
+        // contour/field constants have been initialized.
+        paint(window.__spcoaV159GetState());
+    }else hint.textContent='Waiting for selected map panel…';
 }
 
 if (!__MP_CHILD) {
@@ -7902,7 +7951,19 @@ function spcoaV159GetState(){
         opacity:{...spcoaV159Opacity},thickness:{...spcoaV159Thickness},
         catalog:Object.entries(WEATHER_FIELDS).map(([id,v])=>({id,name:v.name||id})),
         contours:[...new Set(getActiveContourSamples())]
-            .map(id=>({id,name:CONTOUR_FIELDS[id]?.name||id}))};
+            .map(id=>({id,name:CONTOUR_FIELDS[id]?.name||id})),
+        // Host and iframe use the same existing checkbox IDs. This is only
+        // UI metadata and does not modify or recalculate any contour values.
+        contourCatalog:[
+            {field:'sfc_mslp',toggleId:'mslp-toggle'},
+            {field:'dcape',toggleId:'dcape-toggle'},
+            {field:'warm_cloud_depth',toggleId:'warm-cloud-depth-toggle'},
+            {field:'freezing_level_height',toggleId:'freezing-level-toggle'},
+            ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
+            ...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
+            ...FRONTOGENESIS_CONTOUR_OVERLAYS,
+            ...THERMODYNAMIC_CONTOUR_OVERLAYS
+        ].map(c=>({field:c.field,toggleId:c.toggleId}))};
 }
 window.__spcoaV159GetState=spcoaV159GetState;
 async function spcoaV159ApplyAction(action){
@@ -16537,7 +16598,12 @@ async function renderContourField(
     contourCtx.lineJoin = "round";
     contourCtx.lineCap = "round";
 
+    // V161: capture the field's original default BEFORE drawing contour levels.
+    // Multiplying ctx.lineWidth across successive levels caused exponential
+    // growth (e.g. 2px * 1.25^N), making MSLP lines extremely thick.
+    const spcoaV161BaseLineWidth = contourCtx.lineWidth;
     for (let levelIndex=0;levelIndex<levelsToRender.length;levelIndex++) {
+        contourCtx.lineWidth = spcoaV161BaseLineWidth;
         const level=levelsToRender[levelIndex];
         if (definition.changeContour && Math.abs(level) < 0.00001) continue;
 
