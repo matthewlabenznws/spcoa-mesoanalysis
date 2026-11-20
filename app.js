@@ -1,6 +1,6 @@
-/* V178: DCAPE adopts the SPC-reference tan/red/maroon contour colors and the same
- * 6.0 grid-cell Gaussian plus tiny-loop filtering as SB/ML/MU CAPE (V177).
- * Preserve existing 200 J/kg DCAPE levels and all filled/radar/satellite layers. */
+/* V180: Enforce DCAPE 100-J/kg contour levels in the actual numerical renderer,
+ * and place labels for the intermediate 100-J/kg lines. Preserve V179 colors,
+ * strong Gaussian smoothing, filled fields, radar, satellite and other overlays. */
 /* V177: Stronger Gaussian smoothing for SB/ML/MU CAPE contours and suppression of tiny isolated closed loops. Preserve SPC-like breaks at 2500 and 4500 J/kg. */
 /* V176: SPC CAPE contour red steps at 2500 and 4500 J/kg, stronger CAPE-only Gaussian smoothing, and visible MUCAPE contour toggle in host. */
 /* V175: SBCAPE, MLCAPE, and MUCAPE contours now use SPC-style levels (100, 250, then every 500 J/kg), SPC-like red colors, and the existing SRH-style smoothing/stitching. */
@@ -321,7 +321,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V179"; // stronger SPC-style CAPE smoothing, revised reds, visible MUCAPE control
+const SPCOA_VIEWER_BUILD = "V180"; // DCAPE renderer uses every 100 J/kg (including intermediate labels); V179 features preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -6891,6 +6891,13 @@ for (const [field, color] of Object.entries(spcoaReadVectorColors())) {
    New contour-only aliases read existing SPCOA scalar or vector numerical tiles.
    The filled color scales, barbs, and winds are not changed.
    ========================================================================================= */
+// V180: This is the authoritative DCAPE ISOLINE level list. It is independent
+// of the backend's display.interval (which can still contain an old default).
+// Values are derived from the existing numerical contour tiles, NOT fill bins.
+const SPCOA_DCAP_CONTOUR_LEVELS_100 = Object.freeze(
+    Array.from({length: 38}, (_, i) => (i + 1) * 100)
+);
+window.__SPCOA_DCAP_CONFIG_LEVELS = [...SPCOA_DCAP_CONTOUR_LEVELS_100];
 const SPCOA_NOTEBOOK_CONTOUR_PALETTES = Object.freeze({"sbcape_nb_contours":{"name":"SBCAPE","units":"J/kg","levels":[100,250,500,1000,1500,2000,2500,3000,3500,4000,4500,5000,5500,6000,6500,7000,7500,8000],"colors":["#ffb3b3","#ff7f80","#ec2e2c","#ec2e2c","#ec2e2c","#ec2e2c","#cc0204","#cc0204","#cc0204","#cc0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.1,1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.35,1.45,1.45,1.45,1.45,1.45,1.45,1.45],"notebookSource":"SPC-style reference CAPE contours (image-based red steps)"},"mlcape_nb_contours":{"name":"MLCAPE","units":"J/kg","levels":[100,250,500,1000,1500,2000,2500,3000,3500,4000,4500,5000,5500,6000,6500,7000,7500,8000],"colors":["#ffb3b3","#ff7f80","#ec2e2c","#ec2e2c","#ec2e2c","#ec2e2c","#cc0204","#cc0204","#cc0204","#cc0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.1,1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.35,1.45,1.45,1.45,1.45,1.45,1.45,1.45],"notebookSource":"SPC-style reference CAPE contours (image-based red steps)"},"mucape_nb_contours":{"name":"MUCAPE","units":"J/kg","levels":[100,250,500,1000,1500,2000,2500,3000,3500,4000,4500,5000,5500,6000,6500,7000,7500,8000],"colors":["#ffb3b3","#ff7f80","#ec2e2c","#ec2e2c","#ec2e2c","#ec2e2c","#cc0204","#cc0204","#cc0204","#cc0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204","#8c0204"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.1,1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.35,1.45,1.45,1.45,1.45,1.45,1.45,1.45],"notebookSource":"SPC-style reference CAPE contours (image-based red steps)"},"mlcape_0_3km_nb_contours":{"name":"0–3 km MLCAPE","units":"J/kg","levels":[25,40,55,70,85,100,115,130,145,160,175,190,205,220,235,250,265,280,295],"colors":["#ff6666","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6],"notebookSource":"Sfc Vorticity / Sfc - 3km MLCAPE"},"dcape":{"name":"DCAPE","units":"J/kg","levels":[100,200,300,400,500,600,700,800,900,1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,2000,2100,2200,2300,2400,2500,2600,2700,2800,2900,3000,3100,3200,3300,3400,3500,3600,3700,3800],"colors":["#e3c4ac","#e3c4ac","#e2bb9e","#e2bb9e","#dfaf91","#dfaf91","#dfaf91","#ea0000","#ea0000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000","#800000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.15,1.15,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"SPC DCAPE reference screenshot (approximated image colors), every 100 J/kg"},"lcl_height":{"name":"LCL Height","units":"m AGL","levels":[500,750,1000,1250,1500,1750,2000,2500,3000,3500,4000],"colors":["#006400","#309230","#60c060","#90ee90","#000000","#000000","#000000","#000000","#000000","#000000","#000000"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"100mb Mixed-Layer LCL Height (m)"},"lapse_rate_700_500hPa_nb_contours":{"name":"700–500 mb Lapse Rate","units":"°C/km","levels":[5.5,6.0,6.5,7.0,7.5,8.0,8.5,9.0,9.5,10.0,10.5,11.0,11.5],"colors":["#0000ff","#008000","#008000","#ffa500","#f29300","#e68100","#d86e00","#cc5c00","#be4900","#b23700","#a42400","#981200","#8b0000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"Mid-Level Lapse Rate (700-500mb)"},"lapse_rate_0_3km_nb_contours":{"name":"0–3 km Lapse Rate","units":"°C/km","levels":[5.5,6.0,6.5,7.0,7.5,8.0,8.5,9.0,9.5,10.0,10.5,11.0,11.5],"colors":["#0000ff","#008000","#008000","#ffa500","#f29300","#e68100","#d86e00","#cc5c00","#be4900","#b23700","#a42400","#981200","#8b0000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.2],"notebookSource":"Low-Level Lapse Rate (0-3km)"},"shear_0_1km_nb_contours":{"name":"0–1 km Bulk Shear","units":"kt","levels":[10,15,20,25,30,35,40,45,50],"colors":["#0099ff","#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 1km Shear (kt)"},"shear_0_3km_nb_contours":{"name":"0–3 km Bulk Shear","units":"kt","levels":[20,25,30,35,40,45,50,55,60,65,70],"colors":["#0099ff","#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 3km Shear (kt)"},"shear_0_6km_nb_contours":{"name":"0–6 km Bulk Shear","units":"kt","levels":[25,30,40,50,60,70,80,90],"colors":["#0099ff","#0077ee","#0077ee","#004488","#004488","#004488","#004488","#004488"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.2,1.2,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 6km Shear (kt)"},"shear_0_8km_nb_contours":{"name":"0–8 km Bulk Shear","units":"kt","levels":[40,50,60,70,80,90,100,110,120],"colors":["#0088ff","#0088ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.0,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Surface - 8km Shear (kt)"},"effective_shear_nb_contours":{"name":"Effective Bulk Shear","units":"kt","levels":[20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],"colors":["#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99","#004c99"],"styles":["dotted","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.8,0.9,0.9,0.9,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Effective Bulk Shear (kt)"},"srwind_0_2km_nb_contours":{"name":"0–2 km SR Wind","units":"kt","levels":[15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],"colors":["#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"Surface - 2km SR Winds"},"srwind_4_6km_nb_contours":{"name":"4–6 km SR Wind","units":"kt","levels":[15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100],"colors":["#0099ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"4 - 6km SR Winds"},"srwind_9_11km_nb_contours":{"name":"9–11 km SR Wind","units":"kt","levels":[15,20,30,40,50,60,70,80,90,100,110,120,130,140],"colors":["#0099ff","#0077ee","#0077ee","#0077ee","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.3,1.3,1.3,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"9 - 11km SR Winds"},"srh_eff_nb_contours":{"name":"Effective SRH","units":"m²/s²","levels":[25,50,100,200,300,400,500,600,700,800,900,1000],"colors":["#0088ff","#0088ff","#0077ee","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["dotted","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.1,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Effective SRH & Inflow Base"},"srh_0_500m_contours":{"name":"0–500 m SRH","units":"m²/s²","levels":[25,50,100,200,300,400,500,600,700,800,900,1000],"colors":["#0088ff","#0088ff","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["dotted","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Sfc-500m SRH & Inflow Base"},"srh_0_1km_contours":{"name":"0–1 km SRH","units":"m²/s²","levels":[50,100,150,200,300,400,500,600,700,800,900,1000],"colors":["#0088ff","#0088ff","#0066dd","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc","#0055cc"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.4,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Sfc-1km SRH & Inflow Base"},"srh_0_3km_contours":{"name":"0–3 km SRH","units":"m²/s²","levels":[100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200],"colors":["#0088ff","#0088ff","#0066dd","#0066dd","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,0.9,1.4,1.4,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Sfc-3km SRH"},"stp_eff_contours":{"name":"Effective-Layer STP","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,20,22,24,26,28,30],"colors":["#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Significant Tornado Parameter (Effective Layer)"},"stp_fix_contours":{"name":"Fixed-Layer STP","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,20,22,24,26,28,30],"colors":["#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Significant Tornado Parameter (Fixed Layer)"},"stp_500m_contours":{"name":"STP (0–500 m SRH)","units":"","levels":[0.25,0.5,1,2,3,4,5,6,7,8,9,10,11,12],"colors":["#ff8c00","#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Significant Tornado Parameter (0-500m SRH)"},"scp_right_contours":{"name":"Right-Moving SCP","units":"","levels":[0.5,1,2,4,6,8,10,12,14,16,18,20,25,30,35,40,45,50],"colors":["#0099ff","#0088ff","#0066dd","#0066dd","#0066dd","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.0,1.4,1.4,1.4,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9],"notebookSource":"Supercell Composite (Right-Moving)"},"scp_left_contours":{"name":"Left-Moving SCP","units":"","levels":[-50,-45,-40,-35,-30,-25,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,-1,-0.5],"colors":["#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#004488","#0066dd","#0066dd","#0066dd","#0088ff","#0099ff"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","dashed"],"widths":[1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.9,1.4,1.4,1.4,1.0,0.9],"notebookSource":"Supercell Composite (Left-Moving)","forceNegative":true},"dcp_contours":{"name":"Derecho Composite Parameter","units":"","levels":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],"colors":["#ff8c00","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900","#e63900"],"styles":["solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Derecho Composite"},"lhp_contours":{"name":"Large Hail Parameter","units":"","levels":[2,4,6,8,10,12,14,16,18,20,22,24,26],"colors":["#b8860b","#cc7a00","#e69900","#ffcc00","#ffe600","#ffdd00","#ffbe00","#ff9e00","#ff7f00","#ff5e00","#ff3f00","#ff1f00","#ff0000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.1,1.2,1.3,1.4,1.7,1.7,1.7,1.7,1.7,1.7,1.7,1.7],"notebookSource":"Large Hail Parameter"},"shp_contours":{"name":"Significant Hail Parameter","units":"","levels":[0.5,1,1.5,2,3,4,5,6,7,8,9,10],"colors":["#8b4513","#e68a00","#e69900","#ff0000","#f5141b","#eb2736","#e23b52","#d84e6d","#ce6288","#c475a3","#ba89bf","#b19cd9"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[0.9,1.1,1.2,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6,1.6],"notebookSource":"Significant Hail Parameter"},"vtp_contours":{"name":"Violent Tornado Parameter","units":"","levels":[0.25,0.5,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],"colors":["#ff8c00","#ff8c00","#ff8c00","#e60000","#e60000","#e60000","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033","#990033"],"styles":["dashed","dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.1,1.4,1.7,1.7,1.7,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0],"notebookSource":"Violent Tornado Parameter"},"microburst_composite":{"name":"Microburst Composite","units":"","levels":[1,2,3,4,5,6,7,8,9,10],"colors":["#8b5a2b","#e68a00","#e68a00","#e68a00","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.1,1.1,1.1,1.3,1.3,1.3,2.0,2.0,2.0],"notebookSource":"Microburst Composite"},"esp_contours":{"name":"Enhanced Stretching Potential","units":"","levels":[0.5,1,1.5,2,3,4,5,6,7,8,9,10,11,12,13,14,15],"colors":["#ff8c00","#ff8c00","#ff6600","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.0,1.1,1.2,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8,1.8],"notebookSource":"Enhanced Stretching Potential"},"ehi_0_1km_nb_contours":{"name":"0–1 km EHI","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10],"colors":["#008000","#00cc00","#22b204","#439807","#667d0b","#88630f","#a24b0f","#b3390b","#c42507","#d51304","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5],"notebookSource":"Sfc - 1km EHI"},"ehi_0_3km_nb_contours":{"name":"0–3 km EHI","units":"","levels":[0.5,1,2,3,4,5,6,7,8,9,10],"colors":["#008000","#00cc00","#22b204","#439807","#667d0b","#88630f","#a24b0f","#b3390b","#c42507","#d51304","#e60000"],"styles":["dashed","solid","solid","solid","solid","solid","solid","solid","solid","solid","solid"],"widths":[1.1,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5],"notebookSource":"Sfc - 3km EHI"}});
 const SPCOA_NOTEBOOK_CONTOUR_SOURCES = Object.freeze({"sbcape_nb_contours":{"kind":"scalar","field":"sbcape"},"mlcape_nb_contours":{"kind":"scalar","field":"mlcape"},"mucape_nb_contours":{"kind":"scalar","field":"mucape"},"mlcape_0_3km_nb_contours":{"kind":"scalar","field":"mlcape_0_3km"},"lapse_rate_700_500hPa_nb_contours":{"kind":"scalar","field":"lapse_rate_700_500hPa"},"lapse_rate_0_3km_nb_contours":{"kind":"scalar","field":"lapse_rate_0_3km"},"shear_0_1km_nb_contours":{"kind":"vector","field":"shear_0_1km"},"shear_0_3km_nb_contours":{"kind":"vector","field":"shear_0_3km"},"shear_0_6km_nb_contours":{"kind":"vector","field":"shear_0_6km"},"shear_0_8km_nb_contours":{"kind":"vector","field":"shear_0_8km"},"effective_shear_nb_contours":{"kind":"vector","field":"effective_shear"},"srwind_0_2km_nb_contours":{"kind":"vector","field":"srwind_0_2km"},"srwind_4_6km_nb_contours":{"kind":"vector","field":"srwind_4_6km"},"srwind_9_11km_nb_contours":{"kind":"vector","field":"srwind_9_11km"},"srh_eff_nb_contours":{"kind":"scalar","field":"srh_eff"},"ehi_0_1km_nb_contours":{"kind":"scalar","field":"ehi_0_1km"},"ehi_0_3km_nb_contours":{"kind":"scalar","field":"ehi_0_3km"}});
 
@@ -6960,8 +6967,9 @@ const CONTOUR_FIELDS = {
         name: "Downdraft CAPE",
         shortName: "DCAPE",
         units: "J/kg",
-        interval: 250,
-        minimum: 250,
+        interval: 100,
+        minimum: 100,
+        levels: SPCOA_DCAP_CONTOUR_LEVELS_100,
         colorScheme: "dcape",
         color: null
     },
@@ -17194,22 +17202,17 @@ async function renderContourField(
     // Delay local smoothing until we know whether the worker is available.
     let contourValues = null;
 
-    // Source-matched notebook fields use their exact level arrays, including
-    // DCAPE's original 200-J/kg intervals (unrelated fields retain V167 logic).
-    const interval = field === "dcape" && !definition.notebookExact ? 250 : (
-        Number(
-            metadata.display &&
-            metadata.display.interval
-        ) ||
-        Number(definition.interval) ||
-        2
+    // V180: Force every 100 J/kg for DCAPE even when metadata or a prior
+    // definition still advertises 200/250-J/kg spacing.
+    const interval = field === "dcape" ? 100 : (
+        Number(metadata.display && metadata.display.interval) ||
+        Number(definition.interval) || 2
     );
 
     const configuredMinimum =
+        field === "dcape" ? 100 :
         definition.notebookExact ? null :
-        field === "dcape" && !definition.notebookExact
-            ? 250
-            : (
+        (
                 metadata.display &&
                 metadata.display.minimum !== undefined &&
                 metadata.display.minimum !== null
@@ -17223,7 +17226,7 @@ async function renderContourField(
             );
 
     const metadataAnchor = metadata.display?.anchor;
-    const contourAnchor = field === "dcape" && !definition.notebookExact ? 0 : (
+    const contourAnchor = field === "dcape" ? 0 : (
         metadataAnchor !== undefined && metadataAnchor !== null &&
         Number.isFinite(Number(metadataAnchor))
             ? Number(metadataAnchor)
@@ -17232,15 +17235,17 @@ async function renderContourField(
     );
 
     const explicitLevelsRaw =
+        field === "dcape" ? SPCOA_DCAP_CONTOUR_LEVELS_100 :
         (definition.notebookExact && Array.isArray(definition.levels)) ? definition.levels :
         (metadata.display && Array.isArray(metadata.display.levels) && metadata.display.levels.length)
             ? metadata.display.levels
             : (Array.isArray(definition.levels) ? definition.levels : null);
 
-    // Old stored DCAPE level lists must not override the new 250-J/kg spacing.
-    const explicitLevels = field === "dcape" && !definition.notebookExact ? null : (explicitLevelsRaw
-        ? explicitLevelsRaw.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
-        : null);
+    // V180: DCAPE always uses its 100-J/kg list, regardless of old S3
+    // display levels. Other contour types retain their usual precedence.
+    const explicitLevels = explicitLevelsRaw
+        ? Array.from(explicitLevelsRaw, Number).filter(Number.isFinite).sort((a, b) => a - b)
+        : null;
 
     let firstLevel =
         contourAnchor + Math.ceil(
@@ -17303,6 +17308,15 @@ async function renderContourField(
             return levels;
         })();
 
+    if (field === "dcape") {
+        // Set on every render, to distinguish 100-J/kg line generation from
+        // a browser-cache issue or missing raw numerical data at this hour.
+        window.__SPCOA_DCAP_RENDERED_LEVELS = [...levelsToRender];
+        if (window.SPCOA_DEBUG_DCAPE_CONTOURS === true) {
+            console.info(`[SPCOA ${SPCOA_VIEWER_BUILD}] DCAPE actual contour levels`,
+                levelsToRender, {sigma: contourSigma, step, min: minimumValue, max: maximumValue});
+        }
+    }
     if (isSpcoaMainCapeContour && window.SPCOA_DEBUG_CAPE_CONTOURS === true) {
         console.info(`[SPCOA ${SPCOA_VIEWER_BUILD}] ${field} contours`, {
             minimumSampledJkg: Math.round(minimumValue),
@@ -17760,8 +17774,8 @@ async function renderContourField(
                     : Infinity;
                 if (
                     labelsEnabled &&
-                    rawLine.length >= 8 &&
-                    compositeLabelLength >= 145
+                    rawLine.length >= (field === "dcape" ? 5 : 8) &&
+                    compositeLabelLength >= (field === "dcape" ? 75 : 145)
                 ) {
 
                     const middleIndex =
@@ -17831,8 +17845,11 @@ async function renderContourField(
     contourLabelCtx.save();
 
     const minimumLabelDistance =
+        // DCAPE was inheriting the composite 195px spacing, hiding many
+        // 100-J/kg labels and making the result appear to use 200-J/kg bins.
+        field === "dcape" ? 75 :
         definition.compositeContour ? 195 :
-        (field === "dcape" || field === "warm_cloud_depth" || field === "freezing_level_height" || field === "lcl_height")
+        (field === "warm_cloud_depth" || field === "freezing_level_height" || field === "lcl_height")
             ? 80 : 95;
 
     for (
