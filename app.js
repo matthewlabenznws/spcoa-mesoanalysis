@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V159"; // independent fill opacity/stack and contour thickness; no radar animation
+const SPCOA_VIEWER_BUILD = "V160"; // defer V159 styling initialization until contour constants exist
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -7934,7 +7934,20 @@ async function spcoaV159ApplyAction(action){
 }
 window.__spcoaV159ApplyAction=spcoaV159ApplyAction;
 spcoaV159LoadSettings();
-spcoaV159InstallControls();
+// V160: Defer the initial child styling-control setup until the entire
+// synchronous app.js has evaluated. The V159 state snapshot calls
+// getActiveContourSamples(), which reads THERMODYNAMIC_CONTOUR_OVERLAYS
+// declared later in this file. Calling it here synchronously causes a
+// temporal-dead-zone ReferenceError and prevents the map from starting.
+queueMicrotask(() => {
+    try {
+        spcoaV159InstallControls();
+        window.__spcoaV159RefreshControls?.(spcoaV159GetState());
+    } catch (error) {
+        // Styling controls must never prevent the weather viewer from loading.
+        console.error('SPCOA layer styling controls could not initialize:', error);
+    }
+});
 
 /* Draw additional filled fields sequentially above the original fill.
    Each field uses its real numerical tiles and the existing color lookup.
