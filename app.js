@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V161"; // per-parameter styling and safe per-level contour thickness
+const SPCOA_VIEWER_BUILD = "V162"; // list-based fills (max 3), inline styling, contour width fix
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3214,38 +3214,11 @@ function spcoaV158InstallAboutHelp() {
    ========================================================================================= */
 function spcoaV159InstallControls() {
     const sidebar=document.getElementById('sidebar');
-    if(!sidebar || document.getElementById('spcoa-v159-controls'))return;
-    // V161: Keep the overlay selector, but put every opacity / thickness
-    // control immediately underneath the relevant parameter in its own category.
-    const root=document.createElement('section');
-    root.id='spcoa-v159-controls';
-    root.style.cssText='background:#152d3e;color:#e3edf6;border:1px solid #41586b;border-radius:6px;padding:8px;margin:5px 0 9px;font:11px Arial,sans-serif;';
-    const head=document.createElement('div');
-    head.style.cssText='font-weight:700;font-size:12px;margin-bottom:4px;';
-    head.textContent='Add Filled Overlay';
-    const explanation=document.createElement('p');
-    explanation.style.cssText='margin:2px 0 7px;color:#bbcedf;line-height:1.4;';
-    explanation.textContent='Choose another filled field to overlay. Adjust each field\'s opacity underneath its own parameter.';
-    const addRow=document.createElement('div');
-    addRow.style.cssText='display:flex;gap:5px;align-items:center;';
-    const pick=document.createElement('select');
-    pick.id='spcoa-v159-pick';
-    pick.setAttribute('aria-label','Choose filled field overlay');
-    pick.style.cssText='min-width:0;flex:1;background:#0d2434;color:#fff;border:1px solid #516e82;padding:5px;border-radius:4px;';
-    const add=document.createElement('button');
-    add.type='button';add.dataset.action='add';add.textContent='Add';add.disabled=true;pick.disabled=true;
-    add.title='Overlay a second or third filled field above this primary field';
-    add.style.cssText='padding:5px 9px;background:#235578;color:#fff;border:1px solid #5682a0;border-radius:4px;cursor:pointer;';
-    addRow.append(pick,add);
-    const hint=document.createElement('div');
-    hint.id='spcoa-v159-hint';hint.style.cssText='color:#a8c2d8;font-size:10px;margin-top:5px;';
-    root.append(head,explanation,addRow,hint);
-    const explorer=document.getElementById('spcoa-v122-parameter-explorer');
-    function parkOverlaySelector(){
-        if(explorer?.parentElement===sidebar) explorer.insertAdjacentElement('afterend',root);
-        else sidebar.prepend(root);
-    }
-    parkOverlaySelector();
+    if(!sidebar || sidebar.dataset.spcoaV162ControlsInstalled==='1')return;
+    // V162: no separate overlay selector; selected fields receive
+    // inline sliders directly underneath their original parameter rows.
+    sidebar.dataset.spcoaV162ControlsInstalled='1';
+    const uiState={dataset:Object.create(null)};
     const button=(action,field,title,text)=>{
         const b=document.createElement('button');b.type='button';b.dataset.action=action;
         b.dataset.field=field;b.title=title;b.textContent=text;
@@ -3295,27 +3268,22 @@ function spcoaV159InstallControls() {
         const contourIds=(state.contours||[]).map(x=>x.id);
         const stateSig=JSON.stringify([fields,contourIds]);
         const fullSig=JSON.stringify([fields,state.opacity,state.thickness,contourIds]);
-        if(root.dataset.renderSignature===fullSig)return;
+        if(uiState.dataset.renderSignature===fullSig)return;
         // The host synchronizes the active child regularly. Do not remove a
         // slider being dragged while its new value is still being applied.
         if(document.activeElement?.closest?.('.spcoa-v161-inline') &&
-           root.dataset.panelSignature===stateSig)return;
-        root.dataset.panelSignature=stateSig;
-        root.dataset.renderSignature=fullSig;
-        const oldPick=pick.value;
+           uiState.dataset.panelSignature===stateSig)return;
+        uiState.dataset.panelSignature=stateSig;
+        uiState.dataset.renderSignature=fullSig;
         const catalog=state.catalog||[];
-        const sig=catalog.map(x=>x.id).join('|');
-        if(pick.dataset.signature!==sig){
-            pick.replaceChildren();
-            for(const item of catalog){pick.appendChild(new Option(item.name,item.id));}
-            pick.dataset.signature=sig;
-        }
-        if(catalog.some(x=>x.id===oldPick))pick.value=oldPick;
-        else if(catalog.length)pick.value=catalog.find(x=>!fields.includes(x.id))?.id||catalog[0].id;
-        add.disabled=!fields.length||fields.length>=3;
-        pick.disabled=add.disabled;
-        hint.textContent=!fields.length?'Select a primary filled field first.':
-            `${fields.length} of 3 filled fields · later layers are drawn on top`;
+        // All listed fields stay clickable, including those already selected.
+        // Clicking a selected fill again removes it; unselected fills can be
+        // added until the panel has three total.
+        sidebar.querySelectorAll('.cat-content .field-choice[data-field]').forEach(el=>{
+            const selected=fields.includes(el.dataset.field);
+            el.classList.toggle('active',selected);
+            el.setAttribute('aria-pressed',String(selected));
+        });
         // Only active layers receive a slider; everything stays directly below
         // its actual control in Surface / Thermodynamics / Upper Air / etc.
         sidebar.querySelectorAll('.spcoa-v161-inline').forEach(node=>node.remove());
@@ -3325,7 +3293,7 @@ function spcoaV159InstallControls() {
             const top=document.createElement('div');
             top.style.cssText='display:flex;align-items:center;gap:4px;margin-bottom:3px;';
             const name=document.createElement('span');
-            name.textContent=i===0?'Primary fill':'Filled overlay '+i;
+            name.textContent=i===0?`Primary fill (${fields.length}/3)`:'Filled overlay '+i;
             name.style.cssText='flex:1;min-width:0;';
             top.appendChild(name);
             if(i>0){
@@ -3339,15 +3307,18 @@ function spcoaV159InstallControls() {
             sub.append(document.createTextNode('Opacity'),pct);
             control.addEventListener('input',()=>{pct.textContent=control.value+'%';});
             row.append(top,sub,control);
+            if(i===0){
+                const tip=document.createElement('div');
+                tip.style.cssText='font-size:10px;color:#a8c2d8;margin-top:5px;line-height:1.35;';
+                tip.textContent=fields.length>=3
+                    ? '3 of 3 selected. Click a selected parameter to remove it.'
+                    : 'Click another parameter in the lists to add a fill (maximum 3).';
+                row.appendChild(tip);
+            }
             if(!placeUnderParameter(row,target,'fill')){
                 console.warn('SPCOA V161: no sidebar fill button for',safeName(catalog,field));
             }
-            if(i===0 && row.parentElement){
-                // The extra-field selector also sits under the primary fill.
-                row.insertAdjacentElement('afterend',root);
-            }
         }
-        if(!fields.length)parkOverlaySelector();
         for(const item of (state.contours||[])){
             const target=findContourCheckbox(item.id,state.contourCatalog||[]);
             if(!target)continue;
@@ -3372,13 +3343,12 @@ function spcoaV159InstallControls() {
         else if(__MP_CHILD && typeof window.__spcoaV159ApplyAction==='function')
             window.__spcoaV159ApplyAction(action);
     }
-    // The add selector is now nested below the primary field, while all
-    // sliders and layer buttons are distributed through the normal sidebar.
+    // V162: selected fields have inline sliders and layer-order buttons only.
     sidebar.addEventListener('click',e=>{
-        const b=e.target.closest('#spcoa-v159-controls button[data-action],.spcoa-v161-inline button[data-action]');
+        const b=e.target.closest('.spcoa-v161-inline button[data-action]');
         if(!b)return;
         e.stopImmediatePropagation();
-        submit({type:b.dataset.action,field:b.dataset.action==='add'?pick.value:b.dataset.field});
+        submit({type:b.dataset.action,field:b.dataset.field});
     });
     sidebar.addEventListener('change',e=>{
         const input=e.target.closest('.spcoa-v161-inline input[type="range"][data-kind]');
@@ -3390,7 +3360,7 @@ function spcoaV159InstallControls() {
         // V160 startup guard remains: the child invokes this only after the
         // contour/field constants have been initialized.
         paint(window.__spcoaV159GetState());
-    }else hint.textContent='Waiting for selected map panel…';
+    }
 }
 
 if (!__MP_CHILD) {
@@ -4277,6 +4247,8 @@ if (!__MP_CHILD) {
             }
             const row = event.target.closest(".field-choice");
             if (row) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
                 for (const i of parameterTargets()) clickChildField(row.dataset.field, i);
                 setTimeout(syncHostFromActiveChild, 50);
                 return;
@@ -7995,6 +7967,74 @@ async function spcoaV159ApplyAction(action){
 }
 window.__spcoaV159ApplyAction=spcoaV159ApplyAction;
 spcoaV159LoadSettings();
+
+/* V162: click-to-add up to three fills directly from the parameter lists.
+ * A first click sets the primary; later clicks add overlays. Clicking any
+ * selected field removes it. If removing the primary, promote the oldest
+ * overlay. The same handler is used for Search and multi-panel host relay.
+ */
+function spcoaV162SetPrimary(field){
+    if(fieldSelect){
+        // Some dynamically added fields have buttons but no matching legacy
+        // dropdown option. Ensure the existing onchange renderer sees them.
+        if(!Array.from(fieldSelect.options).some(option=>option.value===field)){
+            fieldSelect.add(new Option(WEATHER_FIELDS[field]?.name||field,field));
+        }
+        fieldSelect.value=field;
+        fieldSelect.dispatchEvent(new Event('change',{bubbles:true}));
+    }else{
+        activeField=field;
+        scalarRenderGeneration++;
+        cursorGeneration++;
+        clearCursor();
+        updateLegend();
+        resetNumericalCanvasTransforms();
+        void renderWeather();
+    }
+    window.__spcoaV159RefreshControls?.(spcoaV159GetState());
+    updateActiveLayersStrip();
+}
+async function spcoaV162ToggleFilledField(field){
+    if(!WEATHER_FIELDS[field])return false;
+    const extras=spcoaV159EffectiveExtras();
+    if(field===activeField){
+        if(extras.length){
+            const next=extras.shift();
+            spcoaV159Extras=extras;
+            spcoaV159SaveSettings();
+            spcoaV162SetPrimary(next);
+        }else{
+            spcoaV159Extras=[];
+            spcoaV159SaveSettings();
+            spcoaV162SetPrimary('none');
+        }
+    }else if(extras.includes(field)){
+        await spcoaV159ApplyAction({type:'remove',field});
+    }else if(activeField==='none'||!activeField){
+        spcoaV159Extras=[];
+        spcoaV159SaveSettings();
+        spcoaV162SetPrimary(field);
+    }else if(extras.length<2){
+        await spcoaV159ApplyAction({type:'add',field});
+    }else{
+        // Reject a fourth field without replacing the three already chosen.
+        console.info('SPCOA: maximum of three filled parameters per map panel.');
+    }
+    window.__spcoaV159RefreshControls?.(spcoaV159GetState());
+    return true;
+}
+window.__spcoaV162ToggleFilledField=spcoaV162ToggleFilledField;
+// Capture before index.html's legacy single-fill click listener.
+document.addEventListener('click',event=>{
+    if(!__MP_CHILD)return; // The host forwards clicks to each chosen map iframe.
+    const row=event.target.closest?.('#sidebar .cat-content .field-choice[data-field]');
+    if(!row||!WEATHER_FIELDS[row.dataset.field])return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void spcoaV162ToggleFilledField(row.dataset.field).catch(err=>{
+        console.error('SPCOA parameter-list selection failed:',err);
+    });
+},true);
 // V160: Defer the initial child styling-control setup until the entire
 // synchronous app.js has evaluated. The V159 state snapshot calls
 // getActiveContourSamples(), which reads THERMODYNAMIC_CONTOUR_OVERLAYS
