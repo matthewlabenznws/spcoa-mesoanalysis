@@ -171,7 +171,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V153"; // Satellite product name without ABI band code in export footer; V152 preserved
+const SPCOA_VIEWER_BUILD = "V154"; // Per-panel GOES selections; V153 footer and radar preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1276,6 +1276,9 @@ function spcoaObsRadarMosaicValid(){
 }
 const SPCOA_GOES_DEFAULTS = Object.freeze({product:"off",opacity:75,timeMode:"latest"});
 let spcoaGoesOverride = null;
+// V154: The multi-panel shell routes GOES changes using the Parameter Scope
+// selector. A satellite edit is no longer a global broadcast to all iframes.
+let spcoaHostGoesUpdate = null;
 function spcoaValidateGoesPrefs(value) {
     const v = value && typeof value === "object" ? value : {};
     const product=Object.hasOwn(SPCOA_GOES_LEGACY_PRODUCTS,v.product)
@@ -1313,18 +1316,26 @@ function spcoaSyncGoesControls() {
 }
 function spcoaSaveGoesPrefs(value, broadcast=true) {
     const next = spcoaValidateGoesPrefs(value);
+    // V154: The host decides which panel(s) to update based on Parameter Scope.
+    // No GOES broadcast to every iframe and no shared-storage fan-out.
+    if (!__MP_CHILD && broadcast && typeof spcoaHostGoesUpdate === "function") {
+        spcoaHostGoesUpdate(next);
+        return;
+    }
     const wasUnderlay = spcoaHasSatelliteUnderlay();
     spcoaGoesOverride = next;
-    try {localStorage.setItem(SPCOA_GOES_PREFS_KEY,JSON.stringify(next));}catch(_){}
+    // Child iframe preferences must remain independent. Writing localStorage in
+    // a child would fire a storage event in sibling iframes and re-sync them.
+    if (!__MP_CHILD) {
+        try {localStorage.setItem(SPCOA_GOES_PREFS_KEY,JSON.stringify(next));}catch(_){}
+    }
     spcoaSyncGoesControls();
     window.dispatchEvent(new CustomEvent("spcoa-goes-settings-changed",{detail:{wasUnderlay}}));
-    if (broadcast && !__MP_CHILD) {
-        document.querySelectorAll("iframe").forEach(frame => {
-            try { frame.contentWindow?.postMessage({type:"spcoa-goes-sync",prefs:next},window.location.origin); }
-            catch (_) {}
-        });
-    }
 }
+// Host-to-child bridge used only for satellite controls. Other parameter,
+// radar, sector and drawing synchronization is deliberately unchanged.
+window.__spcoaGetGoesPrefs = () => ({...spcoaReadGoesPrefs()});
+window.__spcoaApplyGoesPrefs = prefs => spcoaSaveGoesPrefs(prefs,false);
 function spcoaInstallGoesControls() {
     if (document.getElementById("spcoa-goes-controls")) return;
     const sidebar = document.getElementById("sidebar");
@@ -3126,6 +3137,49 @@ if (!__MP_CHILD) {
                 ? Array.from({ length: layoutCount }, (_, i) => i)
                 : [activePanel];
         }
+        // V154: Satellite selection is per-map-panel (not a browser-global
+        // setting). Remember values for hidden or not-yet-loaded panels too.
+        const spcoaInitialGoesPrefs = {...spcoaReadGoesPrefs()};
+        const spcoaPanelGoesPrefs = new Map();
+        function spcoaHostGoesPrefsFor(index) {
+            return {...(spcoaPanelGoesPrefs.get(index) || spcoaInitialGoesPrefs)};
+        }
+        function spcoaHostSyncGoesFromPanel(index = activePanel) {
+            let prefs = spcoaHostGoesPrefsFor(index);
+            const frame = panels[index]?.frame;
+            if (panels[index]?.ready && frame?.contentWindow) {
+                try {
+                    const get = frame.contentWindow.__spcoaGetGoesPrefs;
+                    if (typeof get === "function") prefs = spcoaValidateGoesPrefs(get());
+                } catch (err) { console.warn("GOES panel read failed",err); }
+            }
+            spcoaPanelGoesPrefs.set(index,prefs);
+            spcoaGoesOverride = {...prefs};
+            spcoaSyncGoesControls();
+        }
+        function spcoaHostApplyGoesToPanel(index,prefs) {
+            const next = spcoaValidateGoesPrefs(prefs);
+            spcoaPanelGoesPrefs.set(index,{...next});
+            // Not-yet-ready panels receive their own cached preferences at mp-ready.
+            if (!panels[index]?.ready) return;
+            const child = panels[index]?.frame?.contentWindow;
+            try {
+                if (typeof child?.__spcoaApplyGoesPrefs === "function") {
+                    child.__spcoaApplyGoesPrefs(next);
+                } else {
+                    child?.postMessage({type:"spcoa-goes-sync",prefs:next},window.location.origin);
+                }
+            } catch (err) { console.warn("GOES panel update failed",index,err); }
+        }
+        spcoaHostGoesUpdate = next => {
+            // Exactly the same Active Panel / All Panels rule used for fields.
+            for (const i of parameterTargets()) spcoaHostApplyGoesToPanel(i,next);
+            spcoaHostSyncGoesFromPanel(activePanel);
+            // Retain the active panel's latest choice as next visit's default;
+            // child iframes ignore storage changes and stay panel-independent.
+            try {localStorage.setItem(SPCOA_GOES_PREFS_KEY,
+                JSON.stringify(spcoaHostGoesPrefsFor(activePanel)));} catch (_) {}
+        };
         function drawingTargets() {
             return drawingScope && drawingScope.value === "all"
                 ? Array.from({ length: layoutCount }, (_, i) => i)
@@ -3447,6 +3501,7 @@ if (!__MP_CHILD) {
             activePanel = index;
             panels.forEach((p, i) => p.holder.classList.toggle("active", i === activePanel));
             spcoaHostRadarRequestState(activePanel);
+            spcoaHostSyncGoesFromPanel(activePanel);
             syncHostFromActiveChild();
         }
 
@@ -3551,6 +3606,8 @@ if (!__MP_CHILD) {
         function syncHostFromActiveChild() {
             const d = childDoc();
             if (!d) return;
+            // Show the selected panel's satellite product/opacity in the shell.
+            spcoaHostSyncGoesFromPanel(activePanel);
             // CWA options are fetched within each child panel. Mirror the populated
             // office list into the visible host sidebar (otherwise only All CWAs exists).
             const hostCwa = document.getElementById("cwa-selector");
@@ -3874,9 +3931,16 @@ if (!__MP_CHILD) {
                         panels[i].frame.contentWindow.postMessage({
                             type: "spcoa-basemap-sync", choice: spcoaReadMapBackground()
                         }, window.location.origin);
-                        panels[i].frame.contentWindow.postMessage({
-                            type: "spcoa-goes-sync", prefs: spcoaReadGoesPrefs()
-                        }, window.location.origin);
+                        // Apply each panel's own queued GOES selection before the
+                        // host reads its controls on this same ready event.
+                        const newPanelGoes = spcoaHostGoesPrefsFor(i);
+                        if (typeof panels[i].frame.contentWindow.__spcoaApplyGoesPrefs === "function") {
+                            panels[i].frame.contentWindow.__spcoaApplyGoesPrefs(newPanelGoes);
+                        } else {
+                            panels[i].frame.contentWindow.postMessage({
+                                type: "spcoa-goes-sync", prefs: newPanelGoes
+                            }, window.location.origin);
+                        }
                         panels[i].frame.contentWindow.postMessage({
                             type: "spcoa-radar-sync", prefs: spcoaReadRadarPrefs()
                         }, window.location.origin);
@@ -8739,10 +8803,10 @@ window.addEventListener("message",event=>{
     if(event.data?.type==="spcoa-goes-sync") spcoaSaveGoesPrefs(event.data.prefs,false);
 });
 window.addEventListener("storage",event=>{
-    if(event.key===SPCOA_GOES_PREFS_KEY){
+    // A sibling iframe changing GOES must not overwrite this panel's choice.
+    if(event.key===SPCOA_GOES_PREFS_KEY && !__MP_CHILD){
         spcoaGoesOverride=null;
         spcoaSyncGoesControls();
-        spcoaGoesSchedule();
     }
 });
 map.on("load",()=>spcoaGoesSchedule(100));
