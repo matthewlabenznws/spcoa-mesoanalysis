@@ -1,3 +1,6 @@
+/* V181: Apply Gaussian sigma = 6.0 to all notebook-matched contour overlays only.
+ * Keep existing CAPE/DCAPE strong smoothing, continuous stitching, no changes
+ * to filled fields, legacy contours, vectors, radar or satellite. */
 /* V180: Enforce DCAPE 100-J/kg contour levels in the actual numerical renderer,
  * and place labels for the intermediate 100-J/kg lines. Preserve V179 colors,
  * strong Gaussian smoothing, filled fields, radar, satellite and other overlays. */
@@ -321,7 +324,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V180"; // DCAPE renderer uses every 100 J/kg (including intermediate labels); V179 features preserved
+const SPCOA_VIEWER_BUILD = "V181"; // All notebook-matched contours use Gaussian sigma 6; DCAPE 100-J/kg levels retained
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -17177,7 +17180,7 @@ async function renderContourField(
      * suppresses pixel/grid-scale zigzags while keeping exact notebook
      * contour LEVELS, COLORS, DASHES and widths. Unlike CSS/canvas blur,
      * filled raster fields and unrelated vector/geographic layers stay crisp.
-     * A sigma of 1.25 grid samples on the 3-pixel SRH-style grid is subtle.
+     * V181: All notebook-matched contours now use sigma 6 on the 3-pixel grid.
      * V174 also stitches these notebook contour segments into continuous
      * polylines, exactly as SRH already does. All other contour types
      * keep their existing smoothing behavior.
@@ -17189,13 +17192,14 @@ async function renderContourField(
     // This is approximately 18 screen pixels of numerical smoothing, instead
     // of V176's ~7.5 pixels. The numerical input (not the rendered map image)
     // is smoothed, so the radar, satellite and filled CAPE remain untouched.
-    // Keep the existing 0–3 km MLCAPE and other products unchanged.
+    // V181: Extend sigma 6 to all notebook-matched contours, including 0–3 km MLCAPE;
+    // non-notebook contours retain their preexisting settings.
     const isSpcoaMainCapeContour = ["sbcape_nb_contours", "mlcape_nb_contours", "mucape_nb_contours"].includes(field);
     // V178: DCAPE uses the same SRH-style stitched paths, Gaussian sigma,
     // and tiny-closed-loop suppression as the three main CAPE fields.
     const useStrongCapeContourSmoothing = isSpcoaMainCapeContour || field === "dcape";
     const contourSigma = useStrongCapeContourSmoothing ? 6.0 :
-        definition.notebookExact === true ? 1.25 :
+        definition.notebookExact === true ? 6.0 :
         useGaussianContourSmoothing ? 2.0 :
         ((field === "dcape" || field === "warm_cloud_depth" ||
           field === "freezing_level_height") ? 1.0 : 0.0);
