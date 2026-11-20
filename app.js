@@ -308,7 +308,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V158"; // About / Help window added to stable V156; no radar animation
+const SPCOA_VIEWER_BUILD = "V159"; // independent fill opacity/stack and contour thickness; no radar animation
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3206,6 +3206,144 @@ function spcoaV158InstallAboutHelp() {
     });
 }
 
+
+/* =========================================================================================
+   V159 — PER-FIELD DISPLAY CONTROLS (host + iframe UI)
+   Host mirrors the active panel and targets children using Parameter Scope.
+   This is intentionally isolated from radar, satellite and vector settings.
+   ========================================================================================= */
+function spcoaV159InstallControls() {
+    const sidebar=document.getElementById('sidebar');
+    if(!sidebar || document.getElementById('spcoa-v159-controls'))return;
+    const root=document.createElement('section');
+    root.id='spcoa-v159-controls';
+    root.style.cssText='background:#152d3e;color:#e3edf6;border:1px solid #41586b;border-radius:8px;padding:11px;margin:12px 4px;font:12px Arial,sans-serif;';
+    const head=document.createElement('div');
+    head.style.cssText='font-weight:700;font-size:14px;margin-bottom:6px;';
+    head.textContent='Filled Layers & Contour Styling';
+    const explanation=document.createElement('p');
+    explanation.style.cssText='margin:2px 0 9px;color:#bbcedf;line-height:1.5;';
+    explanation.textContent='Up to three filled fields per panel. Each field has its own opacity, and each selected contour has its own thickness. Vectors are unchanged. The map color bar describes the primary filled field.';
+    const addRow=document.createElement('div');
+    addRow.style.cssText='display:flex;gap:5px;align-items:center;';
+    const pick=document.createElement('select');
+    pick.id='spcoa-v159-pick';
+    pick.setAttribute('aria-label','Choose filled field overlay');
+    pick.style.cssText='min-width:0;flex:1;background:#0d2434;color:#fff;border:1px solid #516e82;padding:6px;border-radius:4px;';
+    const add=document.createElement('button');
+    add.type='button';add.dataset.action='add';add.textContent='Add';add.disabled=true;pick.disabled=true;
+    add.title='Add a second or third filled field above the currently selected field';
+    add.style.cssText='padding:6px 9px;background:#235578;color:#fff;border:1px solid #5682a0;border-radius:4px;cursor:pointer;';
+    addRow.append(pick,add);
+    const hint=document.createElement('div');
+    hint.id='spcoa-v159-hint';hint.style.cssText='color:#a8c2d8;font-size:11px;margin-top:5px;';
+    const fills=document.createElement('div');fills.id='spcoa-v159-fill-list';fills.style.cssText='margin-top:9px;';
+    const subtitle=document.createElement('div');subtitle.textContent='Selected contour thickness';subtitle.style.cssText='font-weight:700;border-top:1px solid #40576b;padding-top:10px;margin-top:10px;';
+    const contours=document.createElement('div');contours.id='spcoa-v159-contour-list';contours.style.cssText='margin-top:5px;';
+    root.append(head,explanation,addRow,hint,fills,subtitle,contours);
+    const explorer=document.getElementById('spcoa-v122-parameter-explorer');
+    if(explorer && explorer.parentElement===sidebar)explorer.insertAdjacentElement('afterend',root);
+    else sidebar.prepend(root);
+    const button=(action,field,title,text)=>{
+        const b=document.createElement('button');b.type='button';b.dataset.action=action;
+        b.dataset.field=field;b.title=title;b.textContent=text;
+        b.style.cssText='background:#27475d;color:#fff;border:1px solid #506b80;border-radius:4px;padding:3px 6px;cursor:pointer;';
+        return b;
+    };
+    function slider(field,kind,value,min,max,step){
+        const el=document.createElement('input');el.type='range';el.min=min;el.max=max;el.step=step;
+        el.value=String(value);el.dataset.field=field;el.dataset.kind=kind;
+        el.style.cssText='width:100%;accent-color:#72b6e1;';
+        el.setAttribute('aria-label',kind==='opacity'?'Opacity of '+field:'Line width of '+field);
+        return el;
+    }
+    const safeName=(catalog,field)=>catalog.find(i=>i.id===field)?.name||field;
+    function paint(state){
+        if(!state)return;
+        const fullSig=JSON.stringify([state.primary,state.extras,state.opacity,state.thickness,state.contours]);
+        if(root.dataset.renderSignature===fullSig)return;
+        const stateSig=JSON.stringify([state.primary,state.extras,(state.contours||[]).map(x=>x.id)]);
+        if(root.contains(document.activeElement) && document.activeElement?.type==='range' &&
+           root.dataset.panelSignature===stateSig)return;
+        root.dataset.panelSignature=stateSig;
+        root.dataset.renderSignature=fullSig;
+        const oldPick=pick.value;
+        const catalog=state.catalog||[];
+        const sig=catalog.map(x=>x.id).join('|');
+        if(pick.dataset.signature!==sig){
+            pick.replaceChildren();
+            for(const item of catalog){const opt=new Option(item.name,item.id);pick.appendChild(opt);}
+            pick.dataset.signature=sig;
+        }
+        if(catalog.some(x=>x.id===oldPick))pick.value=oldPick;
+        const primary=state.primary||'none';
+        const extras=state.extras||[];
+        add.disabled=primary==='none'||extras.length>=2;
+        pick.disabled=add.disabled;
+        hint.textContent=primary==='none'?'Select a primary filled field first.':
+            `${1+extras.length} of 3 filled fields · top layer is drawn last`;
+        fills.replaceChildren();
+        const fields=primary==='none'?[]:[primary,...extras];
+        fields.forEach((field,i)=>{
+            const row=document.createElement('div');
+            row.style.cssText='border-top:1px solid #344f63;padding:6px 0;';
+            const top=document.createElement('div');
+            top.style.cssText='display:flex;align-items:center;gap:4px;margin-bottom:4px;';
+            const name=document.createElement('span');name.textContent=(i===0?'Base: ':'Overlay '+i+': ')+safeName(catalog,field);
+            name.style.cssText='flex:1;min-width:0;overflow-wrap:anywhere;';
+            top.appendChild(name);
+            if(i>0){
+                if(i>1)top.appendChild(button('up',field,'Move this overlay below the previous overlay','↓'));
+                if(i<extras.length)top.appendChild(button('down',field,'Move this overlay above the next overlay','↑'));
+                top.appendChild(button('remove',field,'Remove this filled overlay','×'));
+            }
+            const pct=document.createElement('span');pct.textContent=(state.opacity?.[field]??100)+'%';
+            const control=slider(field,'opacity',state.opacity?.[field]??100,0,100,5);
+            control.addEventListener('input',()=>{pct.textContent=control.value+'%';});
+            const sub=document.createElement('div');sub.style.cssText='display:flex;justify-content:space-between;';
+            sub.append(document.createTextNode('Opacity'),pct);
+            row.append(top,sub,control);fills.appendChild(row);
+        });
+        contours.replaceChildren();
+        if(!state.contours?.length){
+            const empty=document.createElement('div');empty.style.cssText='color:#a8c2d8;';
+            empty.textContent='Turn on a contour overlay to adjust its line width.';
+            contours.appendChild(empty);
+        }
+        for(const item of (state.contours||[])){
+            const row=document.createElement('div');row.style.cssText='padding:5px 0;';
+            const top=document.createElement('div');top.style.cssText='display:flex;justify-content:space-between;gap:5px;';
+            const name=document.createElement('span');name.textContent=item.name;
+            const amount=document.createElement('span');amount.textContent=(state.thickness?.[item.id]??1).toFixed(2)+'×';
+            top.append(name,amount);
+            const input=slider(item.id,'thickness',state.thickness?.[item.id]??1,.5,4,.25);
+            input.addEventListener('input',()=>{amount.textContent=Number(input.value).toFixed(2)+'×';});
+            row.append(top,input);contours.appendChild(row);
+        }
+    }
+    window.__spcoaV159RefreshControls=paint;
+    function submit(action){
+        if(!action)return;
+        if(!__MP_CHILD && typeof window.__spcoaV159HostApplyAction==='function')
+            window.__spcoaV159HostApplyAction(action);
+        else if(__MP_CHILD && typeof window.__spcoaV159ApplyAction==='function')
+            window.__spcoaV159ApplyAction(action);
+    }
+    root.addEventListener('click',e=>{
+        const b=e.target.closest('button[data-action]');if(!b)return;
+        e.stopPropagation();
+        submit({type:b.dataset.action,field:b.dataset.action==='add'?pick.value:b.dataset.field});
+    });
+    root.addEventListener('change',e=>{
+        const input=e.target.closest('input[type="range"][data-kind]');if(!input)return;
+        e.stopPropagation();
+        submit({type:input.dataset.kind,field:input.dataset.field,value:Number(input.value)});
+    });
+    root.addEventListener('input',e=>e.stopPropagation());
+    if(__MP_CHILD && typeof window.__spcoaV159GetState==='function')paint(window.__spcoaV159GetState());
+    else hint.textContent='Waiting for selected map panel…';
+}
+
 if (!__MP_CHILD) {
     document.body.classList.add("mp-shell");
 
@@ -3219,6 +3357,7 @@ if (!__MP_CHILD) {
         installSpcoaCompositeContourToggles();
         spcoaV122InstallParameterExplorer();
         spcoaV158InstallAboutHelp();
+        spcoaV159InstallControls();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
 
@@ -3451,6 +3590,22 @@ if (!__MP_CHILD) {
             return parameterScope && parameterScope.value === "all"
                 ? Array.from({ length: layoutCount }, (_, i) => i)
                 : [activePanel];
+        }
+        window.__spcoaV159HostApplyAction=async action=>{
+            const chosen=parameterTargets();
+            const work=chosen.map(i=>{
+                try {return panels[i]?.frame?.contentWindow?.__spcoaV159ApplyAction?.(action);}
+                catch(e){console.warn('V159 panel display setting failed',i+1,e);return null;}
+            });
+            await Promise.all(work);
+            spcoaHostV159Sync();
+        };
+        function spcoaHostV159Sync(){
+            const w=panels[activePanel]?.frame?.contentWindow;
+            try{
+                const state=w?.__spcoaV159GetState?.();
+                if(state)window.__spcoaV159RefreshControls?.(state);
+            }catch(e){console.warn('V159 controls sync unavailable',e);}
         }
         // V154: Satellite selection is per-map-panel (not a browser-global
         // setting). Remember values for hidden or not-yet-loaded panels too.
@@ -3859,6 +4014,7 @@ if (!__MP_CHILD) {
             spcoaHostRadarRequestState(activePanel);
             spcoaHostSyncGoesFromPanel(activePanel);
             syncHostFromActiveChild();
+            spcoaHostV159Sync();
         }
 
         function childDoc(index = activePanel) {
@@ -3964,6 +4120,7 @@ if (!__MP_CHILD) {
             if (!d) return;
             // Show the selected panel's satellite product/opacity in the shell.
             spcoaHostSyncGoesFromPanel(activePanel);
+            spcoaHostV159Sync();
             // CWA options are fetched within each child panel. Mirror the populated
             // office list into the visible host sidebar (otherwise only All CWAs exists).
             const hostCwa = document.getElementById("cwa-selector");
@@ -4061,6 +4218,7 @@ if (!__MP_CHILD) {
         layoutSelect.addEventListener("change", () => applyLayout(layoutSelect.value));
 
         sidebar.addEventListener("click", event => {
+            if(event.target.closest("#spcoa-v159-controls"))return;
             const clearButton = event.target.closest("button#clear-fill, button#clear-contours, button#clear-vectors, button#clear-all");
             if (clearButton) {
                 event.preventDefault();
@@ -4093,6 +4251,7 @@ if (!__MP_CHILD) {
         // Native color controls primarily emit input while the user picks a color.
         // Forward it immediately rather than letting the 350-ms host sync restore purple.
         sidebar.addEventListener("input", event => {
+            if(event.target.closest("#spcoa-v159-controls"))return;
             const el = event.target;
             if (!el || el.closest("#spcoa-goes-controls, #spcoa-radar-controls")) return;
             if (el.type === "color" && el.dataset.vectorField) {
@@ -4115,6 +4274,7 @@ if (!__MP_CHILD) {
         });
 
         sidebar.addEventListener("change", event => {
+            if(event.target.closest("#spcoa-v159-controls"))return;
             const el = event.target;
             if (!el || !el.id || el.id === "layout-select" || el.id === "parameter-scope" || el.closest("#spcoa-goes-controls, #spcoa-radar-controls")) return;
             if (el.id === "sector-select") {
@@ -7253,7 +7413,7 @@ const SPCOA_TILE_CANCELLED = Symbol('spcoa-obsolete-tile-request');
 const spcoaActiveTileJobs = new Set();
 function spcoaRequiredRunsForSelection(targetRun) {
     const keep = new Set([targetRun]);
-    if (activeField==='ecape') keep.add(spcoaProductRun('ecape',targetRun));
+    if (activeField==='ecape' || spcoaV159EffectiveExtras().includes('ecape')) keep.add(spcoaProductRun('ecape',targetRun));
     const chosen = selectedProductKeys();
     for (const field of [...chosen.scalar,...chosen.contours]) {
         const source = SPCOA_CHANGE_CONTOUR_FIELDS[field]?.sourceField || field;
@@ -7706,6 +7866,131 @@ function ensureFilledWindFieldOptions() {
 }
 
 ensureFilledWindFieldOptions();
+
+/* V159 — per-map filled overlays and contour thickness. All state is panel-local.
+ * The original primary field remains activeField; extra fields are composited
+ * onto the SAME weatherCanvas (and therefore captured by existing PNG/video).
+ */
+let spcoaV159Extras=[];
+let spcoaV159Opacity=Object.create(null);
+let spcoaV159Thickness=Object.create(null);
+const SPCOA_V159_PREFS_KEY='spcoa_layer_style_v159_panel_'+(__MP_PARAMS.get('panel')||'1');
+function spcoaV159LoadSettings(){
+    try{
+        const saved=JSON.parse(localStorage.getItem(SPCOA_V159_PREFS_KEY)||'{}');
+        if(Array.isArray(saved.extras))spcoaV159Extras=saved.extras.filter(f=>typeof f==='string'&&WEATHER_FIELDS[f]).slice(0,2);
+        if(saved.opacity&&typeof saved.opacity==='object')for(const [key,value] of Object.entries(saved.opacity)){
+            if(WEATHER_FIELDS[key] && Number.isFinite(Number(value)))spcoaV159Opacity[key]=Math.max(0,Math.min(100,Math.round(Number(value))));
+        }
+        if(saved.thickness&&typeof saved.thickness==='object')for(const [key,value] of Object.entries(saved.thickness)){
+            if(CONTOUR_FIELDS[key] && Number.isFinite(Number(value)))spcoaV159Thickness[key]=Math.max(.5,Math.min(4,Number(value)));
+        }
+    }catch(_){}
+}
+function spcoaV159SaveSettings(){
+    try{localStorage.setItem(SPCOA_V159_PREFS_KEY,JSON.stringify({extras:spcoaV159Extras,
+        opacity:spcoaV159Opacity,thickness:spcoaV159Thickness}));}catch(_){}
+}
+function spcoaV159OpacityFor(field){return spcoaV159Opacity[field]??100;}
+function spcoaV159ContourMultiplier(field){return spcoaV159Thickness[field]??1;}
+function spcoaV159StyleSignature(){return JSON.stringify([spcoaV159EffectiveExtras(),spcoaV159Opacity,spcoaV159Thickness]);}
+function spcoaV159EffectiveExtras(){
+    return spcoaV159Extras.filter((f,i,a)=>f!==activeField&&a.indexOf(f)===i&&WEATHER_FIELDS[f]).slice(0,2);
+}
+function spcoaV159GetState(){
+    return {primary:activeField,extras:spcoaV159EffectiveExtras(),
+        opacity:{...spcoaV159Opacity},thickness:{...spcoaV159Thickness},
+        catalog:Object.entries(WEATHER_FIELDS).map(([id,v])=>({id,name:v.name||id})),
+        contours:[...new Set(getActiveContourSamples())]
+            .map(id=>({id,name:CONTOUR_FIELDS[id]?.name||id}))};
+}
+window.__spcoaV159GetState=spcoaV159GetState;
+async function spcoaV159ApplyAction(action){
+    if(!action||typeof action!=='object')return;
+    const field=String(action.field||'');
+    if(action.type==='add'){
+        if(activeField==='none'||!WEATHER_FIELDS[field]||field===activeField||spcoaV159Extras.includes(field)||spcoaV159EffectiveExtras().length>=2)return;
+        spcoaV159Extras=spcoaV159EffectiveExtras();
+        spcoaV159Extras.push(field);
+    }else if(action.type==='remove'){
+        spcoaV159Extras=spcoaV159Extras.filter(x=>x!==field);
+    }else if(action.type==='up'||action.type==='down'){
+        const i=spcoaV159Extras.indexOf(field),j=i+(action.type==='up'?-1:1);
+        if(i<0||j<0||j>=spcoaV159Extras.length)return;
+        [spcoaV159Extras[i],spcoaV159Extras[j]]=[spcoaV159Extras[j],spcoaV159Extras[i]];
+    }else if(action.type==='opacity'){
+        if(!WEATHER_FIELDS[field] || !Number.isFinite(action.value))return;
+        spcoaV159Opacity[field]=Math.max(0,Math.min(100,Math.round(action.value)));
+    }else if(action.type==='thickness'){
+        if(!CONTOUR_FIELDS[field] || !Number.isFinite(action.value))return;
+        spcoaV159Thickness[field]=Math.max(.5,Math.min(4,Math.round(action.value*4)/4));
+    }else{return;}
+    spcoaV159SaveSettings();
+    window.__spcoaV159RefreshControls?.(spcoaV159GetState());
+    // Composited weatherCanvas is the existing source for ALL export formats.
+    if(action.type==='thickness')await renderContours();
+    else await renderWeather();
+    updateActiveLayersStrip();
+}
+window.__spcoaV159ApplyAction=spcoaV159ApplyAction;
+spcoaV159LoadSettings();
+spcoaV159InstallControls();
+
+/* Draw additional filled fields sequentially above the original fill.
+   Each field uses its real numerical tiles and the existing color lookup.
+   A conservative resolution cap prevents multiple heavy overlays from
+   exhausting memory, while the original primary field keeps full quality. */
+async function spcoaV159DrawExtraFills(generation,width,height,z){
+    const overlays=spcoaV159EffectiveExtras();
+    if(!overlays.length)return;
+    const limit=750000;
+    const scale=Math.min(1,Math.sqrt(limit/Math.max(1,width*height)));
+    const rw=Math.max(1,Math.round(width*scale));
+    const rh=Math.max(1,Math.round(height*scale));
+    const mapping=getFlatMapTileCoordinates(width,height,z);
+    const satellite=spcoaHasSatelliteUnderlay();
+    const off=document.createElement('canvas');off.width=rw;off.height=rh;
+    const ctx=off.getContext('2d');
+    for(const field of overlays){
+        if(generation!==scalarRenderGeneration)return;
+        try{
+            if(!await spcoaEnsureCurrentMetadata('scalar',field))continue;
+            await preloadScalarTiles(field,z);
+            if(generation!==scalarRenderGeneration)return;
+            const image=ctx.createImageData(rw,rh),rgba=image.data;
+            const encoding=getEncoding(fieldMetadata[field]);
+            const type=WEATHER_FIELDS[field]?.type;
+            const compositeMin=satellite?SPCOA_SATELLITE_COMPOSITE_FIRST_VISIBLE[type]:undefined;
+            const windMin=satellite?({wind_midlevel:23,wind_500:25,wind_250:55})[type]:undefined;
+            const neutral=satellite&&(type==='temperature_advection'||type==='petterssen_fgen');
+            let ptr=0;
+            for(let y=0;y<rh;y++){
+                const sy=(y+.5)/scale;
+                for(let x=0;x<rw;x++,ptr+=4){
+                    const sx=(x+.5)/scale;
+                    const raw=mapping?sampleScalarGlobalPixelsFast(field,z,
+                        mapping.startX+sx*mapping.step,mapping.startY+sy*mapping.step,encoding,false)
+                        :(()=>{const ll=map.unproject([sx,sy]);return sampleScalar(field,ll.lng,ll.lat,z,false);})();
+                    const c=getFieldColor(field,raw);
+                    if(!c)continue;
+                    const hidden=(windMin!==undefined && Number.isFinite(raw)&&raw<windMin) ||
+                        (compositeMin!==undefined&&Number.isFinite(raw)&&raw<compositeMin) ||
+                        (neutral&&Number.isFinite(raw)&&raw>=-.5&&raw<=.5&&c.r===255&&c.g===255&&c.b===255) ||
+                        (satellite&&type==='spcoa_change'&&Number.isFinite(raw)&&Math.abs(raw)<=SPCOA_CHANGE_NEUTRAL_LIMIT);
+                    rgba[ptr]=c.r;rgba[ptr+1]=c.g;rgba[ptr+2]=c.b;
+                    rgba[ptr+3]=hidden?0:235;
+                }
+            }
+            if(generation!==scalarRenderGeneration)return;
+            ctx.putImageData(image,0,0);
+            weatherCtx.save();
+            weatherCtx.globalAlpha=spcoaV159OpacityFor(field)/100;
+            weatherCtx.imageSmoothingEnabled=true;
+            weatherCtx.drawImage(off,0,0,width,height);
+            weatherCtx.restore();
+        }catch(err){console.warn('V159 extra filled field unavailable:',field,err);}
+    }
+}
 
 const sectorSelect =
     document.getElementById("sector-select");
@@ -8558,6 +8843,12 @@ function getActiveLayerDescriptions() {
         });
     }
 
+    for(const fieldId of spcoaV159EffectiveExtras()){
+        const def=WEATHER_FIELDS[fieldId];
+        if(def)descriptions.push({text:formatActiveLayer(def.shortName||def.name,def.units||'','fill')+
+            ` (${spcoaV159OpacityFor(fieldId)}% opacity)`,color:null});
+    }
+
     const contourConfigs = [
         { field: "sfc_mslp", stateKey: "mslp", units: "mb" },
         { field: "dcape", stateKey: "dcape" },
@@ -8703,6 +8994,7 @@ function updateActiveLayersStrip() {
 
     requestAnimationFrame(fitActiveLayersStrip);
 }
+    window.__spcoaV159RefreshControls?.(spcoaV159GetState());
 
 
 /* =========================================================================================
@@ -10631,7 +10923,7 @@ async function advanceTimeline(direction, fromPlayback = false) {
 }
 
 function selectedProductKeys() {
-    const scalar = activeField && activeField !== "none" ? [activeField] : [];
+    const scalar = activeField && activeField !== "none" ? [activeField,...spcoaV159EffectiveExtras()] : [];
     const vectors = VECTOR_OVERLAY_CONFIG.filter(c => activeOverlays[c.stateKey]).map(c => c.field);
     const contours = [
         ...GEOPOTENTIAL_HEIGHT_OVERLAYS,
@@ -13325,6 +13617,7 @@ function spcoaCurrentFillState() {
     return {
         run: currentRun,
         field: activeField,
+        styling:spcoaV159StyleSignature(),
         background: spcoaReadMapBackground(),
         satelliteUnderlay: spcoaHasSatelliteUnderlay(),
         camera: getNumericalCameraSnapshot()
@@ -13335,6 +13628,7 @@ function spcoaFillReadyForExport() {
     const done = spcoaCompletedFillState;
     return Boolean(done && done.run === currentRun &&
         done.field === activeField &&
+        done.styling === spcoaV159StyleSignature() &&
         done.background === spcoaReadMapBackground() &&
         done.satelliteUnderlay === spcoaHasSatelliteUnderlay() &&
         matchesNumericalCamera(done.camera));
@@ -13830,6 +14124,7 @@ async function renderWeather() {
 
     // The change fill has already been Gaussian-smoothed in physical values.
     // Drawing straight onto the output canvas avoids any RGB/alpha blurring.
+    weatherCtx.globalAlpha=spcoaV159OpacityFor(activeField)/100;
     weatherCtx.drawImage(
 
         offscreen,
@@ -13843,6 +14138,9 @@ async function renderWeather() {
         height
 
     );
+    weatherCtx.globalAlpha=1;
+    await spcoaV159DrawExtraFills(generation,width,height,z);
+    if(generation!==scalarRenderGeneration)return;
     // A completed draw certifies this run, active field, background and camera.
     spcoaCompletedFillState = spcoaCurrentFillState();
 
@@ -16309,6 +16607,9 @@ async function renderContourField(
             contourCtx.setLineDash([]);
         }
 
+        // V159: preserve the per-level line hierarchy (0 °C, strong SHP,
+        // frontogenesis, etc.) and scale only this selected contour field.
+        contourCtx.lineWidth*=spcoaV159ContourMultiplier(field);
         contourCtx.beginPath();
 
         let segmentCounter = 0;
@@ -18771,7 +19072,7 @@ async function updateCursor(event) {
 
     const scalarFields = [];
     if (activeField && activeField !== "none" && WEATHER_FIELDS[activeField]) {
-        scalarFields.push(activeField);
+        scalarFields.push(activeField,...spcoaV159EffectiveExtras());
     }
 
     const contourFields = getActiveContourSamples();
@@ -18950,7 +19251,7 @@ function spcoaRenderedFrameKey(camera=getNumericalCameraSnapshot()) {
     const overlaySignature=Object.keys(activeOverlays).sort()
         .filter(key=>activeOverlays[key] === true).join(',');
     return JSON.stringify([
-        currentRun,activeField,overlaySignature,
+        currentRun,activeField,overlaySignature,spcoaV159StyleSignature(),
         activeField==='ecape'?spcoaProductRun('ecape'):null,
         spcoaReadMapBackground(),spcoaHasSatelliteUnderlay(),getDataZoom(),
         camera.lng.toFixed(7),camera.lat.toFixed(7),camera.zoom.toFixed(7),
@@ -20573,6 +20874,7 @@ const clearContoursButton = document.getElementById("clear-contours");
 if (clearFillButton) {
     clearFillButton.addEventListener("click", async () => {
         activeField = "none";
+        spcoaV159Extras=[];spcoaV159SaveSettings();
         if (fieldSelect) fieldSelect.value = "none";
         document.querySelectorAll("#sidebar .field-choice.active")
             .forEach(button => button.classList.remove("active"));
@@ -20665,6 +20967,7 @@ if (clearAllButton) {
 
         // Clear scalar shading and its selection in the sidebar.
         activeField = "none";
+        spcoaV159Extras=[];spcoaV159SaveSettings();
         if (fieldSelect) fieldSelect.value = "none";
         document.querySelectorAll("#sidebar .field-choice.active")
             .forEach(button => button.classList.remove("active"));
@@ -23172,6 +23475,9 @@ window.setInterval(()=>{if (!document.hidden) spcoaV120UpdateStatus();},60000);
         });
         return {
             field: activeField,
+            extraFills:[...spcoaV159EffectiveExtras()],
+            fillOpacity:{...spcoaV159Opacity},
+            contourThickness:{...spcoaV159Thickness},
             overlays: Object.fromEntries(Object.entries(activeOverlays).map(([k, v]) => [k, !!v])),
             vectorColors: {...vectorColors},
             controls,
@@ -23227,6 +23533,14 @@ window.setInterval(()=>{if (!document.hidden) spcoaV120UpdateStatus();},60000);
             }
             document.querySelectorAll("#sidebar .field-choice").forEach(row =>
                 row.classList.toggle("active", row.dataset.field === activeField));
+            spcoaV159Extras=Array.isArray(saved.extraFills)?saved.extraFills.filter(x=>WEATHER_FIELDS[x]&&x!==activeField).slice(0,2):[];
+            spcoaV159Opacity=Object.create(null);
+            for(const [k,v] of Object.entries(saved.fillOpacity||{}))if(WEATHER_FIELDS[k]&&Number.isFinite(Number(v)))
+                spcoaV159Opacity[k]=Math.max(0,Math.min(100,Number(v)));
+            spcoaV159Thickness=Object.create(null);
+            for(const [k,v] of Object.entries(saved.contourThickness||{}))if(CONTOUR_FIELDS[k]&&Number.isFinite(Number(v)))
+                spcoaV159Thickness[k]=Math.max(.5,Math.min(4,Number(v)));
+            spcoaV159SaveSettings();
             for (const key of Object.keys(activeOverlays)) {
                 activeOverlays[key] = saved.overlays?.[key] === true;
             }
