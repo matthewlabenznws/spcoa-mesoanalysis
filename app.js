@@ -1,3 +1,4 @@
+/* V177: Stronger Gaussian smoothing for SB/ML/MU CAPE contours and suppression of tiny isolated closed loops. Preserve SPC-like breaks at 2500 and 4500 J/kg. */
 /* V176: SPC CAPE contour red steps at 2500 and 4500 J/kg, stronger CAPE-only Gaussian smoothing, and visible MUCAPE contour toggle in host. */
 /* V175: SBCAPE, MLCAPE, and MUCAPE contours now use SPC-style levels (100, 250, then every 500 J/kg), SPC-like red colors, and the existing SRH-style smoothing/stitching. */
 /* V173: Light numerical Gaussian smoothing for notebook-matched contours only.
@@ -317,7 +318,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V176"; // stronger SPC-style CAPE smoothing, revised reds, visible MUCAPE control
+const SPCOA_VIEWER_BUILD = "V177"; // stronger SPC-style CAPE smoothing, revised reds, visible MUCAPE control
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -17173,10 +17174,13 @@ async function renderContourField(
     const useGaussianContourSmoothing =
         definition.smoothGeometry === true && definition.compositeContour !== true;
 
-    // V176: stronger Gaussian smoothing only for SB/ML/MU CAPE (3-px sample grid).
-    // Keep 0-3 km MLCAPE and all other products at their previous smoothing.
+    // V177: 6 grid-cell Gaussian sigma on the 3-pixel contour sampling grid.
+    // This is approximately 18 screen pixels of numerical smoothing, instead
+    // of V176's ~7.5 pixels. The numerical input (not the rendered map image)
+    // is smoothed, so the radar, satellite and filled CAPE remain untouched.
+    // Keep the existing 0–3 km MLCAPE and other products unchanged.
     const isSpcoaMainCapeContour = ["sbcape_nb_contours", "mlcape_nb_contours", "mucape_nb_contours"].includes(field);
-    const contourSigma = isSpcoaMainCapeContour ? 2.5 :
+    const contourSigma = isSpcoaMainCapeContour ? 6.0 :
         definition.notebookExact === true ? 1.25 :
         useGaussianContourSmoothing ? 2.0 :
         ((field === "dcape" || field === "warm_cloud_depth" ||
@@ -17293,6 +17297,16 @@ async function renderContourField(
             return levels;
         })();
 
+    if (isSpcoaMainCapeContour && window.SPCOA_DEBUG_CAPE_CONTOURS === true) {
+        console.info(`[SPCOA ${SPCOA_VIEWER_BUILD}] ${field} contours`, {
+            minimumSampledJkg: Math.round(minimumValue),
+            maximumSampledJkg: Math.round(maximumValue),
+            actualContourLevelsJkg: levelsToRender,
+            gaussianSigmaGridCells: contourSigma,
+            samplingStepScreenPixels: step,
+            palette: definition.notebookColors
+        });
+    }
     if (levelsToRender.length === 0) {
         return;
     }
@@ -17666,6 +17680,27 @@ async function renderContourField(
 
                 if (!rawLine || rawLine.length < 2) {
                     continue;
+                }
+
+                // V177: Very small closed CAPE loops obscure the broad fields
+                // near strong horizontal gradients. Remove only tiny closed
+                // rings (< ~24px in each dimension); preserve open contours,
+                // broad closed systems, all numerical levels and their labels.
+                // This filtering operates on the already-smoothed geometry and
+                // is deliberately restricted to the three main CAPE fields.
+                if (isSpcoaMainCapeContour && rawLine.length >= 4) {
+                    const start = rawLine[0], end = rawLine[rawLine.length - 1];
+                    const isClosed = Math.hypot(start.x - end.x, start.y - end.y) <= step * 1.5;
+                    if (isClosed) {
+                        let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+                        for (const point of rawLine) {
+                            if (point.x < minX) minX=point.x;
+                            if (point.x > maxX) maxX=point.x;
+                            if (point.y < minY) minY=point.y;
+                            if (point.y > maxY) maxY=point.y;
+                        }
+                        if ((maxX-minX) < 24 && (maxY-minY) < 24) continue;
+                    }
                 }
 
                 /*
