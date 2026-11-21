@@ -338,7 +338,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V192"; // seamless live radar swaps + automatically rolling playback timelines
+const SPCOA_VIEWER_BUILD = "V193"; // radar MP4 export during playback + repeat complete radar timeline
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2680,15 +2680,36 @@ function spcoaInstallRadarPlaybackControls(){
     const exportButton=btn("spcoa-radar-playback-export","Save Radar MP4","export");
     exportButton.title="Export the selected radar-history loop as an H.264 MP4 from the active map panel";
     exportRow.appendChild(exportButton);
+    // Repeat the entire chronological timeline in the saved MP4. Ordinary
+    // MP4 files cannot require every video player to loop automatically.
+    const loopLabel=document.createElement("label");
+    loopLabel.textContent="Video loops ";
+    loopLabel.style.cssText="white-space:nowrap;display:inline-flex;align-items:center;gap:5px;color:#d0e5f0";
+    const loops=document.createElement("select");
+    loops.id="spcoa-radar-mp4-loops";
+    loops.title="Number of times to repeat the full radar timeline inside the MP4";
+    for(const [value,label] of [["1","1×"],["2","2×"],["3","3×"],["5","5×"]]){
+        const option=document.createElement("option");option.value=value;option.textContent=label;
+        loops.appendChild(option);
+    }
+    loops.value="3";
+    loopLabel.appendChild(loops);
+    exportRow.appendChild(loopLabel);
     const exportHint=document.createElement("small");
-    exportHint.textContent="Active panel · Includes displayed map layers";
+    exportHint.textContent="Active panel · Save while playing; loop resumes after export";
     exportHint.style.cssText="color:#a7c9d9;font-size:10px";
     exportRow.appendChild(exportHint);
     anim.append(title,hint,row,settings,slider,status,exportRow);
     host.appendChild(anim);
     spcoaRadarPlaybackSyncUi();
 }
+function spcoaRadarMp4SafeLoopCount(value){
+    return [1,2,3,5].includes(Number(value))?Number(value):3;
+}
 function spcoaRadarPlaybackUiCommand(action,value){
+    // Read the host selector before dispatching into the active map iframe.
+    if(action==="export" && value == null)
+        value=spcoaRadarMp4SafeLoopCount(document.getElementById("spcoa-radar-mp4-loops")?.value);
     try{
         const dispatch=__MP_CHILD?window.__spcoaRadarPlaybackAction:window.__spcoaRadarPlaybackHostAction;
         if(typeof dispatch==="function")Promise.resolve(dispatch(action,value)).catch(e=>
@@ -2715,6 +2736,7 @@ function spcoaRadarPlaybackSyncUi(){
     const duration=root.querySelector("#spcoa-radar-playback-duration");
     const speed=root.querySelector("#spcoa-radar-playback-speed");
     const exportButton=root.querySelector("#spcoa-radar-playback-export");
+    const exportLoops=root.querySelector("#spcoa-radar-mp4-loops");
     if(play){play.disabled=!enabled||!!state?.exporting||(!state?.active&&!!state?.loading);
         play.textContent=state?.playing?"Ⅱ Pause":"▶ Play";}
     if(prev)prev.disabled=!enabled||!!state?.exporting||!state?.frames?.length||!!state?.loading;
@@ -2726,7 +2748,10 @@ function spcoaRadarPlaybackSyncUi(){
         if(duration!==document.activeElement)duration.value=String(state?.duration||30);}
     if(speed){speed.disabled=!!state?.exporting;
         if(speed!==document.activeElement)speed.value=String(state?.speed||1600);}
-    if(exportButton){exportButton.disabled=!enabled||!!state?.loading||!!state?.exporting;
+    // Do NOT disable saving just because an animation frame is loading.
+    // The exporter safely waits for that in-flight transition to finish.
+    if(exportLoops)exportLoops.disabled=!!state?.exporting;
+    if(exportButton){exportButton.disabled=!enabled||!!state?.exporting;
         exportButton.textContent=state?.exporting?"Exporting radar…":"Save Radar MP4";}
     if(status)status.textContent=!prefs.enabled?"Enable Base Reflectivity to play radar":
         !state?"Waiting for active map panel...":state.status;
@@ -10714,7 +10739,7 @@ async function spcoaRadarPlaybackShow(index){
 }
 async function spcoaRadarPlaybackAction(action,value){
     const a=spcoaRadarPlayback;
-    if(action==="export")return spcoaRadarPlaybackExportMp4();
+    if(action==="export")return spcoaRadarPlaybackExportMp4(value);
     if(a.exporting)return;
     if(action==="live"){spcoaRadarPlaybackStop(true);return;}
     if(action==="speed"){
@@ -10798,49 +10823,55 @@ function spcoaRadarMp4DrawFrame(ctx, image, width, headerHeight) {
     ctx.textAlign = "left";
 }
 let spcoaRadarMp4ExportPromise=null;
-async function spcoaRadarPlaybackExportMp4(){
+async function spcoaRadarPlaybackExportMp4(requestedLoops=3){
     const a=spcoaRadarPlayback;
     if(spcoaRadarMp4ExportPromise)return spcoaRadarMp4ExportPromise;
+    const loopCount=spcoaRadarMp4SafeLoopCount(requestedLoops);
     const task=async()=>{
         if(!spcoaReadRadarPrefs().enabled)throw new Error("Enable Base Reflectivity before saving radar MP4");
         if(typeof window.__mpCapturePanel!=="function")throw new Error("Panel PNG capture is not available");
-        if(a.loading)throw new Error("Wait for the current radar frame to finish loading");
-        const wasActive=a.active,previousIndex=a.index;
-        let output=null,complete=false;
+        // Export uses the SAME MapLibre map as the animation. Hold playback
+        // internally while capturing, then restore/resume automatically. A
+        // second simultaneous map/decoder would bring back the V157 crashes.
+        const wasActive=a.active,wasPlaying=a.playing,previousIndex=a.index;
+        let output=null,complete=false,cacheBytes=0,cacheEnabled=loopCount>1;
+        const storedFrames=[];
         a.exporting=true;
-        a.playing=false;spcoaRadarPlaybackCancelTimer();
+        a.playing=false;
+        a.queued=null;
+        spcoaRadarPlaybackCancelTimer();
         const show=message=>{a.status=message;spcoaRadarPlaybackSyncUi();};
+        const loadImage=src=>new Promise((resolve,reject)=>{
+            const img=new Image();
+            img.onload=()=>resolve(img);
+            img.onerror=()=>reject(new Error("Radar export PNG frame could not be decoded"));
+            img.src=src;
+        });
         try{
-            show("Preparing radar MP4…");
+            // A running Fast loop is often in the middle of an async staged
+            // tile transition. Wait for that transition; do not cancel it and
+            // do not race it with exporter-driven radar source swaps.
+            show("Preparing radar MP4 · Holding the current animation frame…");
+            const deadline=Date.now()+22000;
+            while(a.loading && Date.now()<deadline)
+                await new Promise(resolve=>setTimeout(resolve,80));
+            if(a.loading)throw new Error("The current radar frame is still loading; please try saving again");
             if(!a.active){
                 if(!await spcoaRadarPlaybackPrepare())throw new Error("Radar history could not be prepared");
             }
             if(!a.frames.length)throw new Error("No radar frames available");
             const media=await import("https://cdn.jsdelivr.net/npm/mediabunny@1.65.0/+esm");
-            // The reference radar MP4 keeps the map/legend steady and holds
-            // each radar observation until its successor replaces it. Export
-            // real video frames at a consistent cadence, without black/white
-            // wipes between archived radar timestamps.
             const videoFps=15;
             const repeatsPerObservation=6;
-            const frameSeconds=repeatsPerObservation/videoFps; // 0.4 s / scan
+            const frameSeconds=repeatsPerObservation/videoFps; // 0.4 s / observation
             const captureWidth=1440;
-            // Set the first observation before probing codec dimensions.
             await spcoaRadarPlaybackShow(0);
             if(!a.active||a.index!==0)throw new Error("First radar frame could not be loaded");
-            const firstSrc=await window.__mpCapturePanel(captureWidth);
-            const loadImage=src=>new Promise((resolve,reject)=>{
-                const img=new Image();
-                img.onload=()=>resolve(img);
-                img.onerror=()=>reject(new Error("Radar export PNG frame could not be decoded"));
-                img.src=src;
-            });
-            const first=await loadImage(firstSrc);
+            const first=await loadImage(await window.__mpCapturePanel(captureWidth));
             const w=first.naturalWidth+(first.naturalWidth%2);
-            // Match the 1-panel PNG title band (92 px at 1920 px output).
             const headerH=Math.max(48,Math.round(92*w/1920));
             const rawH=first.naturalHeight+headerH;
-            const h=rawH+(rawH%2); // H.264 requires even dimensions.
+            const h=rawH+(rawH%2);
             if(w>2048||h>2048)throw new Error("Radar video dimensions exceed safe single-panel limits");
             const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
             const ctx=canvas.getContext("2d",{alpha:false});
@@ -10862,44 +10893,88 @@ async function spcoaRadarPlaybackExportMp4(){
             output.addVideoTrack(video);
             await output.start();
             const total=a.frames.length;
-            for(let i=0;i<total;i++){
-                if(!a.active||!spcoaReadRadarPrefs().enabled)throw new Error("Radar export interrupted");
-                let img=first;
-                if(i){
-                    show(`Radar MP4: loading ${i+1}/${total}…`);
-                    await spcoaRadarPlaybackShow(i);
-                    if(a.index!==i)throw new Error("Radar frame "+(i+1)+" did not load");
-                    img=await loadImage(await window.__mpCapturePanel(captureWidth));
+            const cacheLimit=96*1024*1024; // compressed PNGs only; NO decoded frame-array
+            const canvasToBlob=()=>new Promise((resolve,reject)=>
+                canvas.toBlob(b=>b?resolve(b):reject(new Error("Radar frame cannot be compressed")),"image/png"));
+            for(let cycle=0;cycle<loopCount;cycle++){
+                for(let i=0;i<total;i++){
+                    if(!a.active||!spcoaReadRadarPrefs().enabled)throw new Error("Radar export interrupted");
+                    if(cycle>0 && cacheEnabled && storedFrames.length===total){
+                        // Replay identical PNG compositions without requesting
+                        // the same NEXRAD scans a second/third/fifth time.
+                        const objectUrl=URL.createObjectURL(storedFrames[i]);
+                        let img;
+                        try{img=await loadImage(objectUrl);ctx.drawImage(img,0,0);}
+                        finally{URL.revokeObjectURL(objectUrl);if(img)img.src="";}
+                    }else{
+                        let img=first;
+                        if(cycle!==0||i!==0){
+                            show(`Radar MP4: capturing ${i+1}/${total} · pass ${cycle+1}/${loopCount}…`);
+                            await spcoaRadarPlaybackShow(i);
+                            if(a.index!==i)throw new Error("Radar frame "+(i+1)+" did not load");
+                            img=await loadImage(await window.__mpCapturePanel(captureWidth));
+                        }
+                        spcoaRadarMp4DrawFrame(ctx,img,w,headerH);
+                        img.src="";
+                        if(cycle===0 && cacheEnabled){
+                            // Repeated cycles stay in bounded, *compressed*
+                            // PNG blobs. If the budget is exceeded, fall back
+                            // to sequential map captures instead of OOM.
+                            try{
+                                const blob=await canvasToBlob();
+                                if(cacheBytes+blob.size<=cacheLimit){
+                                    storedFrames.push(blob);cacheBytes+=blob.size;
+                                }else{
+                                    cacheEnabled=false;storedFrames.length=0;cacheBytes=0;
+                                    console.info("Radar MP4 compressed cache budget reached; sequential recapture enabled");
+                                }
+                            }catch(error){
+                                cacheEnabled=false;storedFrames.length=0;cacheBytes=0;
+                                console.warn("Radar MP4 capture caching unavailable; sequential recapture enabled",error);
+                            }
+                        }
+                    }
+                    show(`Radar MP4: encoding ${i+1}/${total} · pass ${cycle+1}/${loopCount}…`);
+                    await spcoaRadarMp4AppendHold(video,cycle*total+i,videoFps,repeatsPerObservation);
                 }
-                show(`Radar MP4: encoding ${i+1}/${total}…`);
-                spcoaRadarMp4DrawFrame(ctx,img,w,headerH);
-                // Six encoded frames hold the SAME completed map composition.
-                // Do not capture/rerender during these repeats; the map never
-                // disappears while a new observation is being downloaded.
-                await spcoaRadarMp4AppendHold(video,i,videoFps,repeatsPerObservation);
-                img.src="";
             }
+            storedFrames.length=0;
             show("Finalizing radar MP4…");
             await output.finalize();complete=true;
             const bytes=output.target.buffer;
             if(!bytes||!bytes.byteLength)throw new Error("Radar MP4 encoder returned an empty file");
             const stamp=frame=>frame.time?spcoaRadarPlaybackStamp(frame.time):"latest";
-            const name=`SPCOA_Radar_${a.mode==="mosaic"?"National_Mosaic":a.site||"NEXRAD"}_${stamp(a.frames[0])}_to_${stamp(a.frames[total-1])}.mp4`;
+            const name=`SPCOA_Radar_${a.mode==="mosaic"?"National_Mosaic":a.site||"NEXRAD"}_${stamp(a.frames[0])}_to_${stamp(a.frames[total-1])}_${loopCount}x.mp4`;
             downloadBlob(new Blob([bytes],{type:"video/mp4"}),name);
-            show(`Saved radar MP4 · ${total} radar observations · ${videoFps} fps · ${(total*frameSeconds).toFixed(1)} seconds`);
+            show(`Saved radar MP4 · ${total} observations × ${loopCount} loops · ${videoFps} fps · ${(total*frameSeconds*loopCount).toFixed(1)} seconds`);
         }catch(error){
             console.error("Radar MP4 export failed",error);
             show("Radar MP4 failed: "+String(error?.message||error));
         }finally{
+            storedFrames.length=0;
             if(output&&!complete)try{await output.cancel();}catch(_){}
-            a.playing=false;spcoaRadarPlaybackCancelTimer();
-            if(!wasActive && a.active){spcoaRadarPlaybackStop(true);}
-            else if(wasActive && a.active && previousIndex!==a.index){
-                try{await spcoaRadarPlaybackShow(previousIndex);}catch(error){
-                    console.warn("Could not restore pre-export radar frame",error);
+            a.playing=false;
+            spcoaRadarPlaybackCancelTimer();
+            if(!wasActive && a.active){
+                spcoaRadarPlaybackStop(true);
+            }else if(wasActive && a.active){
+                if(previousIndex!==a.index){
+                    try{await spcoaRadarPlaybackShow(previousIndex);}
+                    catch(error){console.warn("Could not restore pre-export radar frame",error);}
                 }
             }
             a.exporting=false;
+            // User can click Save during a running animation. Playback resumes
+            // from the original scan after saving, without another button press.
+            if(wasPlaying && wasActive && a.active && !a.loading && spcoaReadRadarPrefs().enabled){
+                a.playing=true;
+                a.lastHistoryCheck=0;
+                a.status="Playing · Export finished · "+spcoaRadarPlaybackFrameLabel(a.frames[a.index]);
+                a.timer=setTimeout(()=>{
+                    if(a.active&&a.playing&&!a.loading)
+                        void spcoaRadarPlaybackShow((a.index+1)%a.frames.length);
+                },100);
+            }
             spcoaRadarPlaybackSyncUi();
         }
     };
