@@ -338,7 +338,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V191"; // seamless live radar swaps + automatically rolling playback timelines
+const SPCOA_VIEWER_BUILD = "V192"; // seamless live radar swaps + automatically rolling playback timelines
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -10772,6 +10772,31 @@ async function spcoaRadarMp4AppendHold(video,observationIndex,fps=15,repeats=6){
         await video.add(frameIndex/fps,1/fps,{keyFrame:repeat===0});
     }
 }
+// V192: The radar MP4 uses the child-panel PNG frame for its map/legend/footer,
+// but that capture excludes the top banner (normally added by the PNG host).
+// Draw the existing PNG-style header ourselves once per radar observation.
+// The same already-composed frame is then held for all six video samples.
+function spcoaRadarMp4DrawFrame(ctx, image, width, headerHeight) {
+    const scale = width / 1920;
+    const margin = Math.round(42 * scale);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.drawImage(image, 0, headerHeight);
+    ctx.fillStyle = "#102433";
+    ctx.fillRect(0, 0, width, headerHeight);
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#d7e7f2";
+    ctx.font = `600 ${Math.round(25 * scale)}px Inter, "Segoe UI", Arial, sans-serif`;
+    ctx.fillText("Visualization & Viewer Developed by: Matthew Labenz · NWS North Platte, NE",
+        margin, headerHeight / 2, width * 0.65);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `700 ${Math.round(29 * scale)}px Inter, "Segoe UI", Arial, sans-serif`;
+    ctx.fillText("1-Panel · 3-km Mesoscale Analysis Data",
+        width - margin, headerHeight / 2, width * 0.34);
+    ctx.textAlign = "left";
+}
 let spcoaRadarMp4ExportPromise=null;
 async function spcoaRadarPlaybackExportMp4(){
     const a=spcoaRadarPlayback;
@@ -10811,7 +10836,11 @@ async function spcoaRadarPlaybackExportMp4(){
                 img.src=src;
             });
             const first=await loadImage(firstSrc);
-            const w=first.naturalWidth+(first.naturalWidth%2),h=first.naturalHeight+(first.naturalHeight%2);
+            const w=first.naturalWidth+(first.naturalWidth%2);
+            // Match the 1-panel PNG title band (92 px at 1920 px output).
+            const headerH=Math.max(48,Math.round(92*w/1920));
+            const rawH=first.naturalHeight+headerH;
+            const h=rawH+(rawH%2); // H.264 requires even dimensions.
             if(w>2048||h>2048)throw new Error("Radar video dimensions exceed safe single-panel limits");
             const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
             const ctx=canvas.getContext("2d",{alpha:false});
@@ -10843,8 +10872,7 @@ async function spcoaRadarPlaybackExportMp4(){
                     img=await loadImage(await window.__mpCapturePanel(captureWidth));
                 }
                 show(`Radar MP4: encoding ${i+1}/${total}…`);
-                ctx.fillStyle="#ffffff";ctx.fillRect(0,0,w,h);
-                ctx.drawImage(img,0,0);
+                spcoaRadarMp4DrawFrame(ctx,img,w,headerH);
                 // Six encoded frames hold the SAME completed map composition.
                 // Do not capture/rerender during these repeats; the map never
                 // disappears while a new observation is being downloaded.
@@ -24784,24 +24812,57 @@ function spcoaConciseObservationFooterItems() {
     }
     if (spcoaRadarSelected()) {
         const radarPrefs = spcoaReadRadarPrefs();
-        const singleMode = radarPrefs.mode === "auto" || radarPrefs.mode === "single";
-        if (singleMode) {
-            const site = spcoaL3Data?.site;
-            const activeMatch = spcoaRadarActiveKey?.match(/^n0b\|(K[A-Z0-9]{3})\|/);
-            const correctScan = spcoaRadarReady && site &&
-                activeMatch?.[1] === site && spcoaL3ScanIsUsable(spcoaL3Data);
-            result.push({
-                text: "0.5° Base Reflectivity Valid: " +
-                    (correctScan ? spcoaObsFormat(spcoaL3Data.scan.date) : "time unavailable"),
-                color: null
-            });
+        const playback = spcoaRadarPlayback;
+        const playbackFrame = playback.active ? playback.frames[playback.index] : null;
+        if (playbackFrame) {
+            // V192: Archived playback keys begin with "playback|", not the
+            // live "n0b|" prefix. The live-only matching test incorrectly
+            // printed "time unavailable" in every archived KLNX MP4 frame.
+            // Use the scan-header time when available; otherwise the archived
+            // file's UTC time. Do not label an approximate mosaic request as
+            // a verified observation time.
+            const actualN0B = playback.mode === "auto" &&
+                playbackFrame.key && spcoaL3Data?.filename === playbackFrame.key &&
+                spcoaL3Data?.site === playback.site &&
+                spcoaL3ScanIsUsable(spcoaL3Data)
+                ? spcoaL3Data.scan.date : null;
+            const time = actualN0B || playbackFrame.time;
+            const validTime = time instanceof Date && Number.isFinite(time.getTime())
+                ? spcoaObsFormat(time) : null;
+            const label = playback.mode === "auto"
+                ? `0.5° Base Reflectivity (${playback.site || "NEXRAD"})`
+                : "CONUS Base Reflectivity";
+            let stamp;
+            if (playback.mode === "mosaic" && playbackFrame.approximate) {
+                stamp = validTime ? `Requested: ${validTime} (mosaic time unverified)`
+                    : "requested time unverified";
+            } else if (playback.mode === "mosaic" && playback.relative) {
+                stamp = `~${playbackFrame.offset ?? 0} min before latest (scan time unverified)`;
+            } else {
+                stamp = validTime ? `Valid: ${validTime}` : "observation time unavailable";
+            }
+            result.push({text: `${label} ${stamp}`, color: null});
         } else {
-            result.push({
-                text: "CONUS Base Reflectivity Valid: " +
-                    (spcoaRadarReady && spcoaRadarMosaicTime
-                        ? spcoaObsFormat(spcoaRadarMosaicTime) : "time unavailable"),
-                color: null
-            });
+            // Preserve the original live-radar PNG footer for static imagery.
+            const singleMode = radarPrefs.mode === "auto" || radarPrefs.mode === "single";
+            if (singleMode) {
+                const site = spcoaL3Data?.site;
+                const activeMatch = spcoaRadarActiveKey?.match(/^n0b\|(K[A-Z0-9]{3})\|/);
+                const correctScan = spcoaRadarReady && site &&
+                    activeMatch?.[1] === site && spcoaL3ScanIsUsable(spcoaL3Data);
+                result.push({
+                    text: "0.5° Base Reflectivity Valid: " +
+                        (correctScan ? spcoaObsFormat(spcoaL3Data.scan.date) : "time unavailable"),
+                    color: null
+                });
+            } else {
+                result.push({
+                    text: "CONUS Base Reflectivity Valid: " +
+                        (spcoaRadarReady && spcoaRadarMosaicTime
+                            ? spcoaObsFormat(spcoaRadarMosaicTime) : "time unavailable"),
+                    color: null
+                });
+            }
         }
     }
     return result;
