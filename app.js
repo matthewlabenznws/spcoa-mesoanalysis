@@ -338,7 +338,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V190"; // 60 min radar loop, stable buffered playback and steady-cadence MP4
+const SPCOA_VIEWER_BUILD = "V191"; // seamless live radar swaps + automatically rolling playback timelines
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2631,7 +2631,7 @@ function spcoaInstallRadarPlaybackControls(){
     anim.style.cssText="border-top:1px solid #416079;padding-top:9px;display:flex;flex-direction:column;gap:7px;font:11px Inter,Arial,sans-serif";
     const title=document.createElement("strong");title.textContent="Radar Playback (Experimental)";
     const hint=document.createElement("div");
-    hint.textContent="Independent of the SPCOA analysis time. Plays only the active map panel. Choose a radar source and enable reflectivity first.";
+    hint.textContent="Independent of SPCOA analysis time. Plays only the active map panel. While playing, the history automatically incorporates new mosaic observations (checks every 5 min) or individual NEXRAD scans (checks every 1 min), without clearing the displayed frame.";
     hint.style.cssText="color:#b5cee0;line-height:1.35";
     const row=document.createElement("div");
     row.style.cssText="display:flex;gap:5px;flex-wrap:wrap;align-items:center";
@@ -10257,8 +10257,9 @@ document.addEventListener("visibilitychange",()=>{
    ========================================================================================= */
 const SPCOA_RADAR_PLAYBACK_WMS="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi";
 const spcoaRadarPlayback={active:false,playing:false,loading:false,exporting:false,frames:[],index:0,
-    duration:30,speed:1600,mode:null,site:null,relative:false,
+    duration:30,speed:1600,mode:null,site:null,relative:false,relativeEpoch:0,
     token:0,timer:null,controller:null,queued:null,cache:new Map(),displayedAt:0,
+    refreshing:false,pendingHistory:null,lastHistoryCheck:0,historyEpoch:0,
     status:"Paused · Press Play to load recent frames"};
 function spcoaRadarPlaybackState(){
     const a=spcoaRadarPlayback;
@@ -10301,6 +10302,7 @@ function spcoaRadarPlaybackStop(goLive=true){
     a.controller?.abort();a.controller=null;
     a.active=false;a.playing=false;a.loading=false;a.queued=null;
     a.frames=[];a.index=0;a.cache.clear();a.mode=null;a.site=null;a.displayedAt=0;
+    a.historyEpoch++;a.refreshing=false;a.pendingHistory=null;a.lastHistoryCheck=0;a.relativeEpoch=0;
     a.status=goLive?"Live radar · Playback stopped":"Paused";
     spcoaRadarTopClear();
     // Discard archived scan data and allow the normal up-to-date N0B poll.
@@ -10323,13 +10325,14 @@ function spcoaRadarPlaybackSource(frame){
     const a=spcoaRadarPlayback;
     const stamp=frame.time?spcoaRadarPlaybackStamp(frame.time):"m"+frame.offset;
     const custom=a.mode==="mosaic"&&!a.relative&&spcoaRadarPaletteEnabled;
-    const key="playback|"+a.mode+"|"+(a.site||"CONUS")+"|"+stamp+"|"+(custom?"custom":"source");
+    const key="playback|"+a.mode+"|"+(a.site||"CONUS")+"|"+stamp+"|"+(custom?"custom":"source")+
+        (a.relative?"|refresh"+a.relativeEpoch:"");
     const tiles=a.mode==="auto"
         ? [`${SPCOA_L3_PROTOCOL}://tile/{z}/{x}/{y}/${spcoaL3Data.version}`]
         : a.relative
             ? ["https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/"+
                 (frame.offset===0?"nexrad-n0q-900913":"nexrad-n0q-900913-m"+
-                String(frame.offset).padStart(2,"0")+"m")+"/{z}/{x}/{y}.png"]
+                String(frame.offset).padStart(2,"0")+"m")+"/{z}/{x}/{y}.png?v="+a.relativeEpoch]
             : [custom?`${SPCOA_RADAR_PALETTE_PROTOCOL}://tile/{z}/{x}/{y}/t${stamp}`:
                 spcoaRadarPlaybackWmsUrl(frame.time)];
     const attribution=a.mode==="auto"?"Radar: NWS NEXRAD Level III / Unidata":
@@ -10533,45 +10536,113 @@ async function spcoaRadarPlaybackRecentN0B(site,minutes,signal){
     for(let i=0;i<maxFrames;i++)chosen.push(frames[Math.round(i*(frames.length-1)/(maxFrames-1))]);
     return [...new Map(chosen.map(f=>[f.key,f])).values()];
 }
+// Discover the latest window without changing the currently displayed source.
+// Both initial Play and the auto-roll checks use the same time selection.
+async function spcoaRadarPlaybackDiscoverHistory(mode,duration,p,signal=null){
+    let frames=[],relative=false,site=null;
+    if(mode==="mosaic"){
+        let latest=null;
+        try{latest=spcoaObsRecent(await spcoaObsRadarMosaicValid(),1);}
+        catch(e){console.debug("IEM latest radar time unavailable",e);}
+        if(latest){
+            const end=Math.floor(latest.getTime()/300000)*300000;
+            frames=Array.from({length:duration/5+1},(_,i)=>({
+                time:new Date(end-(duration/5-i)*300000)}));
+        }else if(duration<=30){
+            // Cached IEM relative series is available for short loops only.
+            relative=true;
+            frames=Array.from({length:duration/5+1},(_,i)=>({
+                offset:duration-i*5}));
+        }else{
+            // Do not present estimated WMS time requests as verified scans.
+            const end=Math.floor((Date.now()-10*60000)/300000)*300000;
+            frames=Array.from({length:duration/5+1},(_,i)=>({
+                time:new Date(end-(duration/5-i)*300000),approximate:true}));
+        }
+    }else{
+        site=spcoaL3DesiredSite(p);
+        if(!site)throw new Error("No nearby NEXRAD station is available");
+        frames=await spcoaRadarPlaybackRecentN0B(site,duration,signal);
+    }
+    return {frames,relative,site,mode};
+}
+function spcoaRadarPlaybackObservationId(frame){
+    if(!frame)return "";
+    return frame.key|| (frame.time?String(frame.time.getTime()):"offset="+frame.offset);
+}
+// Update only the frame list; never tear down or redraw the displayed radar.
+// If a frame is mid-transition, defer indexing until that transition finishes.
+function spcoaRadarPlaybackApplyHistory(discovered,epoch){
+    const a=spcoaRadarPlayback;
+    if(!a.active||a.exporting||epoch!==a.historyEpoch)return false;
+    if(discovered.mode!==a.mode || discovered.site!==a.site)return false;
+    const next=discovered.frames;
+    if(next.length<2)return false;
+    const oldIds=a.frames.map(spcoaRadarPlaybackObservationId);
+    const newIds=next.map(spcoaRadarPlaybackObservationId);
+    const nextRelativeEpoch=discovered.relative?Math.floor(Date.now()/300000):0;
+    if(discovered.relative===a.relative && nextRelativeEpoch===a.relativeEpoch &&
+       oldIds.length===newIds.length && oldIds.every((id,i)=>id===newIds[i]))return false;
+    if(a.loading){a.pendingHistory={discovered,epoch};return true;}
+    const shownId=spcoaRadarPlaybackObservationId(a.frames[a.index]);
+    const matching=newIds.indexOf(shownId);
+    // Preserve the physical on-screen image and its location in the timeline
+    // if the displayed scan still belongs to the rolling history window.
+    a.frames=next;a.relative=discovered.relative;a.relativeEpoch=nextRelativeEpoch;
+    a.index=matching>=0?matching:Math.min(a.index,next.length-1);
+    a.pendingHistory=null;
+    a.status=(a.playing?"Playing":"Paused")+" · Radar history updated · "+
+        next.length+" frames; displayed radar retained";
+    spcoaRadarPlaybackSyncUi();
+    return true;
+}
+// Polling is separate from playback and MP4.  Never stop/restart the loop,
+// cancel an in-flight radar tile, or request a second decoded N0B canvas.
+async function spcoaRadarPlaybackRefreshHistory(){
+    const a=spcoaRadarPlayback;
+    if(document.hidden||!a.active||!a.playing||a.exporting||a.refreshing)return;
+    const prefs=spcoaReadRadarPrefs();
+    if(!prefs.enabled||prefs.mode!==a.mode)return;
+    const interval=a.mode==="mosaic"?SPCOA_RADAR_REFRESH_MS:SPCOA_L3_POLL_MS;
+    if(Date.now()-a.lastHistoryCheck<interval)return;
+    a.lastHistoryCheck=Date.now();
+    const epoch=a.historyEpoch;
+    a.refreshing=true;
+    try{
+        const discovered=await spcoaRadarPlaybackDiscoverHistory(a.mode,a.duration,prefs);
+        if(epoch===a.historyEpoch && a.active && a.playing && !a.exporting)
+            spcoaRadarPlaybackApplyHistory(discovered,epoch);
+    }catch(error){
+        // An unavailable archive listing must not disrupt a perfectly usable
+        // on-screen loop. Retry on the next scheduled check.
+        console.info("Radar loop history check deferred:",error?.message||error);
+    }finally{
+        if(epoch===a.historyEpoch)a.refreshing=false;
+    }
+}
 async function spcoaRadarPlaybackPrepare(){
     const a=spcoaRadarPlayback,p=spcoaReadRadarPrefs(),token=++a.token;
     if(!p.enabled)throw new Error("Enable base reflectivity first");
     if(map.getZoom()>9.2)throw new Error("Zoom out below level 9 before playback to limit rendering load");
+    a.historyEpoch++;
+    a.pendingHistory=null;a.lastHistoryCheck=Date.now();
     a.loading=true;a.status="Preparing recent radar frames...";spcoaRadarPlaybackSyncUi();
-    const mode=p.mode;
-    let frames=[],relative=false,site=null;
     try{
-        if(mode==="mosaic"){
-            let latest=null;
-            try{latest=spcoaObsRecent(await spcoaObsRadarMosaicValid(),1);}catch(e){console.debug("IEM latest radar time unavailable",e);}
-            if(latest){
-                const end=Math.floor(latest.getTime()/300000)*300000;
-                frames=Array.from({length:a.duration/5+1},(_,i)=>({
-                    time:new Date(end-(a.duration/5-i)*300000)}));
-            }else if(a.duration<=50){
-                // The relative cached mosaic tile series only covers ~50 min.
-                // A 60-minute selection MUST use the time-enabled WMS fallback.
-                relative=true;
-                frames=Array.from({length:a.duration/5+1},(_,i)=>({
-                    offset:a.duration-i*5}));
-            }else{
-                // 60-minute and two-hour histories must use IEM's time-enabled WMS. If the
-                // latest scan timestamp endpoint fails, label requested times
-                // as approximate rather than pretending they are verified.
-                const end=Math.floor((Date.now()-10*60000)/300000)*300000;
-                frames=Array.from({length:a.duration/5+1},(_,i)=>({
-                    time:new Date(end-(a.duration/5-i)*300000),approximate:true}));
-            }
-        }else{
-            site=spcoaL3DesiredSite(p);
-            if(!site)throw new Error("No nearby NEXRAD station is available");
-            frames=await spcoaRadarPlaybackRecentN0B(site,a.duration,null);
-        }
+        const discovered=await spcoaRadarPlaybackDiscoverHistory(p.mode,a.duration,p);
         if(token!==a.token)return false;
-        if(frames.length<2)throw new Error("Not enough frames to animate");
-        a.active=true;a.playing=false;a.frames=frames;a.index=0;
-        a.mode=mode;a.site=site;a.relative=relative;
-        a.cache.clear();a.status="Ready · "+frames.length+" frames";
+        if(discovered.frames.length<2)throw new Error("Not enough frames to animate");
+        // Avoid source-slot collisions between a live radar transition and
+        // the first archived playback transition. Keep the live image visible
+        // while the existing bounded live staging operation completes.
+        const liveHandoffDeadline=Date.now()+20000;
+        while(spcoaRadarLivePendingKey && Date.now()<liveHandoffDeadline && token===a.token)
+            await new Promise(resolve=>setTimeout(resolve,100));
+        if(token!==a.token)return false;
+        if(spcoaRadarLivePendingKey)throw new Error("Live radar is still updating; retry playback after it finishes");
+        a.active=true;a.playing=false;a.frames=discovered.frames;a.index=0;
+        a.mode=p.mode;a.site=discovered.site;a.relative=discovered.relative;
+        a.relativeEpoch=a.relative?Math.floor(Date.now()/300000):0;
+        a.cache.clear();a.status="Ready · "+a.frames.length+" frames · Auto-roll on while playing";
         return true;
     }finally{
         if(token===a.token){a.loading=false;spcoaRadarPlaybackSyncUi();}
@@ -10619,7 +10690,13 @@ async function spcoaRadarPlaybackShow(index){
         if(token===a.token&&e?.name!=="AbortError")spcoaRadarPlaybackFail(e);
     }finally{
         if(token===a.token){
-            a.loading=false;a.controller=null;spcoaRadarPlaybackSyncUi();
+            a.loading=false;a.controller=null;
+            if(a.pendingHistory && !a.exporting){
+                const {discovered,epoch}=a.pendingHistory;
+                a.pendingHistory=null;
+                spcoaRadarPlaybackApplyHistory(discovered,epoch);
+            }
+            spcoaRadarPlaybackSyncUi();
             if(a.active&&a.queued!==null){
                 const queued=a.queued;a.queued=null;
                 void spcoaRadarPlaybackShow(queued);
@@ -10667,7 +10744,12 @@ async function spcoaRadarPlaybackAction(action,value){
         catch(e){a.status="Playback unavailable: "+String(e?.message||e);
             a.playing=false;console.warn("Radar playback could not start",e);return;}
     }
-    if(action==="toggle")a.playing=true;
+    if(action==="toggle"){
+        a.playing=true;
+        // Resume checking soon: a stationary two-hour loop must incorporate
+        // newly published scans without pressing Live or reloading the page.
+        a.lastHistoryCheck=0;
+    }
     if(action==="step")a.playing=false;
     const index=action==="seek"?Math.max(0,Math.min(a.frames.length-1,Math.round(+value||0))):
         action==="step"?(a.index+(+value||0)+a.frames.length)%a.frames.length:a.index;
@@ -10807,6 +10889,9 @@ map.on("moveend",()=>{
 document.addEventListener("visibilitychange",()=>{
     if(document.hidden&&spcoaRadarPlayback.playing)spcoaRadarPlaybackPause("Paused · Tab inactive");
 });
+window.setInterval(()=>{
+    if(!document.hidden)void spcoaRadarPlaybackRefreshHistory();
+},SPCOA_L3_POLL_MS);
 
 // V187: two alternating MapLibre raster sources prevent blank frames during playback.
 const SPCOA_RADAR_LAYER_BASE_ID="spcoa-nexrad-base-reflectivity";
@@ -10882,6 +10967,11 @@ function spcoaRadarSetValidText(p,site,singleReady){
 let spcoaRadarActiveKey=null;
 let spcoaRadarReady=false;
 let spcoaRadarRefreshTimer=null;
+let spcoaRadarLiveSerial=0;
+let spcoaRadarLivePendingKey=null;
+let spcoaRadarLiveQueued=false;
+let spcoaRadarLiveFailedKey=null;
+let spcoaRadarLiveFailedAt=0;
 let spcoaRadarActiveLabel="";
 let spcoaRadarMode="wms"; // Falls back to "tms" once on a genuine image loading error.
 let spcoaRadarFailure="";
@@ -11133,7 +11223,8 @@ async function spcoaRadarTopDraw(){
 function spcoaRadarTopSchedule(ms=70){
     clearTimeout(spcoaRadarTopTimer);
     const prefs=spcoaReadRadarPrefs();
-    if(spcoaRadarPlayback.active && spcoaRadarPlayback.loading && prefs.aboveFills){
+    if((spcoaRadarPlayback.active && spcoaRadarPlayback.loading || spcoaRadarLivePendingKey)
+        && prefs.aboveFills){
         // The playback frame loader will compose once the native tile source
         // is ready. Keep the prior frame visible instead of racing it.
         return;
@@ -11167,6 +11258,11 @@ map.on("moveend",()=>spcoaRadarTopSchedule(60));
 map.on("resize",()=>spcoaRadarTopSchedule(80));
 
 function spcoaRadarRemoveLayer(){
+    // Invalidate any live update still waiting for tiles, so a late response
+    // cannot resurrect an old radar source after Clear All or a source switch.
+    spcoaRadarLiveSerial++;
+    spcoaRadarLivePendingKey=null;
+    spcoaRadarLiveQueued=false;
     // Remove BOTH frame buffers when stopping, changing radar modes, or
     // returning to static radar, including an incomplete staged request.
     for(const id of [SPCOA_RADAR_LAYER_BASE_ID,SPCOA_RADAR_LAYER_BUFFER_ID]){
@@ -11179,6 +11275,120 @@ function spcoaRadarRemoveLayer(){
     spcoaRadarActiveKey=null;
     spcoaRadarReady=false;
     spcoaRadarActiveLabel="";
+}
+// V191: Seamless LIVE source swap (not a playback timeline operation).
+// The prior frame stays visible until a fully loaded new raster has actually
+// painted.  Above-fill mode retains its previous top canvas until the newly
+// composited radar tiles are ready, with a safe MapLibre fallback.
+async function spcoaRadarLiveStage(key,url,attribution,p){
+    if(spcoaRadarLivePendingKey || spcoaRadarPlayback.active)return false;
+    if(!map.getLayer(SPCOA_RADAR_LAYER_ID)||!spcoaRadarReady)return false;
+    const oldId=SPCOA_RADAR_LAYER_ID,oldKey=spcoaRadarActiveKey;
+    const oldLabel=spcoaRadarActiveLabel;
+    const nextId=oldId===SPCOA_RADAR_LAYER_BASE_ID?
+        SPCOA_RADAR_LAYER_BUFFER_ID:SPCOA_RADAR_LAYER_BASE_ID;
+    const token=++spcoaRadarLiveSerial;
+    spcoaRadarLivePendingKey=key;
+    let promoted=false;
+    let timer=null;
+    try{
+        if(map.getLayer(nextId))map.removeLayer(nextId);
+        if(map.getSource(nextId))map.removeSource(nextId);
+        map.addSource(nextId,{type:"raster",tiles:[url],tileSize:256,scheme:"xyz",attribution});
+        map.addLayer({id:nextId,type:"raster",source:nextId,
+            paint:{"raster-opacity":0.001,"raster-fade-duration":0}},spcoaRadarBeforeLayerId());
+        await new Promise((resolve,reject)=>{
+            let finished=false;
+            const finish=error=>{
+                if(finished)return;finished=true;
+                clearTimeout(timer);map.off("sourcedata",loaded);map.off("error",errored);
+                if(error)reject(error);else resolve(true);
+            };
+            const loaded=event=>{
+                if(event.sourceId===nextId&&event.isSourceLoaded)finish();
+            };
+            const errored=event=>{
+                if(event.sourceId===nextId)finish(new Error("Updated radar tiles unavailable"));
+            };
+            map.on("sourcedata",loaded);map.on("error",errored);
+            timer=setTimeout(()=>finish(new Error("New radar frame did not load in time")),10000);
+            if(map.isSourceLoaded(nextId))finish();
+        });
+        if(token!==spcoaRadarLiveSerial||spcoaRadarPlayback.active ||
+           !spcoaReadRadarPrefs().enabled)return false;
+        SPCOA_RADAR_LAYER_ID=nextId;
+        spcoaRadarActiveKey=key;
+        spcoaRadarReady=true;
+        if(p.aboveFills){
+            const composed=await Promise.race([
+                spcoaRadarTopDraw(),
+                new Promise(resolve=>setTimeout(()=>resolve(false),7000))
+            ]);
+            if(token!==spcoaRadarLiveSerial||spcoaRadarPlayback.active)return false;
+            if(!composed){
+                spcoaRadarTopSerial++;
+                spcoaRadarTopPendingSignature="";
+                map.setPaintProperty(nextId,"raster-opacity",p.opacity/100);
+                await spcoaRadarLiveWaitForPaint(token);
+                spcoaRadarTopReady=false;
+                spcoaRadarAboveFillCanvas.style.opacity="0";
+            }
+        }else{
+            map.setPaintProperty(nextId,"raster-opacity",p.opacity/100);
+            await spcoaRadarLiveWaitForPaint(token);
+            if(token!==spcoaRadarLiveSerial)return false;
+            spcoaRadarTopClear();
+        }
+        if(token!==spcoaRadarLiveSerial)return false;
+        if(map.getLayer(oldId))map.removeLayer(oldId);
+        if(map.getSource(oldId))map.removeSource(oldId);
+        promoted=true;
+        spcoaRadarLiveFailedKey=null;
+        spcoaRadarActiveLabel=oldLabel; // Polling updates footer separately.
+        spcoaRadarStatus("Live radar updated without clearing the previous image");
+        spcoaRadarLiveQueued=true; // update footer and validity after promotion
+        return true;
+    }catch(error){
+        if(token===spcoaRadarLiveSerial){
+            spcoaRadarLiveFailedKey=key;spcoaRadarLiveFailedAt=Date.now();
+            console.info("Seamless live radar update deferred; previous frame retained:",error?.message||error);
+        }
+        return false;
+    }finally{
+        if(token===spcoaRadarLiveSerial){
+            if(!promoted){
+                if(map.getLayer(nextId))map.removeLayer(nextId);
+                if(map.getSource(nextId))map.removeSource(nextId);
+                SPCOA_RADAR_LAYER_ID=oldId;
+                spcoaRadarActiveKey=oldKey;
+                spcoaRadarReady=true;
+                spcoaRadarActiveLabel=oldLabel;
+                if(p.aboveFills && spcoaRadarTopReady && map.getLayer(oldId))
+                    map.setPaintProperty(oldId,"raster-opacity",0);
+            }
+            spcoaRadarLivePendingKey=null;
+            if(spcoaRadarLiveQueued){
+                spcoaRadarLiveQueued=false;
+                spcoaRadarSchedule(80);
+            }
+        }
+    }
+}
+function spcoaRadarLiveWaitForPaint(token){
+    return new Promise((resolve,reject)=>{
+        let settled=false;
+        const complete=error=>{
+            if(settled)return;settled=true;clearTimeout(timer);map.off("render",painted);
+            if(error)reject(error);else resolve(true);
+        };
+        const painted=()=>{
+            if(token!==spcoaRadarLiveSerial)complete(new Error("Radar source changed"));
+            else complete();
+        };
+        map.on("render",painted);
+        const timer=setTimeout(()=>complete(new Error("Updated radar frame was not painted")),1800);
+        try{map.triggerRepaint();}catch(e){complete(e);}
+    });
 }
 function spcoaRadarRefresh(){
     if(spcoaRadarPlayback.active)return; // Playback owns the radar source.
@@ -11256,20 +11466,36 @@ function spcoaRadarRefresh(){
         "iem-n0q|"+(usePalette?"custom":spcoaRadarMode)+"|"+bucket;
     try{
         if(key!==spcoaRadarActiveKey || !map.getLayer(SPCOA_RADAR_LAYER_ID)){
-            spcoaRadarStatus(wantsSingle ? "Rendering "+radarSite+" numerical N0B reflectivity..." :
-                usePalette ? "Loading custom-colored CONUS reflectivity..." :
-                "Requesting CONUS mosaic via "+spcoaRadarMode.toUpperCase()+"...");
-            spcoaRadarTopClear();
-            spcoaRadarRemoveLayer();
             const url=wantsSingle
                 ? `${SPCOA_L3_PROTOCOL}://tile/{z}/{x}/{y}/${spcoaL3Data.version}`
                 : usePalette
                     ? `${SPCOA_RADAR_PALETTE_PROTOCOL}://tile/{z}/{x}/{y}/${bucket}`
                     : spcoaRadarTileUrl(spcoaRadarMode,bucket);
+            const attribution=wantsSingle?'Radar: NWS NEXRAD Level III / Unidata':
+                '<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Radar: Iowa Environmental Mesonet / NWS NEXRAD</a>';
+            if(spcoaRadarLivePendingKey){
+                // A prior new observation is already loading: do not create
+                // more MapLibre tile layers or clear the displayed radar.
+                if(key!==spcoaRadarLivePendingKey)spcoaRadarLiveQueued=true;
+                return;
+            }
+            if(spcoaRadarReady && map.getLayer(SPCOA_RADAR_LAYER_ID)){
+                // Short backoff on a temporarily unavailable archive image.
+                // The existing radar remains visible instead of flashing blank.
+                if(spcoaRadarLiveFailedKey===key &&
+                   Date.now()-spcoaRadarLiveFailedAt<60000)return;
+                spcoaRadarStatus("Loading latest radar; previous scan remains visible...");
+                void spcoaRadarLiveStage(key,url,attribution,p);
+                return;
+            }
+            // First load has no previous radar to retain.
+            spcoaRadarStatus(wantsSingle ? "Rendering "+radarSite+" numerical N0B reflectivity..." :
+                usePalette ? "Loading custom-colored CONUS reflectivity..." :
+                "Requesting CONUS mosaic via "+spcoaRadarMode.toUpperCase()+"...");
+            spcoaRadarTopClear();
+            spcoaRadarRemoveLayer();
             map.addSource(SPCOA_RADAR_LAYER_ID,{
-                type:"raster",tiles:[url],tileSize:256,scheme:"xyz",
-                attribution: wantsSingle ? 'Radar: NWS NEXRAD Level III / Unidata' :
-                    '<a href="https://mesonet.agron.iastate.edu/ogc/" target="_blank" rel="noopener noreferrer">Radar: Iowa Environmental Mesonet / NWS NEXRAD</a>'
+                type:"raster",tiles:[url],tileSize:256,scheme:"xyz",attribution
             });
             map.addLayer({
                 id:SPCOA_RADAR_LAYER_ID,type:"raster",source:SPCOA_RADAR_LAYER_ID,
