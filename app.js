@@ -338,7 +338,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V189"; // 60 min radar loop, stable buffered playback and steady-cadence MP4
+const SPCOA_VIEWER_BUILD = "V190"; // 60 min radar loop, stable buffered playback and steady-cadence MP4
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3613,7 +3613,7 @@ function spcoaV159InstallControls() {
                 tip.style.cssText='font-size:10px;color:#a8c2d8;margin-top:5px;line-height:1.35;';
                 tip.textContent=fields.length>=3
                     ? '3 of 3 selected. Click a selected parameter to remove it.'
-                    : 'Click another parameter in the lists to add a fill (maximum 3).';
+                    : 'Click this parameter again to turn it off; click another to add a fill (maximum 3).';
                 row.appendChild(tip);
             }
             if(!placeUnderParameter(row,target,'fill')){
@@ -4539,11 +4539,27 @@ if (!__MP_CHILD) {
             if (el) el.click();
         }
 
+        // V190: Use the child panel's actual filled-field toggle state machine.
+        // A synthetic click could be intercepted by legacy index.html handlers,
+        // especially when clicking the same active field a second time.
+        // Retain DOM click fallback for partially loaded/older child frames.
         function clickChildField(field, index = activePanel) {
             const d = childDoc(index);
-            if (!d) return;
+            if (!d) return Promise.resolve(false);
+            const child = panels[index]?.frame?.contentWindow;
+            try {
+                if (typeof child?.__spcoaV162ToggleFilledField === "function") {
+                    return Promise.resolve(child.__spcoaV162ToggleFilledField(field)).catch(error => {
+                        console.warn("SPCOA field toggle failed in panel", index + 1, field, error);
+                        return false;
+                    });
+                }
+            } catch (error) {
+                console.warn("SPCOA field toggle unavailable in panel", index + 1, field, error);
+            }
             const row = Array.from(d.querySelectorAll(".field-choice")).find(el => el.dataset.field === field);
-            if (row) row.click();
+            if (row) { row.click(); return Promise.resolve(true); }
+            return Promise.resolve(false);
         }
 
         function broadcastTimelineControl(source, eventType) {
@@ -4601,7 +4617,9 @@ if (!__MP_CHILD) {
             document.querySelectorAll("#sidebar .field-choice").forEach(host => {
                 const field = host.dataset.field;
                 const child = Array.from(d.querySelectorAll(".field-choice")).find(el => el.dataset.field === field);
-                host.classList.toggle("active", !!child && child.classList.contains("active"));
+                const selected = !!child && child.classList.contains("active");
+                host.classList.toggle("active", selected);
+                host.setAttribute("aria-pressed", String(selected));
             });
             document.querySelectorAll("#drawing-toolbar .draw-tool[data-tool]").forEach(host => {
                 const child = d.querySelector(`.draw-tool[data-tool="${host.dataset.tool}"]`);
@@ -4695,8 +4713,14 @@ if (!__MP_CHILD) {
             if (row) {
                 event.preventDefault();
                 event.stopImmediatePropagation();
-                for (const i of parameterTargets()) clickChildField(row.dataset.field, i);
-                setTimeout(syncHostFromActiveChild, 50);
+                const toggles = parameterTargets().map(i => clickChildField(row.dataset.field, i));
+                // The selection state changes synchronously; update the visible
+                // host immediately, then again after any async fill rendering.
+                syncHostFromActiveChild();
+                void Promise.all(toggles).then(syncHostFromActiveChild).catch(error => {
+                    console.warn("SPCOA host field toggle sync failed", error);
+                    syncHostFromActiveChild();
+                });
                 return;
             }
             const input = event.target.closest("input[id]");
@@ -8495,8 +8519,21 @@ function spcoaV162SetPrimary(field){
         resetNumericalCanvasTransforms();
         void renderWeather();
     }
+    // Removing the final fill must also discard any stale numerical snapshot
+    // retained during a previous zoom/pan, rather than displaying old shading.
+    if (field === 'none') removeNumericalFrameHoldovers();
+    spcoaV190UpdateFilledSelection();
     window.__spcoaV159RefreshControls?.(spcoaV159GetState());
     updateActiveLayersStrip();
+}
+function spcoaV190UpdateFilledSelection(){
+    const chosen=new Set(activeField && activeField!=='none'
+        ? [activeField,...spcoaV159EffectiveExtras()] : []);
+    document.querySelectorAll('#sidebar .cat-content .field-choice[data-field]').forEach(row=>{
+        const pressed=chosen.has(row.dataset.field);
+        row.classList.toggle('active',pressed);
+        row.setAttribute('aria-pressed',String(pressed));
+    });
 }
 async function spcoaV162ToggleFilledField(field){
     if(!WEATHER_FIELDS[field])return false;
@@ -8524,6 +8561,7 @@ async function spcoaV162ToggleFilledField(field){
         // Reject a fourth field without replacing the three already chosen.
         console.info('SPCOA: maximum of three filled parameters per map panel.');
     }
+    spcoaV190UpdateFilledSelection();
     window.__spcoaV159RefreshControls?.(spcoaV159GetState());
     return true;
 }
@@ -22818,6 +22856,7 @@ if (clearFillButton) {
         if (fieldSelect) fieldSelect.value = "none";
         document.querySelectorAll("#sidebar .field-choice.active")
             .forEach(button => button.classList.remove("active"));
+        spcoaV190UpdateFilledSelection();
         scalarRenderGeneration++;
         cursorGeneration++;
         clearCursor();
@@ -22919,6 +22958,7 @@ if (clearAllButton) {
         if (fieldSelect) fieldSelect.value = "none";
         document.querySelectorAll("#sidebar .field-choice.active")
             .forEach(button => button.classList.remove("active"));
+        spcoaV190UpdateFilledSelection();
 
         // All keys in this object are numerical contour/vector overlays;
         // map geography and annotations are stored separately.
