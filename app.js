@@ -339,7 +339,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V195"; // faster radar playback; V194 NEXRAD history and previous features retained
+const SPCOA_VIEWER_BUILD = "V196"; // faster radar playback; V194 NEXRAD history and previous features retained
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -1533,6 +1533,9 @@ function spcoaSaveGoesPrefs(value, broadcast=true) {
         return;
     }
     const wasUnderlay = spcoaHasSatelliteUnderlay();
+    if (__MP_CHILD && spcoaReadGoesPrefs().product!==next.product &&
+        typeof window.__spcoaGoesPlaybackStop==="function")
+        window.__spcoaGoesPlaybackStop(false);
     spcoaGoesOverride = next;
     // Child iframe preferences must remain independent. Writing localStorage in
     // a child would fire a storage event in sibling iframes and re-sync them.
@@ -1546,6 +1549,85 @@ function spcoaSaveGoesPrefs(value, broadcast=true) {
 // radar, sector and drawing synchronization is deliberately unchanged.
 window.__spcoaGetGoesPrefs = () => ({...spcoaReadGoesPrefs()});
 window.__spcoaApplyGoesPrefs = prefs => spcoaSaveGoesPrefs(prefs,false);
+/* V196: Opt-in satellite playback. The existing IEM ABI/NOAA "current" sources
+ * do not expose an archived time dimension here. Offer playback only for GeoMet
+ * layers that advertise real observation times in GetCapabilities. */
+function spcoaInstallGoesPlaybackControls(host){
+    if(!host || host.querySelector("#spcoa-goes-playback"))return;
+    const panel=document.createElement("div");
+    panel.id="spcoa-goes-playback";
+    panel.style.cssText="border-top:1px solid #416079;padding-top:9px;display:flex;flex-direction:column;gap:7px;font:11px Inter,Arial,sans-serif";
+    const heading=document.createElement("strong");heading.textContent="Satellite Playback (Experimental)";
+    const help=document.createElement("div");
+    help.style.cssText="color:#b5cee0;line-height:1.4";
+    help.textContent="Time-enabled ECCC GeoMet products only for now. Uses actual available UTC frames; the active map panel plays without changing the SPCOA analysis hour.";
+    const row=document.createElement("div");row.style.cssText="display:flex;gap:5px;align-items:center;flex-wrap:wrap";
+    const button=(id,label,action,value)=>{
+        const b=document.createElement("button");b.type="button";b.id=id;b.textContent=label;
+        b.style.cssText="padding:5px 7px;border:1px solid #56758c;border-radius:4px;background:#19384b;color:#e6f4fc;cursor:pointer";
+        b.addEventListener("click",()=>spcoaGoesPlaybackUiCommand(action,value));return b;
+    };
+    row.append(button("spcoa-goes-play-prev","◀|","step",-1),
+        button("spcoa-goes-play-toggle","▶ Play","toggle"),
+        button("spcoa-goes-play-next","|▶","step",1),
+        button("spcoa-goes-play-live","Live","live"));
+    const settings=document.createElement("div");settings.style.cssText="display:flex;gap:6px;align-items:center;flex-wrap:wrap";
+    const duration=document.createElement("select");duration.id="spcoa-goes-play-duration";
+    for(const [v,t] of [["30","30 min"],["60","60 min"],["120","2 hours"]])duration.add(new Option(t,v));
+    duration.value="60";duration.addEventListener("change",()=>spcoaGoesPlaybackUiCommand("duration",duration.value));
+    const speed=document.createElement("select");speed.id="spcoa-goes-play-speed";
+    for(const [v,t] of [["1200","Slow"],["500","Normal"],["220","Fast"],["100","Very Fast"]])speed.add(new Option(t,v));
+    speed.value="500";speed.addEventListener("change",()=>spcoaGoesPlaybackUiCommand("speed",speed.value));
+    settings.append("History",duration,"Speed",speed);
+    const slider=document.createElement("input");slider.id="spcoa-goes-play-slider";
+    slider.type="range";slider.min="0";slider.max="0";slider.step="1";slider.value="0";
+    slider.style.cssText="width:100%;accent-color:#69baf5";
+    slider.addEventListener("input",()=>spcoaGoesPlaybackUiCommand("seek",slider.value));
+    const status=document.createElement("div");status.id="spcoa-goes-play-status";
+    status.style.cssText="min-height:30px;color:#b5cee0;line-height:1.4;font-size:10px";
+    status.setAttribute("role","status");status.textContent="Choose an ECCC satellite product, then Play";
+    panel.append(heading,help,row,settings,slider,status);host.appendChild(panel);
+    spcoaGoesPlaybackSyncUi();
+}
+function spcoaGoesPlaybackUiCommand(action,value){
+    try{
+        const dispatch=__MP_CHILD?window.__spcoaGoesPlaybackAction:window.__spcoaGoesPlaybackHostAction;
+        if(typeof dispatch==="function")Promise.resolve(dispatch(action,value)).catch(e=>
+            console.warn("Satellite playback command failed",e));
+    }catch(e){console.warn("Satellite playback command unavailable",e);}
+    spcoaGoesPlaybackSyncUi();
+}
+function spcoaGoesPlaybackSyncUi(){
+    const root=document.getElementById("spcoa-goes-playback");if(!root)return;
+    const prefs=spcoaReadGoesPrefs(),config=SPCOA_GOES_LAYER_CONFIG[prefs.product];
+    const supported=config?.provider==="geomet";
+    let a=null;
+    try{
+        const fn=__MP_CHILD?window.__spcoaGoesPlaybackState:window.__spcoaGoesPlaybackHostState;
+        a=typeof fn==="function"?fn():null;
+    }catch(_){}
+    const enabled=supported&&!!a;
+    const play=root.querySelector("#spcoa-goes-play-toggle");
+    if(play){play.disabled=!enabled||!!a?.loading;play.textContent=a?.playing?"Ⅱ Pause":"▶ Play";}
+    for(const [id,delta] of [["spcoa-goes-play-prev",-1],["spcoa-goes-play-next",1]]){
+        const el=root.querySelector("#"+id);if(el)el.disabled=!enabled||!a?.active||!!a?.loading||a?.count<2;
+    }
+    const live=root.querySelector("#spcoa-goes-play-live");if(live)live.disabled=!a?.active&&!a?.loading;
+    const slider=root.querySelector("#spcoa-goes-play-slider");
+    if(slider){slider.max=String(Math.max(0,(a?.count||1)-1));slider.value=String(a?.index||0);
+        slider.disabled=!enabled||!a?.active||!!a?.loading;}
+    for(const [id,key,fallback] of [["spcoa-goes-play-duration","duration",60],["spcoa-goes-play-speed","speed",500]]){
+        const el=root.querySelector("#"+id);
+        if(el&&el!==document.activeElement)el.value=String(a?.[key]||fallback);
+    }
+    const label=root.querySelector("#spcoa-goes-play-status");
+    if(label)label.textContent=!supported?
+        (prefs.product==="off"?"Select an ECCC GeoMet satellite product to enable animation":
+        "This product's current tile source does not provide verified archived frames. Try ECCC Natural Color or Night Microphysics."):
+        !a?"Waiting for active map panel...":a.status;
+}
+window.setInterval(()=>{if(!document.hidden)spcoaGoesPlaybackSyncUi();},700);
+
 function spcoaInstallGoesControls() {
     if (document.getElementById("spcoa-goes-controls")) return;
     const sidebar = document.getElementById("sidebar");
@@ -1608,6 +1690,7 @@ function spcoaInstallGoesControls() {
     status.style.cssText = "font-size:10px;color:#b5cee0;line-height:1.5;min-height:28px;";
     status.textContent = "Off";
     panel.append(opacityRow,opacity,status);
+    spcoaInstallGoesPlaybackControls(panel);
     const changed = () => spcoaSaveGoesPrefs({product:product.value,opacity:opacity.value,timeMode:mode.value});
     product.addEventListener("change",changed);
     mode.addEventListener("change",changed);
@@ -4107,6 +4190,14 @@ if (!__MP_CHILD) {
         window.__spcoaRadarPlaybackHostAction=(action,value)=>{
             try{return panels[activePanel]?.frame?.contentWindow?.__spcoaRadarPlaybackAction?.(action,value);}
             catch(error){console.warn("Active-panel radar playback failed",error);}
+        };
+        window.__spcoaGoesPlaybackHostAction=(action,value)=>{
+            try{return panels[activePanel]?.frame?.contentWindow?.__spcoaGoesPlaybackAction?.(action,value);}
+            catch(error){console.warn("Active-panel satellite playback failed",error);}
+        };
+        window.__spcoaGoesPlaybackHostState=()=>{
+            try{return panels[activePanel]?.frame?.contentWindow?.__spcoaGoesPlaybackState?.()||null;}
+            catch(_){return null;}
         };
         window.__spcoaRadarPlaybackHostState=()=>{
             try{return panels[activePanel]?.frame?.contentWindow?.__spcoaRadarPlaybackState?.()||null;}
@@ -10144,6 +10235,14 @@ function spcoaGoesRemoveLayer() {
 async function spcoaGoesRefresh(force=false) {
     const generation=++spcoaGoesGeneration;
     const p=spcoaReadGoesPrefs();
+    // A live 5-minute satellite poll must not replace an archived animation frame.
+    if(typeof spcoaGoesPlayback!=="undefined" && spcoaGoesPlayback.active &&
+        p.product===spcoaGoesPlayback.product) {
+        const current=spcoaGoesPlayback.visibleLayer;
+        if(current && map.getLayer(current))
+            map.setPaintProperty(current,"raster-opacity",p.opacity/100);
+        return;
+    }
     if(p.product==="off") {
         spcoaGoesValidProduct="";spcoaGoesValidTime=null;spcoaGoesValidChecked=false;
         spcoaGoesRemoveLayer();
@@ -10157,7 +10256,7 @@ async function spcoaGoesRefresh(force=false) {
         spcoaGoesValidTime=null;spcoaGoesValidChecked=false;
     }
     void spcoaObsSatelliteValid(config).then(t=>{
-        if(spcoaReadGoesPrefs().product!==p.product)return;
+        if(spcoaReadGoesPrefs().product!==p.product || spcoaGoesPlayback.active)return;
         const next=spcoaObsRecent(t,12);
         spcoaGoesValidTime=next;spcoaGoesValidChecked=true;
         if(spcoaGoesActiveKey){
@@ -10210,8 +10309,10 @@ function spcoaGoesSchedule(ms=180) {
 // Export waits for the MapLibre raster layer. An upstream/CORS error should
 // cancel PNG export rather than silently omit the requested satellite layer.
 async function spcoaGoesWaitForMapTiles(timeoutMs=12000) {
-    if(!spcoaGoesSelected() || !map.getSource(SPCOA_GOES_SOURCE_ID))return;
-    if(map.isSourceLoaded(SPCOA_GOES_SOURCE_ID))return;
+    const sourceId=spcoaGoesPlayback.active && spcoaGoesPlayback.visibleLayer
+        ? spcoaGoesPlayback.visibleLayer:SPCOA_GOES_SOURCE_ID;
+    if(!spcoaGoesSelected() || !map.getSource(sourceId))return;
+    if(map.isSourceLoaded(sourceId))return;
     await new Promise((resolve,reject)=>{
         let finished=false;
         const finish=(error)=>{
@@ -10219,11 +10320,11 @@ async function spcoaGoesWaitForMapTiles(timeoutMs=12000) {
             clearTimeout(timer);map.off("sourcedata",onData);map.off("error",onError);
             if(error)reject(error);else resolve();
         };
-        const onData=e=>{if(e.sourceId===SPCOA_GOES_SOURCE_ID && e.isSourceLoaded)finish();};
-        const onError=e=>{if(e.sourceId===SPCOA_GOES_SOURCE_ID)finish(new Error("GOES imagery tiles failed to load"));};
+        const onData=e=>{if(e.sourceId===sourceId && e.isSourceLoaded)finish();};
+        const onError=e=>{if(e.sourceId===sourceId)finish(new Error("GOES imagery tiles failed to load"));};
         const timer=setTimeout(()=>finish(new Error("GOES imagery still loading; export cancelled to prevent missing imagery")),timeoutMs);
         map.on("sourcedata",onData);map.on("error",onError);
-        if(map.isSourceLoaded(SPCOA_GOES_SOURCE_ID))finish();
+        if(map.isSourceLoaded(sourceId))finish();
     });
 }
 window.addEventListener("spcoa-goes-settings-changed",event=>{
@@ -10249,7 +10350,7 @@ window.addEventListener("storage",event=>{
 });
 map.on("load",()=>spcoaGoesSchedule(100));
 map.on("sourcedata",event=>{
-    if(event.sourceId===SPCOA_GOES_SOURCE_ID && event.isSourceLoaded){
+    if(!spcoaGoesPlayback.active && event.sourceId===SPCOA_GOES_SOURCE_ID && event.isSourceLoaded){
         spcoaGoesTilesReady=true;
         if(spcoaGoesActiveLabel)spcoaGoesStatus(spcoaGoesActiveLabel);
     }
@@ -10282,6 +10383,248 @@ document.addEventListener("visibilitychange",()=>{
    waits for tile loading before scheduling the next frame, and has Live/Stop.
    The loop never modifies the SPCOA analysis clock or GOES times.
    ========================================================================================= */
+/* V196 — GOES GeoMet playback from provider-published observation times.
+ * Separate from radar and SPCOA analysis; no fake timestamps or future frames. */
+const SPCOA_GOES_PLAYBACK_IDS=["spcoa-goes-loop-a","spcoa-goes-loop-b"];
+const spcoaGoesPlayback={active:false,playing:false,loading:false,frames:[],index:0,
+    duration:60,speed:500,product:null,visibleLayer:null,token:0,timer:null,
+    checking:false,lastCheck:0,status:"Choose an ECCC satellite product, then Play"};
+function spcoaGoesPlaybackState(){
+    const a=spcoaGoesPlayback;
+    return {active:a.active,playing:a.playing,loading:a.loading,index:a.index,
+        count:a.frames.length,duration:a.duration,speed:a.speed,status:a.status};
+}
+window.__spcoaGoesPlaybackState=spcoaGoesPlaybackState;
+function spcoaGoesPlaybackRemove(id){
+    try{if(map.getLayer(id))map.removeLayer(id);}catch(e){console.warn("Satellite layer cleanup",e);}
+    try{if(map.getSource(id))map.removeSource(id);}catch(e){console.warn("Satellite source cleanup",e);}
+}
+function spcoaGoesPlaybackStop(goLive=true){
+    const a=spcoaGoesPlayback;
+    a.token++;clearTimeout(a.timer);a.timer=null;
+    a.active=false;a.playing=false;a.loading=false;a.checking=false;a.product=null;
+    a.visibleLayer=null;a.frames=[];a.index=0;
+    // Restore the already-loaded live layer before discarding the loop tiles.
+    if(map.getLayer(SPCOA_GOES_SOURCE_ID))
+        map.setPaintProperty(SPCOA_GOES_SOURCE_ID,"raster-opacity",spcoaReadGoesPrefs().opacity/100);
+    for(const id of SPCOA_GOES_PLAYBACK_IDS)spcoaGoesPlaybackRemove(id);
+    if(goLive && spcoaGoesSelected()) {
+        a.status="Live satellite · Playback stopped";
+        spcoaGoesSchedule(250);
+    }else a.status="Paused · Playback stopped";
+    spcoaGoesPlaybackSyncUi();
+}
+window.__spcoaGoesPlaybackStop=spcoaGoesPlaybackStop;
+function spcoaGoesPlaybackTimeList(xml,layerName){
+    const doc=new DOMParser().parseFromString(xml,"application/xml");
+    if(doc.querySelector("parsererror"))throw new Error("GeoMet returned invalid WMS capabilities");
+    const direct=(node,name)=>Array.from(node.children||[]).filter(el=>el.localName===name);
+    const layer=Array.from(doc.getElementsByTagName("*")).find(el=>
+        el.localName==="Layer" && direct(el,"Name").some(n=>n.textContent.trim()===layerName));
+    if(!layer)throw new Error("GeoMet does not currently advertise this satellite layer");
+    const dim=Array.from(layer.getElementsByTagName("*")).find(el=>
+        ["Dimension","Extent"].includes(el.localName) &&
+        String(el.getAttribute("name")||"").toLowerCase()==="time");
+    if(!dim)throw new Error("This GeoMet product has no published time dimension");
+    const values=[];const now=Date.now()+60000;
+    for(const item of dim.textContent.split(",")){
+        const token=item.trim();if(!token)continue;
+        const segments=token.split("/");
+        if(segments.length>=3){
+            const start=Date.parse(segments[0]),end=Date.parse(segments[1]);
+            const stepMatch=/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i.exec(segments[2]);
+            const step=stepMatch?((Number(stepMatch[1]||0)*3600+Number(stepMatch[2]||0)*60+
+                Number(stepMatch[3]||0))*1000):0;
+            if(Number.isFinite(start)&&Number.isFinite(end)&&step>=60000&&step<=3600000){
+                // Expand only the most recent three hours even if capabilities list days.
+                const begin=Math.max(start,end-3*3600000);
+                let first=start+Math.max(0,Math.ceil((begin-start)/step))*step;
+                for(let t=first;t<=Math.min(end,now)&&values.length<300;t+=step)values.push(t);
+            }
+        }else{
+            const time=Date.parse(token);
+            if(Number.isFinite(time) && time<=now && time>=now-4*3600000)values.push(time);
+        }
+    }
+    return [...new Set(values)].sort((a,b)=>a-b).map(t=>new Date(t));
+}
+async function spcoaGoesPlaybackHistory(config,duration){
+    const url=SPCOA_ECCC_GEOMET_WMS+"?service=WMS&version=1.3.0&request=GetCapabilities&layer="+
+        encodeURIComponent(config.layer);
+    const xml=await spcoaObsFetchText(url);
+    const all=spcoaGoesPlaybackTimeList(xml,config.layer);
+    if(all.length<2)throw new Error("Provider has fewer than two verified satellite frames");
+    const newest=all[all.length-1].getTime();
+    // An inactive/lagged layer must never be described as a recent GOES loop.
+    if(Date.now()-newest>90*60000)
+        throw new Error("GeoMet satellite archive has no recent imagery (latest > 90 min old)");
+    const frames=all.filter(t=>t.getTime()>=newest-duration*60000);
+    if(frames.length<2)throw new Error("Too few satellite frames in the selected history window");
+    return frames.slice(-20); // Bound sources/time records: only two image layers exist at once.
+}
+function spcoaGoesPlaybackUrl(config,date){
+    // WMS 1.3.0 EPSG:3857 uses conventional x/y BBOX ordering.
+    return SPCOA_ECCC_GEOMET_WMS+"?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"+
+        "&LAYERS="+encodeURIComponent(config.layer)+
+        "&STYLES=&FORMAT=image/png&TRANSPARENT=TRUE&CRS=EPSG:3857"+
+        "&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256"+
+        "&TIME="+encodeURIComponent(date.toISOString().replace(".000Z","Z"));
+}
+function spcoaGoesPlaybackWaitTiles(id,token,timeout=15000){
+    if(map.isSourceLoaded(id))return Promise.resolve();
+    return new Promise((resolve,reject)=>{
+        let done=false;
+        const finish=err=>{if(done)return;done=true;clearTimeout(timer);
+            map.off("sourcedata",onData);map.off("error",onError);
+            if(err)reject(err);else resolve();};
+        const onData=e=>{
+            if(token!==spcoaGoesPlayback.token)return finish(new Error("Satellite frame cancelled"));
+            if(e.sourceId===id && e.isSourceLoaded)finish();};
+        const onError=e=>{if(e.sourceId===id)finish(new Error("Satellite imagery tile request failed"));};
+        const timer=setTimeout(()=>finish(new Error("Satellite frame loading timed out")),timeout);
+        map.on("sourcedata",onData);map.on("error",onError);
+        if(map.isSourceLoaded(id))finish();
+    });
+}
+function spcoaGoesPlaybackWaitPaint(token){
+    return new Promise((resolve,reject)=>{
+        let done=false;
+        const finish=error=>{if(done)return;done=true;clearTimeout(timer);map.off("render",onRender);
+            if(error)reject(error);else resolve();};
+        const onRender=()=>token===spcoaGoesPlayback.token?finish():finish(new Error("Satellite frame cancelled"));
+        const timer=setTimeout(()=>finish(new Error("Map render timeout")),1800);
+        map.on("render",onRender);
+        try{map.triggerRepaint();}catch(error){finish(error);}
+    });
+}
+function spcoaGoesPlaybackPlanNext(token){
+    const a=spcoaGoesPlayback;
+    clearTimeout(a.timer);a.timer=null;
+    if(!a.active||!a.playing||a.loading||a.frames.length<2||token!==a.token)return;
+    a.timer=setTimeout(()=>{
+        if(a.active&&a.playing&&!a.loading)void spcoaGoesPlaybackShow((a.index+1)%a.frames.length);
+    },Math.max(60,a.speed));
+}
+async function spcoaGoesPlaybackShow(index){
+    const a=spcoaGoesPlayback;
+    if(!a.active||a.loading||!a.frames.length)return;
+    const config=SPCOA_GOES_LAYER_CONFIG[a.product];if(!config)return;
+    const token=++a.token;
+    clearTimeout(a.timer);a.timer=null;
+    a.loading=true;
+    const i=(index+a.frames.length)%a.frames.length;
+    const frame=a.frames[i];
+    const nextId=a.visibleLayer===SPCOA_GOES_PLAYBACK_IDS[0]
+        ?SPCOA_GOES_PLAYBACK_IDS[1]:SPCOA_GOES_PLAYBACK_IDS[0];
+    a.status="Loading satellite · "+spcoaObsFormat(frame)+" · Current frame remains visible";
+    spcoaGoesPlaybackSyncUi();
+    try{
+        spcoaGoesPlaybackRemove(nextId);
+        map.addSource(nextId,{type:"raster",tiles:[spcoaGoesPlaybackUrl(config,frame)],tileSize:256,
+            attribution:spcoaGoesAttribution(config)});
+        const below=a.visibleLayer && map.getLayer(a.visibleLayer)?a.visibleLayer:
+            map.getLayer(SPCOA_GOES_SOURCE_ID)?SPCOA_GOES_SOURCE_ID:spcoaGoesBeforeLayerId();
+        map.addLayer({id:nextId,type:"raster",source:nextId,
+            paint:{"raster-opacity":spcoaReadGoesPrefs().opacity/100,"raster-fade-duration":0}},below);
+        await spcoaGoesPlaybackWaitTiles(nextId,token);
+        await spcoaGoesPlaybackWaitPaint(token);
+        if(token!==a.token)return;
+        const previous=a.visibleLayer;
+        // Atomic reveal: only retire the old image after the new image has rendered.
+        if(previous&&map.getLayer(previous))map.setPaintProperty(previous,"raster-opacity",0);
+        else if(map.getLayer(SPCOA_GOES_SOURCE_ID))
+            map.setPaintProperty(SPCOA_GOES_SOURCE_ID,"raster-opacity",0);
+        await spcoaGoesPlaybackWaitPaint(token);
+        if(token!==a.token)return;
+        a.visibleLayer=nextId;a.index=i;
+        spcoaGoesValidProduct=a.product;spcoaGoesValidTime=frame;spcoaGoesValidChecked=true;
+        spcoaGoesActiveLabel=(config.displayLabel||config.label)+" · "+spcoaGoesValidText();
+        spcoaGoesStatus(spcoaGoesActiveLabel);
+        if(previous)spcoaGoesPlaybackRemove(previous);
+        a.status=(a.playing?"Playing · ":"Paused · ")+spcoaObsFormat(frame)+
+            " · "+(a.index+1)+"/"+a.frames.length;
+    }catch(error){
+        if(token===a.token){a.playing=false;clearTimeout(a.timer);
+            a.status="Satellite playback paused: "+String(error.message||error)+". Press Live to restore.";
+            console.warn("GOES satellite frame unavailable",error);
+        }
+        if(nextId!==a.visibleLayer)spcoaGoesPlaybackRemove(nextId);
+    }finally{
+        if(token===a.token){a.loading=false;spcoaGoesPlaybackPlanNext(token);spcoaGoesPlaybackSyncUi();}
+    }
+}
+async function spcoaGoesPlaybackRefreshHistory(){
+    const a=spcoaGoesPlayback;
+    if(!a.active||!a.frames.length||a.checking||a.loading||document.hidden)return;
+    if(Date.now()-a.lastCheck<120000)return;
+    a.lastCheck=Date.now();a.checking=true;
+    try{
+        const newer=await spcoaGoesPlaybackHistory(SPCOA_GOES_LAYER_CONFIG[a.product],a.duration);
+        if(!a.active||a.loading)return;
+        const shown=a.frames[a.index]?.getTime();
+        if(newer[newer.length-1].getTime()>a.frames[a.frames.length-1].getTime()){
+            a.frames=newer;
+            const idx=newer.findIndex(t=>t.getTime()===shown);
+            a.index=idx>=0?idx:Math.max(0,newer.length-2);
+            spcoaGoesPlaybackSyncUi();
+        }
+    }catch(error){console.warn("GOES playback history refresh skipped",error?.message||error);}
+    finally{a.checking=false;}
+}
+async function spcoaGoesPlaybackAction(action,value){
+    const a=spcoaGoesPlayback;
+    const prefs=spcoaReadGoesPrefs();const config=SPCOA_GOES_LAYER_CONFIG[prefs.product];
+    if(action==="live"){spcoaGoesPlaybackStop(true);return;}
+    if(action==="speed"){
+        if([100,220,500,1200].includes(Number(value)))a.speed=Number(value);
+        spcoaGoesPlaybackSyncUi();return;
+    }
+    if(action==="duration"){
+        if(![30,60,120].includes(Number(value)))return;
+        if(a.duration===Number(value))return;
+        a.duration=Number(value);
+        if(a.active){spcoaGoesPlaybackStop(true);return spcoaGoesPlaybackAction("toggle");}
+        spcoaGoesPlaybackSyncUi();return;
+    }
+    if(config?.provider!=="geomet")return;
+    if(action==="toggle" && a.active){
+        a.playing=!a.playing;
+        clearTimeout(a.timer);a.timer=null;
+        a.status=(a.playing?"Playing · ":"Paused · ")+
+            spcoaObsFormat(a.frames[a.index]);
+        spcoaGoesPlaybackPlanNext(a.token);spcoaGoesPlaybackSyncUi();return;
+    }
+    if(!a.active){
+        a.loading=true;a.playing=true;a.product=prefs.product;
+        a.status="Finding actual GOES satellite observation times...";spcoaGoesPlaybackSyncUi();
+        try{
+            const frames=await spcoaGoesPlaybackHistory(config,a.duration);
+            if(a.product!==prefs.product)return;
+            a.frames=frames;a.index=0;a.active=true;a.lastCheck=Date.now();
+        }catch(error){
+            a.active=false;a.playing=false;a.status="Satellite history unavailable: "+String(error.message||error);
+            console.warn("Cannot start satellite animation",error);
+            return;
+        }finally{a.loading=false;spcoaGoesPlaybackSyncUi();}
+        await spcoaGoesPlaybackShow(0);return;
+    }
+    if(action==="step"||action==="seek"){
+        a.playing=false;clearTimeout(a.timer);a.timer=null;
+        if(a.loading)return;
+        const target=action==="step"?a.index+(Number(value)<0?-1:1):Number(value);
+        await spcoaGoesPlaybackShow(Math.max(0,Math.min(a.frames.length-1,target|0)));
+    }
+}
+window.__spcoaGoesPlaybackAction=spcoaGoesPlaybackAction;
+window.setInterval(()=>{if(!document.hidden)void spcoaGoesPlaybackRefreshHistory();},30000);
+document.addEventListener("visibilitychange",()=>{
+    if(document.hidden&&spcoaGoesPlayback.playing){
+        spcoaGoesPlayback.playing=false;clearTimeout(spcoaGoesPlayback.timer);
+        spcoaGoesPlayback.status="Paused · Tab inactive";
+        spcoaGoesPlaybackSyncUi();
+    }
+});
+
 const SPCOA_RADAR_PLAYBACK_WMS="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi";
 const spcoaRadarPlayback={active:false,playing:false,loading:false,exporting:false,frames:[],index:0,
     duration:30,speed:500,mode:null,site:null,relative:false,relativeEpoch:0,
