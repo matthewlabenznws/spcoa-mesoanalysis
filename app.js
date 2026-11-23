@@ -339,7 +339,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V200"; // V196 satellite playback removed; numerical contours above county/state boundaries
+const SPCOA_VIEWER_BUILD = "V202"; // Browser-local named fill/contour presets; V200 wind-barb redraw and all prior features preserved
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -940,6 +940,36 @@ function installSpcoaEcapeFieldButton() {
     else target.appendChild(btn);
 }
 installSpcoaEcapeFieldButton();
+
+/* V202 — Cursor samples can be pinned by clicking the map and saved in PNGs.
+ * Keep the HTML template unchanged and install the same hint in host/child.
+ * The visible host relays Unpin to its active panel rather than invoking the
+ * hidden iframe button itself. */
+function spcoaV202InstallCursorSamplePinControls() {
+    const sample = document.getElementById("cursor-sample-toggle");
+    if (!sample || document.getElementById("spcoa-cursor-pin-controls")) return;
+    const anchor = sample.closest("label") || sample;
+    const block = document.createElement("div");
+    block.id = "spcoa-cursor-pin-controls";
+    block.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:5px 0 9px 0;color:#b8d3e2;font:11px Inter,Arial,sans-serif;";
+    const tip = document.createElement("span");
+    tip.id = "spcoa-cursor-pin-status";
+    tip.textContent = "Hover for values · click map to pin for PNG";
+    const button = document.createElement("button");
+    button.id = "spcoa-cursor-unpin";
+    button.type = "button";
+    button.textContent = "Unpin Sample";
+    button.title = "Remove the pinned cursor sample from this panel and its PNG export";
+    button.style.cssText = "padding:3px 8px;border:1px solid #59798d;border-radius:4px;background:#18374a;color:#e0f2fc;font:11px Inter,Arial,sans-serif;cursor:pointer;";
+    button.addEventListener("click", event => {
+        event.preventDefault();event.stopPropagation();
+        if (__MP_CHILD) window.__spcoaCursorUnpin?.();
+        else window.__spcoaHostCursorUnpin?.();
+    });
+    block.append(tip,button);
+    anchor.insertAdjacentElement("afterend",block);
+}
+spcoaV202InstallCursorSamplePinControls();
 
 /* V199: A pair of synchronized controls (Surface and Wind Shear) adjusts
  * all actual wind-barb symbols. The active iframe redraws from the already
@@ -3621,6 +3651,94 @@ function spcoaV158InstallAboutHelp() {
 
 
 /* =========================================================================================
+   V201 — BROWSER-LOCAL SAVED PARAMETER & CONTOUR PRESETS
+   ========================================================================================= */
+const SPCOA_V201_PRESETS_KEY="spcoa_saved_layer_presets_v1";
+const SPCOA_V201_PRESET_LIMIT=20;
+function spcoaV201ReadPresets(){
+    try{
+        const raw=JSON.parse(localStorage.getItem(SPCOA_V201_PRESETS_KEY)||"[]");
+        return Array.isArray(raw)?raw.filter(x=>x&&typeof x.name==="string"&&x.state&&typeof x.state==="object")
+            .slice(0,SPCOA_V201_PRESET_LIMIT):[];
+    }catch(error){console.warn("Cannot read saved layer presets:",error);return [];}
+}
+function spcoaV201WritePresets(items){
+    localStorage.setItem(SPCOA_V201_PRESETS_KEY,JSON.stringify(items.slice(0,SPCOA_V201_PRESET_LIMIT)));
+}
+function spcoaV201InstallPresetUi(){
+    if(__MP_CHILD || document.getElementById("spcoa-v201-presets"))return;
+    const sidebar=document.getElementById("sidebar");
+    if(!sidebar)return;
+    const panel=document.createElement("section");
+    panel.id="spcoa-v201-presets";
+    panel.style.cssText="padding:10px;margin:8px 4px 12px;border:1px solid #3d6883;border-radius:7px;background:#122b3e;color:#e2f0f8;font:12px Arial,sans-serif;";
+    const header=document.createElement("div");header.textContent="Saved Parameter & Contour Presets";
+    header.style.cssText="font-weight:700;margin-bottom:7px";
+    const name=document.createElement("input");name.type="text";name.maxLength=55;
+    name.placeholder="Preset name (e.g., Severe Environment)";
+    name.setAttribute("aria-label","Preset name");
+    name.style.cssText="width:100%;box-sizing:border-box;padding:7px;margin-bottom:7px;background:#091d2c;color:#fff;border:1px solid #47667b;border-radius:4px;";
+    const select=document.createElement("select");select.setAttribute("aria-label","Saved parameter preset");
+    select.style.cssText="width:100%;padding:6px;background:#091d2c;color:#fff;border:1px solid #47667b;border-radius:4px;margin:5px 0;";
+    const buttons=document.createElement("div");buttons.style.cssText="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;";
+    const action=(label,tooltip)=>{const b=document.createElement("button");b.type="button";b.textContent=label;b.title=tooltip;
+        b.style.cssText="padding:5px 8px;background:#28526d;color:white;border:1px solid #5485a4;border-radius:4px;cursor:pointer;font:11px Arial,sans-serif;";
+        buttons.appendChild(b);return b;};
+    const save=action("Save Current","Save fills, contours, opacity and line thickness from the active panel");
+    const apply=action("Load Preset","Apply a preset using Active Panel / All Panels scope");
+    const remove=action("Delete","Delete the selected saved preset");
+    const status=document.createElement("div");status.setAttribute("role","status");
+    status.style.cssText="min-height:16px;color:#b6cde0;font-size:10px;margin-top:6px;line-height:1.35;";
+    const help=document.createElement("div");help.textContent="Saves up to 3 fills, contours, opacity and contour thickness. Uses the Active Panel / All Panels setting. Stored in this browser only.";
+    help.style.cssText="font-size:10px;color:#a6bece;line-height:1.4;margin-top:8px;";
+    panel.append(header,name,select,buttons,status,help);
+    const target=sidebar.querySelector(".sidebar-body")||sidebar;
+    target.insertBefore(panel,target.firstChild);
+    function refresh(preferred){
+        const saved=spcoaV201ReadPresets();const previous=preferred??select.value;
+        select.replaceChildren();
+        const placeholder=new Option(saved.length?"Select a saved preset…":"No saved presets yet","");
+        select.appendChild(placeholder);
+        saved.forEach(item=>select.appendChild(new Option(item.name,item.id)));
+        if(saved.some(item=>item.id===previous))select.value=previous;
+        apply.disabled=remove.disabled=!saved.length;
+        return saved;
+    }
+    const info=(text,error=false)=>{status.textContent=text;status.style.color=error?"#ffb6a9":"#b6cde0";};
+    save.addEventListener("click",()=>{
+        const label=name.value.trim();
+        if(!label){info("Enter a name before saving a preset.",true);name.focus();return;}
+        try{
+            const state=window.__spcoaV201CaptureActivePreset?.();
+            if(!state)throw new Error("The active map panel is not ready.");
+            const list=spcoaV201ReadPresets();
+            const existing=list.findIndex(p=>p.name.toLowerCase()===label.toLowerCase());
+            const entry={id:existing>=0?list[existing].id:String(Date.now())+"-"+Math.random().toString(36).slice(2,8),name:label,state};
+            if(existing>=0)list.splice(existing,1);
+            else if(list.length>=SPCOA_V201_PRESET_LIMIT){info("Maximum 20 presets. Delete an old preset first.",true);return;}
+            list.push(entry);spcoaV201WritePresets(list);refresh(entry.id);
+            info(existing>=0?"Updated existing preset.":"Preset saved in this browser.");
+        }catch(error){info("Could not save: "+(error.message||error),true);}
+    });
+    apply.addEventListener("click",async()=>{
+        const entry=spcoaV201ReadPresets().find(p=>p.id===select.value);
+        if(!entry){info("Choose a preset to load.",true);return;}
+        apply.disabled=true;info("Applying preset to selected map panel(s)…");
+        try{await window.__spcoaV201ApplyPresetToTargets(entry.state);info("Loaded “"+entry.name+"”.");}
+        catch(error){info("Preset could not be applied: "+(error.message||error),true);}
+        finally{apply.disabled=false;}
+    });
+    remove.addEventListener("click",()=>{
+        const entry=spcoaV201ReadPresets().find(p=>p.id===select.value);
+        if(!entry)return;
+        if(!window.confirm("Delete preset “"+entry.name+"”?"))return;
+        try{spcoaV201WritePresets(spcoaV201ReadPresets().filter(p=>p.id!==entry.id));refresh();info("Preset deleted.");}
+        catch(error){info("Could not delete preset: "+(error.message||error),true);}
+    });
+    refresh();
+}
+
+/* =========================================================================================
    V159 — PER-FIELD DISPLAY CONTROLS (host + iframe UI)
    Host mirrors the active panel and targets children using Parameter Scope.
    This is intentionally isolated from radar, satellite and vector settings.
@@ -3898,6 +4016,7 @@ if (!__MP_CHILD) {
         spcoaV122InstallParameterExplorer();
         spcoaV158InstallAboutHelp();
         spcoaV159InstallControls();
+        spcoaV201InstallPresetUi();
         const hostCwaColor = document.getElementById("cwa-border-color");
         if (hostCwaColor) hostCwaColor.value = readSpcoaCwaBorderColor();
 
@@ -3966,6 +4085,13 @@ if (!__MP_CHILD) {
         let sharedSourcePanel = -1;
         let sharedDrawingTool = "pan";
         let hostGifExporting = false;
+        // V202: Cursor Sample pins are panel-specific, never forced on other panels.
+        window.__spcoaHostCursorUnpin = () => {
+            const child = panels[activePanel]?.frame?.contentWindow;
+            child?.__spcoaCursorUnpin?.();
+            const tip = document.getElementById("spcoa-cursor-pin-status");
+            if (tip) tip.textContent = "Hover for values · click map to pin for PNG";
+        };
         // Named per-browser forecaster panel configurations (never run-specific).
         let savedLayoutApplying = false;
         const parameterScope = document.getElementById("parameter-scope");
@@ -4126,6 +4252,28 @@ if (!__MP_CHILD) {
         panelGrid.appendChild(sharedCanvas);
         const sharedCtx = sharedCanvas.getContext("2d");
 
+        // V201: Preset snapshots live in each child; the host follows the
+        // existing parameter-scope selector rather than copying stale UI state.
+        window.__spcoaV201CaptureActivePreset = () => {
+            const child=panels[activePanel]?.frame?.contentWindow;
+            if (typeof child?.__spcoaV201GetPreset !== "function")
+                throw new Error("The selected map panel is not ready. Try again when it finishes loading.");
+            return child.__spcoaV201GetPreset();
+        };
+        window.__spcoaV201ApplyPresetToTargets = async preset => {
+            const targets=parameterTargets();
+            const operations=targets.map(async i => {
+                const child=panels[i]?.frame?.contentWindow;
+                if (typeof child?.__spcoaV201ApplyPreset !== "function")
+                    throw new Error(`Map panel ${i+1} is not ready.`);
+                await child.__spcoaV201ApplyPreset(preset);
+            });
+            const results=await Promise.allSettled(operations);
+            spcoaHostV159Sync();
+            syncHostFromActiveChild();
+            const failures=results.filter(result=>result.status==="rejected");
+            if(failures.length)throw new Error(failures.map(item=>String(item.reason?.message||item.reason)).join("; "));
+        };
         function parameterTargets() {
             return parameterScope && parameterScope.value === "all"
                 ? Array.from({ length: layoutCount }, (_, i) => i)
@@ -4787,6 +4935,15 @@ if (!__MP_CHILD) {
                 hostFreshness.dataset.signature=childFreshness.dataset.signature||'';
             }
             spcoaHostApplyRadarAuto();
+            // V202: Show the active panel's pinned-sample state in the host.
+            const sampleTip = document.getElementById("spcoa-cursor-pin-status");
+            const sampleChild = panels[activePanel]?.frame?.contentWindow;
+            if (sampleTip) {
+                let pinned=false;
+                try { pinned = !!sampleChild?.__spcoaCursorIsPinned?.(); } catch (_) {}
+                sampleTip.textContent = pinned ? "Sample pinned · included in PNG" :
+                    "Hover for values · click map to pin for PNG";
+            }
             updateSpcoaDensityUi();
             spcoaUpdateWindBarbSizeLabel();
             const hs = document.getElementById("timeline-slider"), cs = d.getElementById("timeline-slider");
@@ -8721,6 +8878,75 @@ async function spcoaV162ToggleFilledField(field){
     return true;
 }
 window.__spcoaV162ToggleFilledField=spcoaV162ToggleFilledField;
+/* V201 — panel-local state snapshot and restore for saved presets. */
+function spcoaV201ContourKeys(){
+    const configs=[...GEOPOTENTIAL_HEIGHT_OVERLAYS,...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
+        ...FRONTOGENESIS_CONTOUR_OVERLAYS,...THERMODYNAMIC_CONTOUR_OVERLAYS,
+        ...SPCOA_CHANGE_CONTOUR_CONTROLS];
+    const keys=new Set(["mslp","dcape","warmCloudDepth","freezingLevel",
+        "divergence925","divergence850","divergence700","divergence500","divergence250",
+        "sbcinContours","mlcinContours","mucinContours"]);
+    configs.forEach(config=>{if(config.stateKey)keys.add(config.stateKey);});
+    // None of the wind/vector switches belongs to a contour preset.
+    VECTOR_OVERLAY_CONFIG.forEach(config=>keys.delete(config.stateKey));
+    return {configs,keys:[...keys].filter(k=>Object.prototype.hasOwnProperty.call(activeOverlays,k))};
+}
+window.__spcoaV201GetPreset=()=>{
+    const {keys}=spcoaV201ContourKeys();
+    const contours={};keys.forEach(key=>contours[key]=Boolean(activeOverlays[key]));
+    return {version:1,primary:activeField,extras:spcoaV159EffectiveExtras(),
+        opacity:{...spcoaV159Opacity},thickness:{...spcoaV159Thickness},contours};
+};
+window.__spcoaV201ApplyPreset=async preset=>{
+    if(!preset||preset.version!==1||!preset.contours||typeof preset.contours!=="object")
+        throw new Error("This saved preset has an unsupported format.");
+    // Reject invalid ids rather than allowing arbitrary values into a panel.
+    const chosen=[preset.primary,...(Array.isArray(preset.extras)?preset.extras:[])]
+        .filter((f,i,values)=>typeof f==="string"&&f!=="none"&&WEATHER_FIELDS[f]&&values.indexOf(f)===i)
+        .slice(0,3);
+    const nextPrimary=chosen[0]||"none";
+    const {configs,keys}=spcoaV201ContourKeys();
+    scalarRenderGeneration++;contourRenderGeneration++;cursorGeneration++;
+    clearCursor();removeNumericalFrameHoldovers();
+    activeField=nextPrimary;
+    spcoaV159Extras=chosen.slice(1);
+    spcoaV159Opacity=Object.create(null);
+    spcoaV159Thickness=Object.create(null);
+    for(const [field,value] of Object.entries(preset.opacity||{})){
+        if(WEATHER_FIELDS[field]&&Number.isFinite(Number(value)))
+            spcoaV159Opacity[field]=Math.max(0,Math.min(100,Math.round(Number(value))));
+    }
+    for(const [field,value] of Object.entries(preset.thickness||{})){
+        if(CONTOUR_FIELDS[field]&&Number.isFinite(Number(value)))
+            spcoaV159Thickness[field]=Math.max(.5,Math.min(4,Math.round(Number(value)*4)/4));
+    }
+    const toggles=new Map([
+        ["mslp","mslp-toggle"],["dcape","dcape-toggle"],
+        ["warmCloudDepth","warm-cloud-depth-toggle"],["freezingLevel","freezing-level-toggle"]
+    ]);
+    configs.forEach(config=>{if(config.toggleId&&config.stateKey)toggles.set(config.stateKey,config.toggleId);});
+    for(const key of keys){
+        const enabled=preset.contours[key]===true;
+        activeOverlays[key]=enabled;
+        const toggleId=toggles.get(key);
+        if(toggleId){const node=document.getElementById(toggleId);if(node)node.checked=enabled;}
+    }
+    if(fieldSelect){
+        if(!Array.from(fieldSelect.options).some(o=>o.value===nextPrimary))
+            fieldSelect.add(new Option(WEATHER_FIELDS[nextPrimary]?.name||nextPrimary,nextPrimary));
+        fieldSelect.value=nextPrimary;
+    }
+    spcoaV159SaveSettings();
+    spcoaV190UpdateFilledSelection();
+    updateLegend();resetNumericalCanvasTransforms();
+    window.__spcoaV159RefreshControls?.(spcoaV159GetState());
+    updateActiveLayersStrip();
+    await Promise.all([renderWeather(),renderContours()]);
+    renderGeography();updateActiveLayersStrip();
+    return true;
+};
+
+
 // Capture before index.html's legacy single-fill click listener.
 document.addEventListener('click',event=>{
     if(!__MP_CHILD)return; // The host forwards clicks to each chosen map iframe.
@@ -9713,6 +9939,22 @@ let cursorSampleEnabled =
     cursorSampleToggle
         ? cursorSampleToggle.checked
         : false;
+
+// V202: The ordinary cursor tooltip is DOM-only. Preserve a small, immutable
+// snapshot of its last successful values and geographic point for canvas PNGs.
+// Keeping the point in lon/lat (not CSS pixels) preserves its position at export.
+let spcoaCursorLastSample = null;
+let spcoaCursorPinned = false;
+function spcoaV202SampleSignature() {
+    // Reject stale readouts after switching analysis times or weather overlays.
+    return JSON.stringify([currentRun,activeField,spcoaV159EffectiveExtras(),
+        getActiveContourSamples(),getActiveVectorSamples()]);
+}
+function spcoaV202CursorTipState() {
+    const tip=document.getElementById("spcoa-cursor-pin-status");
+    if(tip)tip.textContent=spcoaCursorPinned ? "Sample pinned · included in PNG" :
+        "Hover for values · click map to pin for PNG";
+}
 
 // Sounding selection is opt-in, adjacent to the existing Cursor Sample toggle.
 // It works with the Pan tool: click the map to load a sounding; drag to pan.
@@ -21587,14 +21829,23 @@ function renderCursorSamples(rows, event) {
     cursorPanel.classList.add("visible");
     cursorPanel.setAttribute("aria-hidden", "false");
     positionCursorPanel(event);
+    // Cache values only after all asynchronous tile sampling finished.
+    if (Number.isFinite(event?.lngLat?.lng) && Number.isFinite(event?.lngLat?.lat)) {
+        spcoaCursorLastSample = {
+            lng:event.lngLat.lng, lat:event.lngLat.lat,
+            signature:spcoaV202SampleSignature(),
+            rows:rows.map(row=>({name:String(row.name),value:String(row.value)}))
+        };
+    }
+    spcoaV202CursorTipState();
 }
 
-async function updateCursor(event) {
+async function updateCursor(event, force = false) {
 
-    if (!cursorSampleEnabled) return;
+    if (!cursorSampleEnabled || (spcoaCursorPinned && !force)) return;
 
     const now = performance.now();
-    if (now - lastCursorUpdate < 70) return;
+    if (!force && now - lastCursorUpdate < 70) return;
     lastCursorUpdate = now;
 
     const generation = ++cursorGeneration;
@@ -21657,13 +21908,23 @@ async function updateCursor(event) {
     renderCursorSamples(rows, event);
 }
 
-function clearCursor() {
+function clearCursor(forgetSample = true) {
     cursorGeneration++;
+    if (forgetSample) {
+        spcoaCursorLastSample = null;
+        spcoaCursorPinned = false;
+        spcoaV202CursorTipState();
+    }
     if (cursorPanel) {
         cursorPanel.classList.remove("visible");
         cursorPanel.setAttribute("aria-hidden", "true");
     }
 }
+function spcoaV202UnpinCursor() {
+    clearCursor();
+}
+window.__spcoaCursorUnpin = spcoaV202UnpinCursor;
+window.__spcoaCursorIsPinned = () => spcoaCursorPinned && !!spcoaCursorLastSample;
 
 function setCursorSampleEnabled(enabled) {
     cursorSampleEnabled = Boolean(enabled);
@@ -23366,12 +23627,34 @@ map.on(
     "mouseout",
 
     () => {
-
-        clearCursor();
-
+        // A pinned sample stays visible while the pointer moves to Save PNG.
+        // For unpinned hover, keep the last valid values only for export.
+        if (!spcoaCursorPinned) clearCursor(false);
     }
 
 );
+
+// V202: Click in Pan mode to pin the current sampled gridpoint. The click is
+// ignored when Sounding, native hodograph inspection, or drawing tools own it.
+map.on("click", event => {
+    if (!cursorSampleEnabled || activeDrawingTool !== "pan" || spcoaSoundingSelectEnabled ||
+        hodoToggle?.checked) return;
+    spcoaCursorPinned = true;
+    spcoaCursorLastSample = null; // Never export stale values while loading.
+    lastCursorUpdate = 0;
+    if (cursorPanel) cursorPanel.classList.remove("visible");
+    spcoaV202CursorTipState();
+    void updateCursor(event,true).catch(error => {
+        console.warn("Could not pin cursor sample",error);
+        spcoaV202UnpinCursor();
+    });
+});
+// Keep the pinned tooltip in the correct screen location after navigation.
+map.on("moveend", () => {
+    if (!spcoaCursorPinned || !spcoaCursorLastSample || !cursorPanel) return;
+    const position=map.project([spcoaCursorLastSample.lng,spcoaCursorLastSample.lat]);
+    positionCursorPanel({point:position});
+});
 
 
 /* =========================================================================================
@@ -25068,6 +25351,75 @@ async function spcoaRefreshVectorColorsForExport() {
     await renderVectors();
 }
 
+/* V202: Render the active cursor sample directly into the export canvas.
+ * HTML tooltip elements are not part of canvas.toBlob()/toDataURL(), and the
+ * pointer leaves the map when Save PNG is clicked. Draw from the last completed
+ * sample at its georeferenced location so PNGs match the forecaster's reading.
+ * Only includes values after a real sample; never generates placeholder data. */
+function spcoaV202DrawCursorSampleOnExport(ctx, outW, mapH, mapY = 0) {
+    const sample=spcoaCursorLastSample;
+    if (!cursorSampleEnabled || !sample || !Array.isArray(sample.rows) || !sample.rows.length ||
+        sample.signature!==spcoaV202SampleSignature()) return false;
+    const rect=mapWrapper?.getBoundingClientRect();
+    if (!rect?.width || !rect.height) return false;
+    const location=map.project([sample.lng,sample.lat]);
+    if (!Number.isFinite(location.x)||!Number.isFinite(location.y) ||
+        location.x<0||location.y<0||location.x>rect.width||location.y>rect.height) return false;
+    const sx=outW/rect.width, sy=mapH/rect.height;
+    const mx=location.x*sx, my=mapY+location.y*sy;
+    const unit=Math.min(sx,sy);
+    const pad=Math.max(10,Math.round(11*unit));
+    const lineH=Math.max(19,Math.round(19*unit));
+    const font=Math.max(13,Math.round(12*unit));
+    const titleFont=Math.max(15,Math.round(13*unit));
+    const gap=Math.max(12,Math.round(16*unit));
+    const edge=Math.max(10,Math.round(8*unit));
+    const w=Math.min(outW-edge*2, Math.max(Math.round(240*unit),Math.round(outW*.23)));
+    const maxRows=Math.max(0,Math.floor((mapH-3*pad-1.8*lineH)/lineH));
+    const rows=sample.rows.slice(0,Math.min(40,maxRows));
+    const additional=sample.rows.length>rows.length;
+    const h=pad*2+lineH*(1+rows.length+(additional?1:0));
+    const x=mx+gap+w+edge<=outW ? mx+gap : Math.max(edge,mx-gap-w);
+    const y=Math.max(mapY+edge,Math.min(mapY+mapH-h-edge,my+gap));
+    ctx.save();
+    ctx.beginPath();ctx.rect(0,mapY,outW,mapH);ctx.clip();
+    // Pinpoint exactly which meteorological grid location was sampled.
+    const r=Math.max(6,Math.round(5*unit));
+    ctx.strokeStyle="#f8fcff";ctx.lineWidth=Math.max(2,2*unit);
+    ctx.beginPath();ctx.arc(mx,my,r,0,Math.PI*2);ctx.stroke();
+    ctx.strokeStyle="#102433";ctx.lineWidth=Math.max(2,unit);
+    ctx.beginPath();ctx.moveTo(mx-r*2,my);ctx.lineTo(mx+r*2,my);
+    ctx.moveTo(mx,my-r*2);ctx.lineTo(mx,my+r*2);ctx.stroke();
+    // Solid dark background and contrast border reproduce the viewer's card.
+    ctx.fillStyle="rgba(16,36,51,.95)";ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle="#759ab2";ctx.lineWidth=Math.max(1,Math.round(unit));ctx.strokeRect(x,y,w,h);
+    ctx.textBaseline="middle";ctx.textAlign="left";
+    ctx.font=`700 ${titleFont}px Inter,Arial,sans-serif`;
+    ctx.fillStyle="#ffffff";
+    const ns=sample.lat<0?"S":"N",ew=sample.lng<0?"W":"E";
+    ctx.fillText(`Cursor Sample  ·  ${Math.abs(sample.lat).toFixed(2)}°${ns}, ${Math.abs(sample.lng).toFixed(2)}°${ew}`,
+        x+pad,y+pad+lineH*.45,w-2*pad);
+    const labelLimit=w*.61;
+    rows.forEach((row,index)=>{
+        const yy=y+pad+lineH*(index+1.48);
+        ctx.textAlign="left";ctx.font=`500 ${font}px Inter,Arial,sans-serif`;
+        ctx.fillStyle="#d3e6f2";
+        let name=row.name;
+        while(name.length>4 && ctx.measureText(name).width>labelLimit)name=name.slice(0,-2)+"…";
+        ctx.fillText(name,x+pad,yy,labelLimit);
+        ctx.textAlign="right";ctx.font=`700 ${font}px Inter,Arial,sans-serif`;
+        ctx.fillStyle="#ffffff";
+        ctx.fillText(row.value,x+w-pad,yy,w-labelLimit-2*pad);
+    });
+    if(additional){
+        ctx.font=`500 ${font}px Inter,Arial,sans-serif`;
+        ctx.textAlign="left";ctx.fillStyle="#b8d3e2";
+        ctx.fillText(`+${sample.rows.length-rows.length} more sampled layers`,x+pad,y+h-pad-lineH*.5);
+    }
+    ctx.restore();
+    return true;
+}
+
 async function spcoaDrawExportMapLayers(ctx, outW, mapH, mapY = 0) {
     await spcoaDrawExportMapBase(ctx, outW, mapH, mapY);
     const layers = [
@@ -25453,6 +25805,9 @@ async function saveCurrentMapPng4k() {
                 ctx.textAlign = "left";
             }
         }
+
+        // V202: Include the pinned/last hovered cursor values in the PNG.
+        spcoaV202DrawCursorSampleOnExport(ctx, outW, mapH, headerH);
 
         // V117: render every selected parameter using as many rows as needed.
         footerLayout.draw(ctx, headerH + mapH);
@@ -26325,6 +26680,10 @@ window.setInterval(()=>{if (!document.hidden) spcoaV120UpdateStatus();},60000);
                 });
             }
         }
+
+        // V202: The multi-panel PNG captures the sampled values in the panel
+        // where they were selected; regular SPCOA video remains unchanged.
+        if (options?.video !== true) spcoaV202DrawCursorSampleOnExport(ctx, outW, mapH, 0);
 
         // V118: The panel PNG is the source for BOTH Save PNG and Save Video.
         // Its footer is planned before canvas sizing and each layer label is
