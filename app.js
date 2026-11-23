@@ -339,7 +339,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V199"; // V196 satellite playback removed; numerical contours above county/state boundaries
+const SPCOA_VIEWER_BUILD = "V200"; // V196 satellite playback removed; numerical contours above county/state boundaries
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -971,19 +971,19 @@ function spcoaSetWindBarbScale(value) {
     try { localStorage.setItem(SPCOA_WIND_BARB_SIZE_KEY, String(next)); } catch (_) {}
     spcoaUpdateWindBarbSizeLabel();
     if (!changed || !__MP_CHILD || spcoaWindBarbRedrawQueued) return;
+    // V200: use a microtask instead of requestAnimationFrame. The map iframe
+    // may throttle animation callbacks; a queued microtask runs immediately
+    // after the slider event, without waiting for a map move or zoom.
     spcoaWindBarbRedrawQueued = true;
-    requestAnimationFrame(() => {
+    queueMicrotask(() => {
         spcoaWindBarbRedrawQueued = false;
         try {
-            // Cached-only drawing is synchronous, so moving the slider doesn't
-            // trigger another round of remote vector tile downloads.
             if (typeof spcoaRedrawVisibleWindBarbsFromCache === "function")
                 spcoaRedrawVisibleWindBarbsFromCache();
         } catch (error) {
-            console.warn("Wind barb size live redraw failed:", error);
-            // Keep the normal async renderer available as a safety net.
+            console.warn("Wind barb size redraw failed:", error);
             if (typeof renderVectors === "function")
-                void renderVectors().catch(err => console.warn("Vector redraw failed:", err));
+                void renderVectors().catch(err => console.warn("Vector redraw fallback failed:", err));
         }
     });
 }
@@ -4653,18 +4653,30 @@ if (!__MP_CHILD) {
             spcoaSetWindBarbScale(value);
             for (let i = 0; i < layoutCount; i++) {
                 const child = panels[i]?.frame?.contentWindow;
+                if (!child) continue;
                 try {
-                    if (typeof child?.__spcoaSetWindBarbScale === "function") {
+                    // Direct same-origin invocation avoids delayed synthetic DOM events.
+                    if (typeof child.__spcoaSetWindBarbScale === "function")
                         child.__spcoaSetWindBarbScale(value);
-                    } else {
+                    else {
                         const source = { id:"spcoa-wind-barb-size", type:"range", value:String(value) };
                         dispatchChildValue(source, i, "input");
                     }
+                    // Redundant message also covers panels that finish loading
+                    // while a control is being moved. Duplicate values are ignored.
+                    child.postMessage({type:"spcoa-wind-barb-size-live", value:Number(value)}, window.location.origin);
                 } catch (error) {
                     console.warn("Wind barb size sync failed in panel", i + 1, error);
                 }
             }
         }
+        // Capture range input BEFORE another sidebar handler can stop bubbling.
+        const spcoaWindBarbHostCapture = event => {
+            if (event.target?.dataset?.spcoaWindBarbSize !== "1") return;
+            spcoaHostRelayWindBarbSize(event.target.value);
+        };
+        sidebar.addEventListener("input", spcoaWindBarbHostCapture, true);
+        sidebar.addEventListener("change", spcoaWindBarbHostCapture, true);
 
         function clickChildById(id, index = activePanel) {
             const el = childElById(id, index);
@@ -16881,6 +16893,21 @@ function drawQVectorArrow(ctx, x, y, qx, qy, color = "#000000") {
     ctx.restore();
 }
 
+/* V200: Retain the drawn map symbols for immediate on-screen replay.
+ * One glyph contains one displayed vector sample, not the underlying tile.
+ * Geometry stays anchored in screen coordinates; resizing changes only the
+ * wind-barb symbol (not its position or any Q-vector/axis graphics). */
+let spcoaVisibleVectorGlyphs = [];
+let spcoaVisibleVectorCamera = null;
+function spcoaDrawRecordedVectorGlyph(glyph) {
+    if (glyph.renderType === "axis_segments")
+        drawAxisOfDilatation(vectorCtx, glyph.x, glyph.y, glyph.u, glyph.v, glyph.color);
+    else if (glyph.renderType === "arrows")
+        drawQVectorArrow(vectorCtx, glyph.x, glyph.y, glyph.u, glyph.v, glyph.color);
+    else
+        drawWindBarb(vectorCtx, glyph.x, glyph.y, glyph.u, glyph.v, glyph.color);
+}
+
 /* =========================================================================================
    RENDER ONE VECTOR FIELD
    ========================================================================================= */
@@ -17005,6 +17032,12 @@ async function renderVectorField(
 
 
             const vectorDefinition = VECTOR_FIELDS[field] || {};
+            // Every plotted symbol is recorded for instant scale changes.
+            spcoaVisibleVectorGlyphs.push({
+                field, x, y, u:vector.u, v:vector.v,
+                renderType:vectorDefinition.renderType || "barb",
+                color:vectorColors[field] || vectorDefinition.defaultColor || "#000000"
+            });
 
             if (vectorDefinition.renderType === "axis_segments") {
                 drawAxisOfDilatation(
@@ -17038,42 +17071,68 @@ async function renderVectorField(
 }
 
 
-/* V199: Instant in-place wind-symbol redraw. A visible wind layer has already
- * fetched its tiles; sample those exact cached vectors again at the unchanged
- * map camera, with the new barb scale. No zoom, pan, or network request.
- * Preserve arrow/axis geometry by using their existing draw functions. */
+/* V200: Repaint the exact vector glyphs already visible, in place.
+ * No new vector data fetch, pan, or zoom is required. A cached-tile fallback
+ * handles any view restored by the V111 rendered-frame cache. */
 function spcoaRedrawVisibleWindBarbsFromCache() {
-    // Cancel an in-flight previous vector render so it cannot repaint with
-    // the old scale after the user's slider change.
+    const enabled = new Set(VECTOR_OVERLAY_CONFIG
+        .filter(config => activeOverlays[config.stateKey]).map(config => config.field));
+    if (!enabled.size) return;
+    let glyphs = spcoaVisibleVectorGlyphs;
+    if (!glyphs.length || !matchesNumericalCamera(spcoaVisibleVectorCamera)) {
+        // Only resample if the completed vector-symbol display wasn't recorded.
+        // Gather first, so missing/evicted tiles never cause a blank vector layer.
+        const z = getDataZoom();
+        const rect = mapWrapper.getBoundingClientRect();
+        const spacing = getBarbSpacing();
+        const sampled = [];
+        for (const config of VECTOR_OVERLAY_CONFIG) {
+            if (!enabled.has(config.field)) continue;
+            const field = config.field;
+            const definition = VECTOR_FIELDS[field] || {};
+            const color = vectorColors[field] || definition.defaultColor || "#000000";
+            for (let y = spacing / 2; y < rect.height; y += spacing) {
+                for (let x = spacing / 2; x < rect.width; x += spacing) {
+                    const ll = map.unproject([x,y]);
+                    const vec = sampleVector(field, ll.lng, ll.lat, z);
+                    if (!vec || !Number.isFinite(vec.u) || !Number.isFinite(vec.v)) continue;
+                    sampled.push({field, x, y, u:vec.u, v:vec.v,
+                        renderType:definition.renderType || "barb", color});
+                }
+            }
+        }
+        if (!sampled.length) {
+            // No cached samples: do not blank the current symbols. The normal
+            // render path can reload data after the slider event.
+            if (typeof renderVectors === "function")
+                void renderVectors().catch(error => console.warn("Wind barb reload failed:",error));
+            return;
+        }
+        glyphs = sampled;
+        spcoaVisibleVectorGlyphs = sampled;
+        spcoaVisibleVectorCamera = getNumericalCameraSnapshot();
+    }
+    // Mark any older asynchronous vector draw obsolete before repainting.
     ++vectorRenderGeneration;
     prepareContext(vectorCanvas, vectorCtx);
     vectorCanvas.style.transform = "none";
-    const z = getDataZoom();
-    const rect = mapWrapper.getBoundingClientRect();
-    const width = rect.width, height = rect.height;
-    const spacing = getBarbSpacing();
-    for (const config of VECTOR_OVERLAY_CONFIG) {
-        if (!activeOverlays[config.stateKey]) continue;
-        const field = config.field;
-        const definition = VECTOR_FIELDS[field] || {};
-        const color = vectorColors[field] || definition.defaultColor || "#000000";
-        for (let y = spacing / 2; y < height; y += spacing) {
-            for (let x = spacing / 2; x < width; x += spacing) {
-                const point = map.unproject([x, y]);
-                const vec = sampleVector(field, point.lng, point.lat, z);
-                if (!vec || !Number.isFinite(vec.u) || !Number.isFinite(vec.v)) continue;
-                if (definition.renderType === "axis_segments")
-                    drawAxisOfDilatation(vectorCtx, x, y, vec.u, vec.v, color);
-                else if (definition.renderType === "arrows")
-                    drawQVectorArrow(vectorCtx, x, y, vec.u, vec.v, color);
-                else
-                    drawWindBarb(vectorCtx, x, y, vec.u, vec.v, color);
-            }
-        }
+    for (const glyph of glyphs) {
+        if (enabled.has(glyph.field)) spcoaDrawRecordedVectorGlyph(glyph);
     }
 }
-// Direct host-to-child setter avoids the unreliable synthetic input-event path.
+// Host-to-child setter and message bridge. Both routes are idempotent.
 window.__spcoaSetWindBarbScale = value => spcoaSetWindBarbScale(value);
+window.addEventListener("message", event => {
+    if (event.origin !== window.location.origin || !__MP_CHILD) return;
+    if (event.data?.type === "spcoa-wind-barb-size-live")
+        spcoaSetWindBarbScale(event.data.value);
+});
+// LocalStorage synchronizes same-origin map iframes even if a panel misses a
+// direct host callback during loading or an unusual iframe event sequence.
+window.addEventListener("storage", event => {
+    if (__MP_CHILD && event.key === SPCOA_WIND_BARB_SIZE_KEY && event.newValue !== null)
+        spcoaSetWindBarbScale(spcoaReadWindBarbScale());
+});
 
 /* =========================================================================================
    VECTOR RENDERER
@@ -17084,6 +17143,8 @@ async function renderVectors() {
     const generation =
         ++vectorRenderGeneration;
 
+    spcoaVisibleVectorGlyphs = [];
+    spcoaVisibleVectorCamera = getNumericalCameraSnapshot();
 
     prepareContext(
 
@@ -21760,6 +21821,9 @@ function spcoaUseRenderedFrame(key) {
         ctx.setTransform(dpr,0,0,dpr,0,0);
         canvas.style.transform='none';
     });
+    // Restore the glyph positions belonging to this exact cached map frame.
+    spcoaVisibleVectorGlyphs = entry.vectorGlyphs ? entry.vectorGlyphs.slice() : [];
+    spcoaVisibleVectorCamera = getNumericalCameraSnapshot();
     spcoaRenderedFrames.delete(key);
     spcoaRenderedFrames.set(key,entry);
     // The key already requires exact background/run/field/camera matching.
@@ -21784,7 +21848,8 @@ function spcoaRememberRenderedFrame(key) {
         console.debug('SPCOA rendered-frame cache skipped:',error);return;
     }
     spcoaDropRenderedFrame(key);
-    spcoaRenderedFrames.set(key,{layers:copies,bytes,created:Date.now()});
+    spcoaRenderedFrames.set(key,{layers:copies,bytes,created:Date.now(),
+        vectorGlyphs:spcoaVisibleVectorGlyphs.slice()});
     spcoaRenderedFrameBytes+=bytes;
     while(spcoaRenderedFrames.size>SPCOA_FRAME_CACHE_MAX_ENTRIES ||
           spcoaRenderedFrameBytes>SPCOA_FRAME_CACHE_MAX_BYTES) {
