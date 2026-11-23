@@ -339,7 +339,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V203"; // Cursor sample export can include a visible pinned location marker
+const SPCOA_VIEWER_BUILD = "V204"; // Presets include wind/vector overlays and ASOS/AWOS station observations
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -3672,7 +3672,7 @@ function spcoaV201InstallPresetUi(){
     const panel=document.createElement("section");
     panel.id="spcoa-v201-presets";
     panel.style.cssText="padding:10px;margin:8px 4px 12px;border:1px solid #3d6883;border-radius:7px;background:#122b3e;color:#e2f0f8;font:12px Arial,sans-serif;";
-    const header=document.createElement("div");header.textContent="Saved Parameter & Contour Presets";
+    const header=document.createElement("div");header.textContent="Saved Overlay Presets";
     header.style.cssText="font-weight:700;margin-bottom:7px";
     const name=document.createElement("input");name.type="text";name.maxLength=55;
     name.placeholder="Preset name (e.g., Severe Environment)";
@@ -3684,12 +3684,12 @@ function spcoaV201InstallPresetUi(){
     const action=(label,tooltip)=>{const b=document.createElement("button");b.type="button";b.textContent=label;b.title=tooltip;
         b.style.cssText="padding:5px 8px;background:#28526d;color:white;border:1px solid #5485a4;border-radius:4px;cursor:pointer;font:11px Arial,sans-serif;";
         buttons.appendChild(b);return b;};
-    const save=action("Save Current","Save fills, contours, opacity and line thickness from the active panel");
+    const save=action("Save Current","Save fills, contours, wind/vector overlays, vector colors, and surface station plots from the active panel");
     const apply=action("Load Preset","Apply a preset using Active Panel / All Panels scope");
     const remove=action("Delete","Delete the selected saved preset");
     const status=document.createElement("div");status.setAttribute("role","status");
     status.style.cssText="min-height:16px;color:#b6cde0;font-size:10px;margin-top:6px;line-height:1.35;";
-    const help=document.createElement("div");help.textContent="Saves up to 3 fills, contours, opacity and contour thickness. Uses the Active Panel / All Panels setting. Stored in this browser only.";
+    const help=document.createElement("div");help.textContent="Saves up to 3 fills, contours, wind/vector layers and their colors, and ASOS/AWOS station plots with density. Load follows Active Panel / All Panels. Stored in this browser only. Re-save older presets to add the new layers.";
     help.style.cssText="font-size:10px;color:#a6bece;line-height:1.4;margin-top:8px;";
     panel.append(header,name,select,buttons,status,help);
     const target=sidebar.querySelector(".sidebar-body")||sidebar;
@@ -8878,7 +8878,7 @@ async function spcoaV162ToggleFilledField(field){
     return true;
 }
 window.__spcoaV162ToggleFilledField=spcoaV162ToggleFilledField;
-/* V201 — panel-local state snapshot and restore for saved presets. */
+/* V204 — panel-local saved presets (including wind and station observations). */
 function spcoaV201ContourKeys(){
     const configs=[...GEOPOTENTIAL_HEIGHT_OVERLAYS,...PRESSURE_TEMPERATURE_CONTOUR_OVERLAYS,
         ...FRONTOGENESIS_CONTOUR_OVERLAYS,...THERMODYNAMIC_CONTOUR_OVERLAYS,
@@ -8891,14 +8891,30 @@ function spcoaV201ContourKeys(){
     VECTOR_OVERLAY_CONFIG.forEach(config=>keys.delete(config.stateKey));
     return {configs,keys:[...keys].filter(k=>Object.prototype.hasOwnProperty.call(activeOverlays,k))};
 }
+/* V204: Include vectors and surface observations in the existing browser-local
+ * preset format. v1 presets are still supported; they leave vectors and station
+ * plots as they are, rather than unexpectedly clearing settings they never saved.
+ * v2 presets explicitly restore OFF states as well as ON states. */
 window.__spcoaV201GetPreset=()=>{
     const {keys}=spcoaV201ContourKeys();
     const contours={};keys.forEach(key=>contours[key]=Boolean(activeOverlays[key]));
-    return {version:1,primary:activeField,extras:spcoaV159EffectiveExtras(),
-        opacity:{...spcoaV159Opacity},thickness:{...spcoaV159Thickness},contours};
+    const vectors={},savedVectorColors={};
+    for(const config of VECTOR_OVERLAY_CONFIG){
+        vectors[config.stateKey]=Boolean(activeOverlays[config.stateKey]);
+        const color=vectorColors[config.field];
+        if(typeof color==="string"&&/^#[0-9a-fA-F]{6}$/.test(color))
+            savedVectorColors[config.field]=color;
+    }
+    return {version:2,primary:activeField,extras:spcoaV159EffectiveExtras(),
+        opacity:{...spcoaV159Opacity},thickness:{...spcoaV159Thickness},contours,
+        vectors,vectorColors:savedVectorColors,
+        surfaceObs:{enabled:Boolean(surfaceObsToggle?.checked),
+            density:["sparse","standard","dense"].includes(surfaceObsDensity?.value)
+                ? surfaceObsDensity.value : "standard"}};
 };
 window.__spcoaV201ApplyPreset=async preset=>{
-    if(!preset||preset.version!==1||!preset.contours||typeof preset.contours!=="object")
+    if(!preset||![1,2].includes(preset.version)||!preset.contours||
+        typeof preset.contours!=="object"||Array.isArray(preset.contours))
         throw new Error("This saved preset has an unsupported format.");
     // Reject invalid ids rather than allowing arbitrary values into a panel.
     const chosen=[preset.primary,...(Array.isArray(preset.extras)?preset.extras:[])]
@@ -8931,6 +8947,39 @@ window.__spcoaV201ApplyPreset=async preset=>{
         const toggleId=toggles.get(key);
         if(toggleId){const node=document.getElementById(toggleId);if(node)node.checked=enabled;}
     }
+    let updateStationPlots=false;
+    if(preset.version===2){
+        const vectors=preset.vectors;
+        if(vectors&&typeof vectors==="object"&&!Array.isArray(vectors)){
+            for(const config of VECTOR_OVERLAY_CONFIG){
+                const enabled=vectors[config.stateKey]===true;
+                activeOverlays[config.stateKey]=enabled;
+                const toggle=vectorToggleElements[config.field]||document.getElementById(config.toggleId);
+                if(toggle)toggle.checked=enabled;
+            }
+        }
+        const colors=preset.vectorColors;
+        if(colors&&typeof colors==="object"&&!Array.isArray(colors)){
+            for(const config of VECTOR_OVERLAY_CONFIG){
+                const color=colors[config.field];
+                if(typeof color!=="string"||!/^#[0-9a-fA-F]{6}$/.test(color))continue;
+                vectorColors[config.field]=color;
+                const input=vectorColorElements[config.field]||
+                    document.querySelector(`input[type="color"][data-vector-field="${config.field}"]`);
+                if(input)input.value=color;
+                spcoaSaveVectorColor(config.field,color);
+            }
+        }
+        const obs=preset.surfaceObs;
+        if(obs&&typeof obs==="object"&&!Array.isArray(obs)){
+            if(surfaceObsToggle&&typeof obs.enabled==="boolean"){
+                updateStationPlots=surfaceObsToggle.checked!==obs.enabled;
+                surfaceObsToggle.checked=obs.enabled;
+            }
+            if(surfaceObsDensity&&["sparse","standard","dense"].includes(obs.density))
+                surfaceObsDensity.value=obs.density;
+        }
+    }
     if(fieldSelect){
         if(!Array.from(fieldSelect.options).some(o=>o.value===nextPrimary))
             fieldSelect.add(new Option(WEATHER_FIELDS[nextPrimary]?.name||nextPrimary,nextPrimary));
@@ -8941,7 +8990,17 @@ window.__spcoaV201ApplyPreset=async preset=>{
     updateLegend();resetNumericalCanvasTransforms();
     window.__spcoaV159RefreshControls?.(spcoaV159GetState());
     updateActiveLayersStrip();
-    await Promise.all([renderWeather(),renderContours()]);
+    // Refresh station data only when the ASOS/AWOS toggle actually changes;
+    // density adjustments can reuse the already-loaded station observations.
+    // Surface observations have their own canvas and are not in renderVectors().
+    if(updateStationPlots)void refreshSurfaceObsForRun();
+    else if(preset.version===2&&preset.surfaceObs)requestSurfaceObsDraw();
+    const renderJobs=[renderWeather(),renderContours()];
+    if(preset.version===2&&preset.vectors&&typeof preset.vectors==="object"){
+        vectorRenderGeneration++;
+        renderJobs.push(renderVectors());
+    }
+    await Promise.all(renderJobs);
     renderGeography();updateActiveLayersStrip();
     return true;
 };
