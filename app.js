@@ -339,7 +339,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V198"; // V196 satellite playback removed; numerical contours above county/state boundaries
+const SPCOA_VIEWER_BUILD = "V199"; // V196 satellite playback removed; numerical contours above county/state boundaries
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -941,72 +941,91 @@ function installSpcoaEcapeFieldButton() {
 }
 installSpcoaEcapeFieldButton();
 
-/* V198: Map wind barb size.  The scale affects only the canvas-drawn wind
- * barbs (shaft, flags, feathers, line weight, and calm circles); vector
- * sampling, direction, speed, spacing, arrows, and deformation axes remain
- * unchanged. Persist the preference for future sessions. */
+/* V199: A pair of synchronized controls (Surface and Wind Shear) adjusts
+ * all actual wind-barb symbols. The active iframe redraws from the already
+ * loaded vector tiles on the next animation frame, not on the next map zoom.
+ * Q-vectors and axes of dilation retain their original geometry. */
 const SPCOA_WIND_BARB_SIZE_KEY = "spcoa_wind_barb_size_v1";
 function spcoaReadWindBarbScale() {
     try {
-        const value = Number(localStorage.getItem(SPCOA_WIND_BARB_SIZE_KEY));
+        const stored = localStorage.getItem(SPCOA_WIND_BARB_SIZE_KEY);
+        const value = stored === null ? 1 : Number(stored);
         return Number.isFinite(value) && value >= 0.75 && value <= 2.0 ? value : 1.0;
     } catch (_) { return 1.0; }
 }
 let spcoaWindBarbScale = spcoaReadWindBarbScale();
+let spcoaWindBarbRedrawQueued = false;
 function spcoaUpdateWindBarbSizeLabel(root = document) {
-    const slider = root.getElementById("spcoa-wind-barb-size");
-    const label = root.getElementById("spcoa-wind-barb-size-label");
-    if (slider && label) label.textContent = Math.round(Number(slider.value) * 100) + "%";
+    for (const slider of root.querySelectorAll('input[data-spcoa-wind-barb-size="1"]')) {
+        slider.value = String(spcoaWindBarbScale);
+        const label = root.getElementById(slider.id + "-label");
+        if (label) label.textContent = Math.round(spcoaWindBarbScale * 100) + "%";
+    }
+}
+function spcoaSetWindBarbScale(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return;
+    const next = Math.max(0.75, Math.min(2.0, number));
+    const changed = Math.abs(next - spcoaWindBarbScale) > 0.00001;
+    spcoaWindBarbScale = next;
+    try { localStorage.setItem(SPCOA_WIND_BARB_SIZE_KEY, String(next)); } catch (_) {}
+    spcoaUpdateWindBarbSizeLabel();
+    if (!changed || !__MP_CHILD || spcoaWindBarbRedrawQueued) return;
+    spcoaWindBarbRedrawQueued = true;
+    requestAnimationFrame(() => {
+        spcoaWindBarbRedrawQueued = false;
+        try {
+            // Cached-only drawing is synchronous, so moving the slider doesn't
+            // trigger another round of remote vector tile downloads.
+            if (typeof spcoaRedrawVisibleWindBarbsFromCache === "function")
+                spcoaRedrawVisibleWindBarbsFromCache();
+        } catch (error) {
+            console.warn("Wind barb size live redraw failed:", error);
+            // Keep the normal async renderer available as a safety net.
+            if (typeof renderVectors === "function")
+                void renderVectors().catch(err => console.warn("Vector redraw failed:", err));
+        }
+    });
 }
 function spcoaInstallWindBarbSizeControl() {
-    const content = document.querySelector("#shear-category .cat-content");
-    if (!content || document.getElementById("spcoa-wind-barb-size")) return;
-    const panel = document.createElement("div");
-    panel.id = "spcoa-wind-barb-size-panel";
-    panel.style.cssText = "padding:9px 10px;margin:6px 0 10px;border:1px solid #355269;border-radius:6px;background:#10283a;";
-    const header = document.createElement("label");
-    header.htmlFor = "spcoa-wind-barb-size";
-    header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:10px;color:#d6e8f3;font:600 11px Inter,Arial,sans-serif;";
-    header.appendChild(document.createTextNode("Wind Barb Size"));
-    const valueLabel = document.createElement("span");
-    valueLabel.id = "spcoa-wind-barb-size-label";
-    header.appendChild(valueLabel);
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.id = "spcoa-wind-barb-size";
-    slider.min = "0.75";
-    slider.max = "2.0";
-    slider.step = "0.05";
-    slider.value = String(spcoaWindBarbScale);
-    slider.style.cssText = "display:block;width:100%;margin:9px 0 3px;accent-color:#69baf5;";
-    slider.title = "Adjust the size of map wind barbs in all panels without altering values or density";
-    slider.setAttribute("aria-label", "Map wind barb size");
-    const hint = document.createElement("div");
-    hint.style.cssText = "display:flex;justify-content:space-between;color:#a7c4d4;font:10px Inter,Arial,sans-serif;";
-    hint.innerHTML = "<span>75%</span><span>100% = original</span><span>200%</span>";
-    panel.append(header, slider, hint);
-    content.prepend(panel);
+    for (const [category, suffix] of [
+        ["#surface-category .cat-content", "surface"],
+        ["#shear-category .cat-content", "shear"]
+    ]) {
+        const content = document.querySelector(category);
+        if (!content) continue;
+        const id = suffix === "shear" ? "spcoa-wind-barb-size" : "spcoa-wind-barb-size-surface";
+        if (document.getElementById(id)) continue;
+        const panel = document.createElement("div");
+        panel.id = "spcoa-wind-barb-size-panel-" + suffix;
+        panel.style.cssText = "padding:9px 10px;margin:6px 0 10px;border:1px solid #355269;border-radius:6px;background:#10283a;";
+        const header = document.createElement("label");
+        header.htmlFor = id;
+        header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:10px;color:#d6e8f3;font:600 11px Inter,Arial,sans-serif;";
+        header.appendChild(document.createTextNode("Wind Barb Size"));
+        const valueLabel = document.createElement("span");
+        valueLabel.id = id + "-label";
+        header.appendChild(valueLabel);
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.id = id;
+        slider.dataset.spcoaWindBarbSize = "1";
+        slider.min = "0.75";
+        slider.max = "2.0";
+        slider.step = "0.05";
+        slider.value = String(spcoaWindBarbScale);
+        slider.style.cssText = "display:block;width:100%;margin:9px 0 3px;accent-color:#69baf5;";
+        slider.title = "Live wind barb symbol size in all map panels; original size is 100%";
+        slider.setAttribute("aria-label", "Map wind barb size under " + suffix);
+        const hint = document.createElement("div");
+        hint.style.cssText = "display:flex;justify-content:space-between;color:#a7c4d4;font:10px Inter,Arial,sans-serif;";
+        hint.innerHTML = "<span>75%</span><span>100% = original</span><span>200%</span>";
+        panel.append(header, slider, hint);
+        content.prepend(panel);
+        slider.addEventListener("input", () => spcoaSetWindBarbScale(slider.value));
+        slider.addEventListener("change", () => spcoaSetWindBarbScale(slider.value));
+    }
     spcoaUpdateWindBarbSizeLabel();
-    let pending = false;
-    const handleChange = () => {
-        const next = Math.max(0.75, Math.min(2.0, Number(slider.value) || 1.0));
-        spcoaWindBarbScale = next;
-        try { localStorage.setItem(SPCOA_WIND_BARB_SIZE_KEY, String(next)); } catch (_) {}
-        spcoaUpdateWindBarbSizeLabel();
-        // The host relays this same input event to every map iframe.
-        // A saved size is a viewer-wide display preference, not a wind field.
-        // Draw only in map children and coalesce rapid slider events.
-        if (!__MP_CHILD || pending) return;
-        pending = true;
-        requestAnimationFrame(() => {
-            pending = false;
-            if (typeof renderVectors === "function") {
-                void renderVectors().catch(error => console.warn("Wind barb size redraw failed:", error));
-            }
-        });
-    };
-    slider.addEventListener("input", handleChange);
-    slider.addEventListener("change", handleChange);
 }
 spcoaInstallWindBarbSizeControl();
 
@@ -4630,6 +4649,23 @@ if (!__MP_CHILD) {
             target.dispatchEvent(new Event(eventType, { bubbles: true }));
         }
 
+        function spcoaHostRelayWindBarbSize(value) {
+            spcoaSetWindBarbScale(value);
+            for (let i = 0; i < layoutCount; i++) {
+                const child = panels[i]?.frame?.contentWindow;
+                try {
+                    if (typeof child?.__spcoaSetWindBarbScale === "function") {
+                        child.__spcoaSetWindBarbScale(value);
+                    } else {
+                        const source = { id:"spcoa-wind-barb-size", type:"range", value:String(value) };
+                        dispatchChildValue(source, i, "input");
+                    }
+                } catch (error) {
+                    console.warn("Wind barb size sync failed in panel", i + 1, error);
+                }
+            }
+        }
+
         function clickChildById(id, index = activePanel) {
             const el = childElById(id, index);
             if (el) el.click();
@@ -4706,7 +4742,7 @@ if (!__MP_CHILD) {
                 const child = d.getElementById(host.id);
                 if (!child) return;
                 if ((host.id === "cwa-border-color" || host.id === "city-density" ||
-                    host.id === "spcoa-wind-barb-size" || host.id.startsWith("roads-color-")) &&
+                    host.dataset.spcoaWindBarbSize === "1" || host.id.startsWith("roads-color-")) &&
                     document.activeElement === host) return;
                 if (host.type === "checkbox" || host.type === "radio") host.checked = child.checked;
                 else host.value = child.value;
@@ -4843,9 +4879,8 @@ if (!__MP_CHILD) {
             if(event.target.closest("#spcoa-v159-controls"))return;
             const el = event.target;
             if (!el || el.closest("#spcoa-goes-controls, #spcoa-radar-controls")) return;
-            if (el.id === "spcoa-wind-barb-size") {
-                spcoaUpdateWindBarbSizeLabel();
-                for (let i = 0; i < layoutCount; i++) dispatchChildValue(el, i, "input");
+            if (el.dataset.spcoaWindBarbSize === "1") {
+                spcoaHostRelayWindBarbSize(el.value);
                 return;
             }
             if (el.type === "color" && el.dataset.vectorField) {
@@ -4880,9 +4915,8 @@ if (!__MP_CHILD) {
                 updateSpcoaDensityUi();
                 saveSpcoaCitySetting(SPCOA_CITY_DENSITY_KEY, el.value);
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "change");
-            } else if (el.id === "spcoa-wind-barb-size") {
-                spcoaUpdateWindBarbSizeLabel();
-                for (let i = 0; i < layoutCount; i++) dispatchChildValue(el, i, "change");
+            } else if (el.dataset.spcoaWindBarbSize === "1") {
+                spcoaHostRelayWindBarbSize(el.value);
             } else if (el.id === "city-cwa-filter") {
                 saveSpcoaCitySetting(SPCOA_CITY_CWA_KEY, el.value);
                 for (const i of parameterTargets()) dispatchChildValue(el, i, "change");
@@ -17004,6 +17038,43 @@ async function renderVectorField(
 }
 
 
+/* V199: Instant in-place wind-symbol redraw. A visible wind layer has already
+ * fetched its tiles; sample those exact cached vectors again at the unchanged
+ * map camera, with the new barb scale. No zoom, pan, or network request.
+ * Preserve arrow/axis geometry by using their existing draw functions. */
+function spcoaRedrawVisibleWindBarbsFromCache() {
+    // Cancel an in-flight previous vector render so it cannot repaint with
+    // the old scale after the user's slider change.
+    ++vectorRenderGeneration;
+    prepareContext(vectorCanvas, vectorCtx);
+    vectorCanvas.style.transform = "none";
+    const z = getDataZoom();
+    const rect = mapWrapper.getBoundingClientRect();
+    const width = rect.width, height = rect.height;
+    const spacing = getBarbSpacing();
+    for (const config of VECTOR_OVERLAY_CONFIG) {
+        if (!activeOverlays[config.stateKey]) continue;
+        const field = config.field;
+        const definition = VECTOR_FIELDS[field] || {};
+        const color = vectorColors[field] || definition.defaultColor || "#000000";
+        for (let y = spacing / 2; y < height; y += spacing) {
+            for (let x = spacing / 2; x < width; x += spacing) {
+                const point = map.unproject([x, y]);
+                const vec = sampleVector(field, point.lng, point.lat, z);
+                if (!vec || !Number.isFinite(vec.u) || !Number.isFinite(vec.v)) continue;
+                if (definition.renderType === "axis_segments")
+                    drawAxisOfDilatation(vectorCtx, x, y, vec.u, vec.v, color);
+                else if (definition.renderType === "arrows")
+                    drawQVectorArrow(vectorCtx, x, y, vec.u, vec.v, color);
+                else
+                    drawWindBarb(vectorCtx, x, y, vec.u, vec.v, color);
+            }
+        }
+    }
+}
+// Direct host-to-child setter avoids the unreliable synthetic input-event path.
+window.__spcoaSetWindBarbScale = value => spcoaSetWindBarbScale(value);
+
 /* =========================================================================================
    VECTOR RENDERER
    ========================================================================================= */
@@ -21652,6 +21723,7 @@ function spcoaRenderedFrameKey(camera=getNumericalCameraSnapshot()) {
         .filter(key=>activeOverlays[key] === true).join(',');
     return JSON.stringify([
         currentRun,activeField,overlaySignature,spcoaV159StyleSignature(),
+        spcoaWindBarbScale,
         activeField==='ecape'?spcoaProductRun('ecape'):null,
         spcoaReadMapBackground(),spcoaHasSatelliteUnderlay(),getDataZoom(),
         camera.lng.toFixed(7),camera.lat.toFixed(7),camera.zoom.toFixed(7),
