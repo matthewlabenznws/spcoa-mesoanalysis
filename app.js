@@ -339,7 +339,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V202"; // Browser-local named fill/contour presets; V200 wind-barb redraw and all prior features preserved
+const SPCOA_VIEWER_BUILD = "V203"; // Cursor sample export can include a visible pinned location marker
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -9945,6 +9945,30 @@ let cursorSampleEnabled =
 // Keeping the point in lon/lat (not CSS pixels) preserves its position at export.
 let spcoaCursorLastSample = null;
 let spcoaCursorPinned = false;
+let spcoaCursorPinMarker = null;
+function spcoaV203EnsureCursorPinMarker() {
+    if (spcoaCursorPinMarker || !map || !(window.maplibregl && maplibregl.Marker)) return spcoaCursorPinMarker;
+    const el = document.createElement("div");
+    el.setAttribute("aria-hidden", "true");
+    el.style.cssText = "width:12px;height:12px;border-radius:999px;background:#ffcf5b;border:2px solid #102433;box-shadow:0 0 0 2px rgba(255,255,255,.95),0 0 10px rgba(0,0,0,.35);";
+    const marker = new maplibregl.Marker({element: el, anchor: "center"})
+        .setLngLat([0,0])
+        .addTo(map);
+    marker.getElement().style.pointerEvents = "none";
+    spcoaCursorPinMarker = marker;
+    return marker;
+}
+function spcoaV203SyncCursorPinMarker() {
+    if (!spcoaCursorPinned || !spcoaCursorLastSample) {
+        if (spcoaCursorPinMarker) {
+            spcoaCursorPinMarker.remove();
+            spcoaCursorPinMarker = null;
+        }
+        return;
+    }
+    const marker = spcoaV203EnsureCursorPinMarker();
+    try { marker?.setLngLat([spcoaCursorLastSample.lng, spcoaCursorLastSample.lat]); } catch (_) {}
+}
 function spcoaV202SampleSignature() {
     // Reject stale readouts after switching analysis times or weather overlays.
     return JSON.stringify([currentRun,activeField,spcoaV159EffectiveExtras(),
@@ -21838,6 +21862,7 @@ function renderCursorSamples(rows, event) {
         };
     }
     spcoaV202CursorTipState();
+    spcoaV203SyncCursorPinMarker();
 }
 
 async function updateCursor(event, force = false) {
@@ -21914,6 +21939,7 @@ function clearCursor(forgetSample = true) {
         spcoaCursorLastSample = null;
         spcoaCursorPinned = false;
         spcoaV202CursorTipState();
+        spcoaV203SyncCursorPinMarker();
     }
     if (cursorPanel) {
         cursorPanel.classList.remove("visible");
@@ -23641,6 +23667,7 @@ map.on("click", event => {
         hodoToggle?.checked) return;
     spcoaCursorPinned = true;
     spcoaCursorLastSample = null; // Never export stale values while loading.
+    spcoaV203SyncCursorPinMarker();
     lastCursorUpdate = 0;
     if (cursorPanel) cursorPanel.classList.remove("visible");
     spcoaV202CursorTipState();
@@ -25385,6 +25412,9 @@ function spcoaV202DrawCursorSampleOnExport(ctx, outW, mapH, mapY = 0) {
     ctx.beginPath();ctx.rect(0,mapY,outW,mapH);ctx.clip();
     // Pinpoint exactly which meteorological grid location was sampled.
     const r=Math.max(6,Math.round(5*unit));
+    const dotR=Math.max(3,Math.round(3*unit));
+    ctx.fillStyle="#ffcf5b";
+    ctx.beginPath();ctx.arc(mx,my,dotR,0,Math.PI*2);ctx.fill();
     ctx.strokeStyle="#f8fcff";ctx.lineWidth=Math.max(2,2*unit);
     ctx.beginPath();ctx.arc(mx,my,r,0,Math.PI*2);ctx.stroke();
     ctx.strokeStyle="#102433";ctx.lineWidth=Math.max(2,unit);
