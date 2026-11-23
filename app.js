@@ -1,6 +1,7 @@
 /* V189: 60-minute radar option; avoid blank transitions using frame staging and a rendered-frame handoff;
  * encode radar MP4s at a steady 15 fps while preserving the full map between radar times.
  * All V188 playback safeguards, above-fill radar, and existing site features remain. */
+/* V195: Faster radar playback settings (Slow 1.2 s; Normal 0.5 s; Fast 0.22 s; Very Fast 0.1 s). */
 /* V188: 2-hour radar history, faster playback speeds and separate H.264 radar-loop MP4 export. */
 /* V187: Double-buffered radar playback; full-resolution above-fill tile zoom (+1 for 256px sources), one-pass high-quality image interpolation. */
 /* V184: Connect published SPCOA feedback form to V183 About/Help button; all else unchanged. */
@@ -338,7 +339,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V194"; // correct individual NEXRAD 30/60/120-minute history frame caps; V193 features retained
+const SPCOA_VIEWER_BUILD = "V195"; // faster radar playback; V194 NEXRAD history and previous features retained
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -2656,10 +2657,11 @@ function spcoaInstallRadarPlaybackControls(){
     duration.title="Radar history duration; 5-minute steps";
     duration.addEventListener("change",()=>spcoaRadarPlaybackUiCommand("duration",duration.value));
     const speed=document.createElement("select");speed.id="spcoa-radar-playback-speed";
-    for(const [value,name] of [["3000","Slow"],["1600","Normal"],["650","Fast"],["350","Very Fast"]]){
+    // V195: Faster display targets. A new radar image is shown only after its tiles are ready.
+    for(const [value,name] of [["1200","Slow"],["500","Normal"],["220","Fast"],["100","Very Fast"]]){
         const option=document.createElement("option");option.value=value;option.textContent=name;speed.appendChild(option);
     }
-    speed.value="1600";
+    speed.value="500";
     speed.addEventListener("change",()=>spcoaRadarPlaybackUiCommand("speed",speed.value));
     settings.append(document.createTextNode("History"),duration,document.createTextNode("Speed"),speed);
     const slider=document.createElement("input");
@@ -2747,7 +2749,7 @@ function spcoaRadarPlaybackSyncUi(){
     if(duration){duration.disabled=!!state?.exporting;
         if(duration!==document.activeElement)duration.value=String(state?.duration||30);}
     if(speed){speed.disabled=!!state?.exporting;
-        if(speed!==document.activeElement)speed.value=String(state?.speed||1600);}
+        if(speed!==document.activeElement)speed.value=String(state?.speed||500);}
     // Do NOT disable saving just because an animation frame is loading.
     // The exporter safely waits for that in-flight transition to finish.
     if(exportLoops)exportLoops.disabled=!!state?.exporting;
@@ -10282,7 +10284,7 @@ document.addEventListener("visibilitychange",()=>{
    ========================================================================================= */
 const SPCOA_RADAR_PLAYBACK_WMS="https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi";
 const spcoaRadarPlayback={active:false,playing:false,loading:false,exporting:false,frames:[],index:0,
-    duration:30,speed:1600,mode:null,site:null,relative:false,relativeEpoch:0,
+    duration:30,speed:500,mode:null,site:null,relative:false,relativeEpoch:0,
     token:0,timer:null,controller:null,queued:null,cache:new Map(),displayedAt:0,
     refreshing:false,pendingHistory:null,lastHistoryCheck:0,historyEpoch:0,
     status:"Paused · Press Play to load recent frames"};
@@ -10730,10 +10732,12 @@ async function spcoaRadarPlaybackShow(index){
                 spcoaRadarPlaybackCancelTimer();
                 // Begin loading immediately; the staged layer waits for the
                 // selected frame duration before the visual swap.
+                // V195: Remove the extra fixed 40-ms gap between frames. The
+                // next tile layer still must finish loading to prevent blanks.
                 a.timer=setTimeout(()=>{
                     if(a.active&&a.playing&&!a.loading)
                         void spcoaRadarPlaybackShow((a.index+1)%a.frames.length);
-                },40);
+                },0);
             }
         }
     }
@@ -10744,7 +10748,7 @@ async function spcoaRadarPlaybackAction(action,value){
     if(a.exporting)return;
     if(action==="live"){spcoaRadarPlaybackStop(true);return;}
     if(action==="speed"){
-        a.speed=[350,650,1600,3000].includes(+value)?+value:1600;
+        a.speed=[100,220,500,1200].includes(+value)?+value:500;
         return;
     }
     if(action==="duration"){
