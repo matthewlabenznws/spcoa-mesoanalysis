@@ -338,7 +338,7 @@ const __MP_CHILD = __MP_PARAMS.get("mpchild") === "1";
 /* V118: A definite marker for checking whether the latest GitHub Pages asset
  * loaded in BOTH the host and the map iframe (which loads this script again).
  * Inspect in DevTools: window.__SPCOA_VIEWER_BUILD  */
-const SPCOA_VIEWER_BUILD = "V193"; // radar MP4 export during playback + repeat complete radar timeline
+const SPCOA_VIEWER_BUILD = "V194"; // correct individual NEXRAD 30/60/120-minute history frame caps; V193 features retained
 window.__SPCOA_VIEWER_BUILD = SPCOA_VIEWER_BUILD;
 console.info(`[SPCOA] ${SPCOA_VIEWER_BUILD} app.js loaded — ${__MP_CHILD ? "map iframe" : "multi-panel host"}`);
 
@@ -10525,7 +10525,7 @@ function spcoaRadarPlaybackWaitForTiles(token,timeout=12000,sourceId=SPCOA_RADAR
 }
 async function spcoaRadarPlaybackRecentN0B(site,minutes,signal){
     // Public Unidata Level III archive. Fetch only the hour listings needed;
-    // for 2h playback sample at ~10-minute cadence to limit scan downloads.
+    // Keep the full requested history span; cap selected frames by duration below.
     const now=Date.now(),cutoff=now-(minutes+10)*60000;
     const keys=[];
     for(let h=0;h<=Math.ceil((minutes+15)/60);h++){
@@ -10552,10 +10552,11 @@ async function spcoaRadarPlaybackRecentN0B(site,minutes,signal){
     for(const f of keys)buckets.set(Math.floor(f.time.getTime()/300000),f);
     const frames=[...buckets.values()].filter(f=>f.time.getTime()>=now-minutes*60000-300000);
     if(frames.length<2)throw new Error("Not enough recent N0B frames for "+site);
-    // Limit decoded N0B scans, not the selected history span. National Mosaic
-    // uses the full five-minute cadence (13 frames for a 60-minute window).
-    // Individual NEXRAD stays capped at 7 frames for <=60 min and 13 for 2h.
-    const maxFrames=minutes>=120?13:7;
+    // Select up to one scan per five minutes in each history window.
+    // The old code capped 30 and 60 minutes at the same 7 frames, making
+    // a 60-minute radar loop look almost identical to the 30-minute loop.
+    // The N0B decoder still caches only a couple of decoded scans at a time.
+    const maxFrames=minutes>=120?25:minutes>=60?13:7;
     if(frames.length<=maxFrames)return frames;
     const chosen=[];
     for(let i=0;i<maxFrames;i++)chosen.push(frames[Math.round(i*(frames.length-1)/(maxFrames-1))]);
